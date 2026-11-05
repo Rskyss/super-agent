@@ -58,6 +58,10 @@ func urlEncode(_ s: String) -> String {
 /// 没接入的文件夹（不是 git）存在窗口自己的设置里。Claude 暂不作为调度员。
 struct Dispatcher {
     let saved: String  // "codex"、"cursor"、"agy"，或 "custom:<命令>"
+    var codexModel: String? = nil
+    var codexEffort: String? = nil
+    var cursorModel: String? = nil
+    var agyModel: String? = nil
 
     static func key(for project: URL) -> String { "dispatcher:" + project.path }
 
@@ -67,7 +71,13 @@ struct Dispatcher {
         if let data = try? Data(contentsOf: config),
            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
            let team = json["team"] as? [String: Any], let who = team["dispatcher"] as? String, !who.isEmpty {
-            return Dispatcher(saved: who)
+            return Dispatcher(
+                saved: who,
+                codexModel: json["codex"] as? String,
+                codexEffort: json["codex_effort"] as? String,
+                cursorModel: json["cursor"] as? String,
+                agyModel: json["agy"] as? String
+            )
         }
         guard let s = UserDefaults.standard.string(forKey: key(for: project)), !s.isEmpty else { return nil }
         return Dispatcher(saved: s)
@@ -88,12 +98,30 @@ struct Dispatcher {
     /// 自定义命令不知道怎么接开场话，就不交代
     var takesOpening: Bool { ["codex", "cursor", "agy"].contains(saved) }
 
+    var modelFlags: String {
+        switch saved {
+        case "codex":
+            var parts: [String] = []
+            if let m = codexModel, !m.isEmpty { parts.append("-m " + shellQuote(m)) }
+            if let e = codexEffort, !e.isEmpty { parts.append("-c " + shellQuote("model_reasoning_effort=\"\(e)\"")) }
+            return parts.isEmpty ? "" : " " + parts.joined(separator: " ")
+        case "cursor":
+            if let m = cursorModel, !m.isEmpty { return " --model " + shellQuote(m) }
+            return ""
+        case "agy":
+            if let m = agyModel, !m.isEmpty { return " --model " + shellQuote(m) }
+            return ""
+        default:
+            return ""
+        }
+    }
+
     func freshCommand(_ opening: String?) -> String {
         let say = opening.map { " " + shellQuote($0) } ?? ""
         switch saved {
-        case "codex": return "codex --no-daemon" + say
-        case "cursor": return "agent" + say                       // Cursor 的命令行叫 agent
-        case "agy": return opening == nil ? "agy" : "agy -i" + say  // -i：带着开场话进入对话
+        case "codex": return "codex --no-daemon" + modelFlags + say
+        case "cursor": return "agent" + modelFlags + say                       // Cursor 的命令行叫 agent
+        case "agy": return opening == nil ? "agy" + modelFlags : "agy" + modelFlags + " -i" + say  // -i：带着开场话进入对话
         default: return String(saved.dropFirst("custom:".count))
         }
     }
@@ -103,9 +131,9 @@ struct Dispatcher {
         let say = opening.map { " " + shellQuote($0) } ?? ""
         let resume: String
         switch saved {
-        case "codex": resume = "codex resume --no-daemon --last" + say  // 只找当前文件夹里的对话；不走后台服务，关掉立刻让出
-        case "cursor": resume = "agent --continue" + say
-        case "agy": resume = "agy --continue" + (opening == nil ? "" : " -i" + say)
+        case "codex": resume = "codex resume --no-daemon --last" + modelFlags + say  // 只找当前文件夹里的对话；不走后台服务，关掉立刻让出
+        case "cursor": resume = "agent --continue" + modelFlags + say
+        case "agy": resume = "agy --continue" + modelFlags + (opening == nil ? "" : " -i" + say)
         default: return freshCommand(nil)
         }
         return "s=$(date +%s); \(resume); c=$?; "
@@ -337,13 +365,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
         }
     }
 
-    /// 左边：顶部一条「聊天 | 终端」切换，下面放当前的视图
+    /// 左边：顶部一条「聊天 | 终端 | 设置」切换，下面放当前的视图
     func buildLeft() {
         leftBox = NSView(frame: NSRect(x: 0, y: 0, width: 760, height: 800))
         leftBox.wantsLayer = true
         leftBox.layer?.backgroundColor = chatBackground.cgColor
 
-        segment = NSSegmentedControl(labels: ["聊天", "终端"], trackingMode: .selectOne,
+        segment = NSSegmentedControl(labels: ["聊天", "终端", "设置"], trackingMode: .selectOne,
                                      target: self, action: #selector(segmentChanged(_:)))
         segment.translatesAutoresizingMaskIntoConstraints = false
         segment.controlSize = .small
@@ -431,20 +459,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
 
     /// 切换左边。opening：要不要发开场交代（打开项目时要，来回切换时不要）
     func showLeft(_ view: LeftView, opening: Bool, chatMode: String = "continue") {
+        let who = Dispatcher.forProject(project)
+        let canChat = who?.hasChat == true
+        segment.setEnabled(canChat, forSegment: 0)
+        segment.setToolTip(canChat ? nil : "这位调度员暂时只能用终端视图", forSegment: 0)
+        segment.setEnabled(who != nil, forSegment: 1)
+
         if view == .config {
-            if leftView == .chat { closeChatOnServer() }
+            if leftView == .chat { closeChatOnServer(clearView: false) }
             stopTerminal()
             place(configWeb)
             leftView = .config
             loadConfig()
-            segment.selectedSegment = -1
+            segment.selectedSegment = 2
             window.makeFirstResponder(configWeb)
             return
         }
-        let canChat = Dispatcher.forProject(project)?.hasChat == true
         let target: LeftView = (view == .chat && canChat) ? .chat : .terminal
-        segment.setEnabled(canChat, forSegment: 0)
-        segment.setToolTip(canChat ? nil : "这位调度员暂时只能用终端视图", forSegment: 0)
 
         if target == .chat {
             place(chatWeb)
@@ -543,7 +574,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
             UserDefaults.standard.set(who, forKey: Dispatcher.key(for: project))
         }
         updateTitle()
-        showLeft(preferredLeft(), opening: true)
+        let firstConnect = (chatLoadedKey == nil)
+        showLeft(preferredLeft(), opening: firstConnect)
         loadPanel()
     }
 
@@ -579,7 +611,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
     }
 
     @objc func segmentChanged(_ sender: NSSegmentedControl) {
-        showLeft(sender.selectedSegment == 0 ? .chat : .terminal, opening: false)
+        switch sender.selectedSegment {
+        case 0: showLeft(.chat, opening: false)
+        case 1: showLeft(.terminal, opening: false)
+        default: showLeft(.config, opening: false)
+        }
     }
 
     // MARK: 右边：本机数据服务 + 面板页面

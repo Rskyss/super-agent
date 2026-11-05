@@ -1,5 +1,5 @@
 :root {
-  /* 布局：标题与说明 → 调度员一行 → 执行员三行（每行：岗位 | 选人 | 检测状态）→ 底部按钮；同一套夜间配色 */
+  /* 布局：标题与说明 → 调度员一行 → 执行员三行（每行：岗位 | 选人 | 检测状态 | 检测生效）→ 底部按钮；同一套夜间配色 */
   --night: #0b1220;
   --left: #0d1524;
   --rail: #26364f;
@@ -19,13 +19,17 @@ h1 { margin: 0; font-size: 20px; font-weight: 500; }
 .lead { color: var(--dim); margin: 4px 0 18px; max-width: 62ch; }
 .problem { color: var(--stop); margin: 0 0 12px; }
 h2 { font-size: 13px; color: var(--dim); font-weight: 500; margin: 18px 0 8px; }
-.member { display: grid; grid-template-columns: 92px minmax(150px, 210px) minmax(0, 1fr); gap: 14px; align-items: center; padding: 12px 14px; border: 1px solid #1f2d44; border-radius: 12px; margin-bottom: 8px; background: #0f1a2b; }
-.role { font-weight: 500; }
+.member { display: grid; grid-template-columns: 92px minmax(220px, 310px) minmax(0, 1fr) auto; gap: 14px; align-items: start; padding: 12px 14px; border: 1px solid #1f2d44; border-radius: 12px; margin-bottom: 8px; background: #0f1a2b; }
+.role { font-weight: 500; padding-top: 4px; }
 .role small { display: block; color: var(--dim); font-weight: 400; font-size: 12px; }
-.pick { display: grid; gap: 6px; }
+.pick { display: grid; gap: 7px; }
+.model-box { display: grid; gap: 6px; padding-top: 2px; }
+.model-row { display: grid; grid-template-columns: 58px minmax(0, 1fr); align-items: center; gap: 6px; }
+.model-lbl { font-size: 12px; color: var(--dim); }
+.model-sub { font-size: 12px; padding: 5px 8px; background: #111d31; border-color: #22324a; color: #d5e0f0; }
 select, input { font: inherit; color: var(--text); background: #15233a; border: 1px solid #2a3b56; border-radius: 8px; padding: 6px 10px; width: 100%; }
-select:focus-visible, input:focus-visible, .btn:focus-visible, .retry:focus-visible { outline: 2px solid var(--signal); outline-offset: 2px; }
-.state { font-size: 13px; color: var(--dim); display: flex; align-items: flex-start; gap: 8px; flex-wrap: wrap; min-height: 22px; }
+select:focus-visible, input:focus-visible, .btn:focus-visible, .check-one:focus-visible { outline: 2px solid var(--signal); outline-offset: 2px; }
+.state { font-size: 13px; color: var(--dim); display: flex; align-items: flex-start; gap: 8px; flex-wrap: wrap; min-height: 22px; padding-top: 6px; }
 .state .dot { width: 8px; height: 8px; border-radius: 50%; background: #3a4a63; flex: none; margin-top: 7px; }
 .state .txt { flex: 1 1 0; min-width: 0; }  /* 原因再长也和圆点同一行，在自己里面折行 */
 .state.run { color: var(--signal); }
@@ -35,7 +39,9 @@ select:focus-visible, input:focus-visible, .btn:focus-visible, .retry:focus-visi
 .state.bad { color: var(--stop); }
 .state.bad .dot { background: var(--stop); }
 .state .how { color: #c7d2e2; font-size: 12px; width: 100%; padding-left: 16px; }
-.retry { font: inherit; font-size: 12px; color: var(--signal); background: none; border: 0; cursor: pointer; padding: 0; margin-left: 8px; text-decoration: underline; }
+.check-one { font: inherit; font-size: 12px; white-space: nowrap; color: var(--signal); background: transparent; border: 1px solid #5a4a2c; border-radius: 8px; padding: 4px 10px; margin-top: 2px; cursor: pointer; }
+.check-one:hover:not(:disabled) { border-color: var(--signal); }
+.check-one:disabled { color: var(--dim); border-color: #2a3b56; cursor: default; }
 .note { font-size: 12px; color: #6a7a92; margin: 6px 2px 0; }
 .note.warn { color: var(--signal); }
 .bar { display: flex; align-items: center; gap: 12px; margin-top: 22px; flex-wrap: wrap; }
@@ -47,4 +53,9 @@ select:focus-visible, input:focus-visible, .btn:focus-visible, .retry:focus-visi
 .summary.bad { color: var(--stop); }
 @keyframes beat { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; } }
-@media (max-width: 640px) { .member { grid-template-columns: 1fr; } }
+/* 窗口窄时状态文字换到下一行占满，不被按钮挤成一字一行 */
+@media (max-width: 800px) {
+  .member { grid-template-columns: 92px minmax(0, 1fr) auto; }
+  .state { grid-column: 1 / -1; grid-row: 2; padding-top: 0; }
+  .check-one { grid-column: 3; grid-row: 1; }
+}

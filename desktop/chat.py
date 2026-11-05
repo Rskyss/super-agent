@@ -10,6 +10,7 @@ import threading
 from datetime import datetime
 from pathlib import Path
 
+from collab.config import DEFAULT_MODELS, ConfigError, load_models
 from collab.flow import summarize
 from desktop.dispatchers.codex import CodexDispatcher
 from desktop.opening import opening
@@ -17,9 +18,17 @@ from desktop.opening import opening
 _NAMES = {"codex": "Codex", "claude": "Claude", "cursor": "Cursor", "agy": "agy"}
 
 
+def _codex_factory(project, emit, background, marker):
+    try:
+        models = load_models(project)
+    except ConfigError:
+        models = DEFAULT_MODELS
+    return CodexDispatcher(project, emit, background=background, marker=marker,
+                           model=models.get("codex"), effort=models.get("codex_effort"))
+
+
 def default_factories() -> dict:
-    return {"codex": lambda project, emit, background, marker: CodexDispatcher(
-        project, emit, background=background, marker=marker)}
+    return {"codex": _codex_factory}
 
 
 class ChatSession:

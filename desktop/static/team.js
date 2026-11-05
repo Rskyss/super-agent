@@ -1,12 +1,36 @@
-/* 团队配置页：选调度员和三位执行员 → 检测连通（后台逐个出结果）→ 全部通了才能保存 → 通知窗口切到对话。
-   调度员没有默认值：必须用户亲手选。 */
-(function () {
-  "use strict";
+/* 团队与模型配置页：选调度员和三位执行员 + 各家工具具体使用的模型 → 每行各自“检测生效”或直接保存 → 通知窗口切到对话。
+   调度员没有默认值：第一次必须用户亲手选。 */
+"use strict";
+
+/* 规则层：不碰页面，tests/team_page_check.js 用 node 直接检查。 */
+var TeamCore = {
+  // 选“不复查”的那行不用测
+  needsCheck: function (team, role) { return !(role === "reviewer" && team.reviewer === "none"); },
+  // 这一行和哪些行用同一家工具：同一家共用一套模型，一起测、一起失效
+  rolesSharingTool: function (team, role, active) {
+    if (!TeamCore.needsCheck(team, role)) return [];
+    return active.filter(function (r) { return team[r] === team[role] && TeamCore.needsCheck(team, r); });
+  },
+  // 第一次配置要全员测通；已配置的项目没测的不拦，只拦标红的
+  canSave: function (s) {
+    if (s.busy || !s.team.dispatcher) return false;
+    var need = s.active.filter(function (r) { return TeamCore.needsCheck(s.team, r); });
+    if (need.some(function (r) { return s.results[r] && !s.results[r].ok; })) return false;
+    return s.configured || need.every(function (r) { return s.results[r] && s.results[r].ok; });
+  },
+};
+if (typeof module !== "undefined") module.exports = TeamCore;
+
+if (typeof document !== "undefined") (function () {
   var params = new URLSearchParams(location.search);
   var project = params.get("project") || "", token = params.get("token") || "";
   var savedDispatcher = params.get("dispatcher") || "";   // 没接入的文件夹，调度员存在窗口自己的设置里
   var ROLE = { dispatcher: "调度员", tester: "写测试", developer: "写代码", reviewer: "复查" };
-  var rows = {}, info = null, results = {}, timer = null, installed = true;
+  var ALL_ROLES = ["dispatcher", "tester", "developer", "reviewer"];
+  var rows = {}, info = null, results = {}, installed = true;
+  var pending = {}, runSeq = 0;   // pending：岗位 -> 正在等第几次检测的结果；改了这一行就不再等
+  var currentModels = { codex: "gpt-6.1-sol", codex_effort: "xhigh", cursor: "auto", agy: "gemini-4-argon-high" };
+  var modelOptions = { codex: [], codex_effort: [], cursor: [], agy: [] };
   document.querySelectorAll(".member").forEach(function (m) { rows[m.getAttribute("data-role")] = m; });
   function $(id) { return document.getElementById(id); }
 
@@ -15,13 +39,17 @@
       body: JSON.stringify(Object.assign({ project: project }, body)) })
       .then(function (r) { return r.json().then(function (d) { if (!r.ok) throw new Error(d.error || "出错了"); return d; }); });
   }
-  function get(path) {
-    return fetch(path + "?" + new URLSearchParams({ project: project, token: token }).toString())
+  function get(path, extra) {
+    return fetch(path + "?" + new URLSearchParams(Object.assign({ project: project, token: token }, extra)).toString())
       .then(function (r) { return r.json().then(function (d) { if (!r.ok) throw new Error(d.error || "出错了"); return d; }); });
   }
 
+  function toolSelect(role) {
+    return rows[role].querySelector(".tool-select") || rows[role].querySelector("select");
+  }
+
   function fill(role, options, value) {
-    var sel = rows[role].querySelector("select");
+    var sel = toolSelect(role);
     sel.innerHTML = "";
     if (role === "dispatcher") options = [{ value: "", label: "请选择…" }].concat(options, [{ value: "custom", label: "自定义命令…" }]);
     options.forEach(function (o) { var op = document.createElement("option"); op.value = o.value; op.textContent = o.label; sel.appendChild(op); });
@@ -34,43 +62,177 @@
     }
     sel.addEventListener("change", function () {
       if (role === "dispatcher") rows.dispatcher.querySelector(".custom").hidden = sel.value !== "custom";
-      reset();
+      renderRoleModelBox(role);
+      invalidate([role]);
     });
   }
 
+  function renderRoleModelBox(role) {
+    var box = rows[role].querySelector(".model-box");
+    if (!box) return;
+    var tool = toolSelect(role).value;
+    if (tool !== "codex" && tool !== "cursor" && tool !== "agy") {
+      box.hidden = true;
+      box.innerHTML = "";
+      return;
+    }
+    box.hidden = false;
+    box.innerHTML = "";
+
+    var opts = (modelOptions[tool] || []).slice();
+    var curVal = currentModels[tool] || "";
+    var inPreset = opts.some(function (o) { return o.value === curVal; });
+    if (curVal && !inPreset) {
+      opts.unshift({ value: curVal, label: curVal + "（当前）" });
+    }
+    opts.push({ value: "__custom__", label: "其他自定义模型名…" });
+
+    var row1 = document.createElement("div");
+    row1.className = "model-row";
+    var lbl1 = document.createElement("span");
+    lbl1.className = "model-lbl";
+    lbl1.textContent = "使用模型";
+    var sel1 = document.createElement("select");
+    sel1.className = "model-sub";
+    sel1.setAttribute("aria-label", ROLE[role] + "模型");
+    opts.forEach(function (o) {
+      var op = document.createElement("option");
+      op.value = o.value;
+      op.textContent = o.label;
+      sel1.appendChild(op);
+    });
+    sel1.value = curVal || (opts[0] && opts[0].value) || "";
+    row1.appendChild(lbl1);
+    row1.appendChild(sel1);
+    box.appendChild(row1);
+
+    var customInput = document.createElement("input");
+    customInput.type = "text";
+    customInput.className = "model-sub model-custom";
+    customInput.placeholder = "输入模型名，例如 " + (curVal || "gpt-6.1-sol");
+    customInput.hidden = true;
+    box.appendChild(customInput);
+
+    sel1.addEventListener("change", function () {
+      if (sel1.value === "__custom__") {
+        customInput.hidden = false;
+        customInput.value = currentModels[tool] || "";
+        customInput.focus();
+      } else {
+        customInput.hidden = true;
+        currentModels[tool] = sel1.value;
+        if (tool === "codex") renderRoleModelBox(role);
+        syncOtherModelBoxes(role);
+        onModelModified(role);
+      }
+    });
+    customInput.addEventListener("input", function () {
+      var v = customInput.value.trim();
+      if (v) {
+        currentModels[tool] = v;
+        syncOtherModelBoxes(role);
+        onModelModified(role);
+      }
+    });
+
+    if (tool === "codex") {
+      var matched = (modelOptions.codex || []).find(function (m) { return m.value === currentModels.codex; });
+      var allowedEfforts = (matched && matched.efforts && matched.efforts.length) ? matched.efforts : null;
+      var effortOpts = (modelOptions.codex_effort || []).filter(function (o) {
+        return !allowedEfforts || allowedEfforts.indexOf(o.value) !== -1;
+      });
+      if (effortOpts.length && !effortOpts.some(function (o) { return o.value === currentModels.codex_effort; })) {
+        currentModels.codex_effort = effortOpts[effortOpts.length - 1].value;
+      }
+      var row2 = document.createElement("div");
+      row2.className = "model-row";
+      var lbl2 = document.createElement("span");
+      lbl2.className = "model-lbl";
+      lbl2.textContent = "思考强度";
+      var sel2 = document.createElement("select");
+      sel2.className = "model-sub";
+      sel2.setAttribute("aria-label", ROLE[role] + "思考强度");
+      effortOpts.forEach(function (o) {
+        var op = document.createElement("option");
+        op.value = o.value;
+        op.textContent = o.label;
+        sel2.appendChild(op);
+      });
+      sel2.value = currentModels.codex_effort || "xhigh";
+      sel2.addEventListener("change", function () {
+        currentModels.codex_effort = sel2.value;
+        syncOtherModelBoxes(role);
+        onModelModified(role);
+      });
+      row2.appendChild(lbl2);
+      row2.appendChild(sel2);
+      box.appendChild(row2);
+    }
+  }
+
+  function syncOtherModelBoxes(changedRole) {
+    ALL_ROLES.forEach(function (r) {
+      if (r !== changedRole) renderRoleModelBox(r);
+    });
+  }
+
+  function renderAllModelBoxes() {
+    ALL_ROLES.forEach(renderRoleModelBox);
+  }
+
   function team() {
-    var disp = rows.dispatcher.querySelector("select").value;
+    var disp = toolSelect("dispatcher").value;
     if (disp === "custom") {
       var cmd = rows.dispatcher.querySelector(".custom").value.trim();
       disp = cmd ? "custom:" + cmd : "";
     }
-    return { dispatcher: disp, tester: rows.tester.querySelector("select").value,
-             developer: rows.developer.querySelector("select").value, reviewer: rows.reviewer.querySelector("select").value };
+    return { dispatcher: disp, tester: toolSelect("tester").value,
+             developer: toolSelect("developer").value, reviewer: toolSelect("reviewer").value };
   }
-  function activeRoles() { return installed ? ["dispatcher", "tester", "developer", "reviewer"] : ["dispatcher"]; }
+  function activeRoles() { return installed ? ALL_ROLES : ["dispatcher"]; }
+  function isAlreadyConfigured() {
+    return (installed && info && info.team && info.team.configured) || (!installed && !!savedDispatcher);
+  }
 
-  function setState(role, cls, text, how, retry) {
+  function setState(role, cls, text, how) {
     var s = rows[role].querySelector(".state");
     s.className = "state " + cls;
     s.innerHTML = '<span class="dot"></span><span class="txt"></span>';
-    var txt = s.querySelector(".txt");
-    txt.textContent = text;
-    if (retry) {  // 放在文字里面跟着折行，原因长时不会被挤到单独一行
-      var b = document.createElement("button");
-      b.className = "retry"; b.type = "button"; b.textContent = "重试";
-      b.addEventListener("click", function () { check([role]); });
-      txt.appendChild(b);
-    }
+    s.querySelector(".txt").textContent = text;
     if (how) { var h = document.createElement("span"); h.className = "how"; h.textContent = "怎么办：" + how; s.appendChild(h); }
   }
 
-  function reset() {
-    results = {};
+  function setIdle(role, changed) {
     var t = team();
-    activeRoles().forEach(function (r) { setState(r, "", r === "reviewer" && t.reviewer === "none" ? "不复查，不用检测" : "还没检测"); });
-    $("save").disabled = true;
-    $("summary").className = "summary";
-    $("summary").textContent = "每人会在临时文件夹里试着建一个文件，大约半分钟到一分钟，会用掉一点点额度。";
+    if (!TeamCore.needsCheck(t, role)) setState(role, "", "不复查，不用检测");
+    else if (!isAlreadyConfigured() || (role === "dispatcher" && !t.dispatcher)) setState(role, "", "还没检测");
+    else if (changed) setState(role, "", "已调整，还没检测");
+    else setState(role, "ok", "已配置");
+  }
+
+  function refresh() {
+    var t = team(), active = activeRoles(), configured = isAlreadyConfigured();
+    var busy = Object.keys(pending).length > 0;
+    ALL_ROLES.forEach(function (r) {
+      var b = rows[r].querySelector(".check-one");
+      b.hidden = !TeamCore.needsCheck(t, r);
+      b.disabled = !!pending[r] || (r === "dispatcher" && !t.dispatcher);
+      b.textContent = pending[r] ? "检测中…" : "检测生效";
+      b.setAttribute("aria-label", ROLE[r] + (pending[r] ? "检测中" : "检测生效"));
+    });
+    $("save").textContent = configured ? "保存并返回对话" : "保存并开始";
+    $("save").disabled = !TeamCore.canSave({ team: t, active: active, results: results, configured: configured, busy: busy });
+
+    var need = active.filter(function (r) { return TeamCore.needsCheck(t, r); });
+    var bad = need.filter(function (r) { return results[r] && !results[r].ok; });
+    var sum = $("summary");
+    sum.className = "summary";
+    if (busy) sum.textContent = "正在检测，这一行出结果前先不能保存。";
+    else if (bad.length) { sum.className = "summary bad"; sum.textContent = bad.length + " 位没通，处理好后再点“检测生效”，或换一家 / 换个模型。"; }
+    else if (need.every(function (r) { return results[r] && results[r].ok; })) { sum.className = "summary ok"; sum.textContent = "全部通了，可以保存。"; }
+    else if (configured) sum.textContent = "改了谁就点谁后面的“检测生效”，也可以直接保存。";
+    else sum.textContent = "每个角色都测通才能保存。每次大约半分钟到一分钟，会用掉一点点额度。";
+
     $("sameWarn").hidden = !(installed && t.developer === t.reviewer);
     var d = t.dispatcher;
     $("dispNote").textContent = !d ? "调度员必须你亲手选。"
@@ -78,38 +240,64 @@
       : (d.indexOf("custom:") === 0 ? "自定义调度员用终端视图，检测只能查“装没装”。" : "先用终端视图（聊天视图目前只接了 Codex）。");
   }
 
+  // 改了选择：只清这几行的结果；还在路上的检测结果也不再要（它测的是改之前的选择）
+  function invalidate(roles) {
+    roles.forEach(function (r) { delete results[r]; delete pending[r]; setIdle(r, true); });
+    refresh();
+  }
+
+  function onModelModified(role) {
+    invalidate(TeamCore.rolesSharingTool(team(), role, activeRoles()));
+  }
+
   function apply(r) {
     results[r.role] = r;
-    var text = r.reason + (r.shared_with ? "（和" + ROLE[r.shared_with] + "同一家，只测一次）" : "");
-    setState(r.role, r.ok ? "ok" : "bad", text, r.ok ? "" : r.how, !r.ok && r.status !== "unset");
+    var shared = r.shared_with && team()[r.shared_with] === team()[r.role];
+    setState(r.role, r.ok ? "ok" : "bad", r.reason + (shared ? "（和" + ROLE[r.shared_with] + "同一家，一起测过）" : ""), r.ok ? "" : r.how);
   }
 
-  function finish() {
-    $("check").disabled = false;
-    $("check").textContent = "重新检测";
-    var roles = activeRoles(), bad = roles.filter(function (r) { return results[r] && !results[r].ok; });
-    var allOk = roles.every(function (r) { return results[r] && results[r].ok; });
-    if (allOk) { $("summary").className = "summary ok"; $("summary").textContent = "全部通了，可以开始。"; $("save").disabled = false; }
-    else if (bad.length) { $("summary").className = "summary bad"; $("summary").textContent = bad.length + " 位没通，处理好后点重试，或换一家。"; }
-  }
+  function waitingOn(id, roles) { return roles.filter(function (r) { return pending[r] === id; }); }
 
-  function check(roles) {
-    var t = team();
-    if (!t.dispatcher) { $("summary").className = "summary bad"; $("summary").textContent = "先选一位调度员。"; return; }
-    roles = roles || activeRoles();
-    roles.forEach(function (r) {
-      if (!(r === "reviewer" && t.reviewer === "none")) setState(r, "run", "检测中…在临时文件夹里试着建一个文件");
+  // 这次检测没给出结果的行标红，不能让它一直停在“检测中”
+  function giveUp(id, roles, message) {
+    waitingOn(id, roles).forEach(function (r) {
+      delete pending[r];
+      results[r] = { ok: false };
+      setState(r, "bad", message);
     });
-    $("check").disabled = true; $("save").disabled = true;
-    post("/api/team/check", { team: t, roles: roles }).then(function () {
-      clearInterval(timer);
-      timer = setInterval(function () {
-        get("/api/team/check").then(function (d) {
-          d.results.forEach(apply);
-          if (d.done) { clearInterval(timer); finish(); }
-        }).catch(function () { /* 下一次再取 */ });
-      }, 700);
-    }).catch(function (err) { $("check").disabled = false; $("summary").className = "summary bad"; $("summary").textContent = err.message; });
+    refresh();
+  }
+
+  function watch(run, id, roles) {
+    var timer = setInterval(function () {
+      if (!waitingOn(id, roles).length) { clearInterval(timer); return; }
+      get("/api/team/check", { run: run }).then(function (d) {
+        d.results.forEach(function (r) {
+          if (pending[r.role] === id) { delete pending[r.role]; apply(r); }
+        });
+        if (d.done) { clearInterval(timer); giveUp(id, roles, "这次检测没出结果，再点一次“检测生效”"); }
+        refresh();
+      }).catch(function () { /* 下一次再取 */ });
+    }, 700);
+  }
+
+  function check(role) {
+    var t = team(), roles = TeamCore.rolesSharingTool(t, role, activeRoles()), id = ++runSeq;
+    roles.forEach(function (r) {
+      delete results[r];
+      pending[r] = id;
+      setState(r, "run", "检测中…在临时文件夹里试着建一个文件");
+    });
+    refresh();
+    post("/api/team/check", { team: t, models: currentModels, roles: roles })
+      .then(function (d) { watch(d.run, id, roles); })
+      .catch(function (err) { giveUp(id, roles, err.message); });
+  }
+
+  function reset() {
+    results = {};
+    activeRoles().forEach(function (r) { setIdle(r, false); });
+    refresh();
   }
 
   function done(dispatcher) {
@@ -118,14 +306,16 @@
     setTimeout(function () { $("summary").className = "summary ok"; $("summary").textContent = "已保存。"; }, 300);
   }
 
-  $("check").addEventListener("click", function () { check(); });
+  ALL_ROLES.forEach(function (r) {
+    rows[r].querySelector(".check-one").addEventListener("click", function () { check(r); });
+  });
   $("save").addEventListener("click", function () {
     var t = team();
     if (!installed) { done(t.dispatcher); return; }
-    post("/api/team/save", { team: t }).then(function () { done(); })
+    post("/api/team/save", { team: t, models: currentModels }).then(function () { done(); })
       .catch(function (err) { $("summary").className = "summary bad"; $("summary").textContent = err.message; });
   });
-  rows.dispatcher.querySelector(".custom").addEventListener("input", reset);
+  rows.dispatcher.querySelector(".custom").addEventListener("input", function () { invalidate(["dispatcher"]); });
 
   if (!project || !token) {
     $("lead").textContent = "请从超级助手窗口打开团队配置。";
@@ -133,6 +323,8 @@
     get("/api/team").then(function (d) {
       info = d;
       installed = d.installed;
+      if (d.models) currentModels = Object.assign(currentModels, d.models);
+      if (d.model_options) modelOptions = Object.assign(modelOptions, d.model_options);
       $("workers").hidden = !installed;
       $("noGit").hidden = installed;
       if (d.problem) { $("problem").hidden = false; $("problem").textContent = "原来的配置有问题，已换成默认值：" + d.problem; }
@@ -140,6 +332,7 @@
       fill("tester", d.options.worker, d.team.tester);
       fill("developer", d.options.worker, d.team.developer);
       fill("reviewer", d.options.reviewer, d.team.reviewer);
+      renderAllModelBoxes();
       reset();
     }).catch(function (err) { $("lead").textContent = "读不到团队配置：" + err.message; });
   }

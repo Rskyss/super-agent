@@ -20,6 +20,132 @@ DEFAULT_MODELS = {
     "codex_effort": "xhigh",       # Codex 推理强度
     "agy": "gemini-4-argon-high",  # agy 备选开发
 }
+CODEX_EFFORTS = ("low", "medium", "high", "xhigh", "max", "ultra")
+
+_EFFORT_LABELS = {
+    "low": "低（low · 速度最快）",
+    "medium": "中（medium · 日常均衡）",
+    "high": "高（high · 深度思考）",
+    "xhigh": "极高（xhigh · 复杂问题）",
+    "max": "最大（max · 高难问题）",
+    "ultra": "超强（ultra · 最高推理）",
+}
+
+MODEL_OPTIONS = {
+    "codex": [
+        {"value": "gpt-6.1-sol", "label": "GPT-6.1-Sol", "efforts": ["low", "medium", "high", "xhigh", "max", "ultra"]},
+        {"value": "gpt-6-astra", "label": "GPT-6-Astra", "efforts": ["low", "medium", "high", "xhigh", "max", "ultra"]},
+        {"value": "gpt-6.1-terra", "label": "GPT-6.1 Terra", "efforts": ["low", "medium", "high", "xhigh", "max", "ultra"]},
+        {"value": "gpt-6-sol", "label": "GPT-6-Sol", "efforts": ["low", "medium", "high", "xhigh", "max", "ultra"]},
+        {"value": "gpt-6-luna", "label": "GPT-6-Luna", "efforts": ["low", "medium", "high", "xhigh", "max"]},
+        {"value": "gpt-5.6-sol", "label": "GPT-5.6-Sol", "efforts": ["low", "medium", "high", "xhigh", "max", "ultra"]},
+        {"value": "gpt-5.6-terra", "label": "GPT-5.6-Terra", "efforts": ["low", "medium", "high", "xhigh", "max", "ultra"]},
+        {"value": "gpt-5.6-luna", "label": "GPT-5.6-Luna", "efforts": ["low", "medium", "high", "xhigh", "max"]},
+    ],
+    "codex_effort": [{"value": k, "label": _EFFORT_LABELS[k]} for k in CODEX_EFFORTS],
+    "cursor": [
+        {"value": "auto", "label": "Auto（自动推荐 · 默认）"},
+        {"value": "gpt-5.6-sol-xhigh", "label": "GPT-5.6 Sol 1M Extra High"},
+        {"value": "gpt-5.6-sol-xhigh-fast", "label": "GPT-5.6 Sol 1M Extra High Fast"},
+        {"value": "gpt-5.6-sol-high", "label": "GPT-5.6 Sol 1M High"},
+        {"value": "gpt-5.6-sol-high-fast", "label": "GPT-5.6 Sol 1M High Fast"},
+        {"value": "gpt-5.6-luna-high", "label": "GPT-5.6 Luna 1M High"},
+        {"value": "gpt-5.3-codex-xhigh", "label": "Codex 5.3 Extra High"},
+        {"value": "gpt-5.3-codex-xhigh-fast", "label": "Codex 5.3 Extra High Fast"},
+        {"value": "gpt-5.3-codex-high", "label": "Codex 5.3 High"},
+        {"value": "gpt-5.3-codex-high-fast", "label": "Codex 5.3 High Fast"},
+        {"value": "gpt-5.3-codex", "label": "Codex 5.3"},
+        {"value": "gpt-5.3-codex-fast", "label": "Codex 5.3 Fast"},
+        {"value": "gpt-5.3-codex-low", "label": "Codex 5.3 Low"},
+        {"value": "gpt-5.3-codex-low-fast", "label": "Codex 5.3 Low Fast"},
+        {"value": "claude-opus-5-thinking-high", "label": "Claude Opus 5 1M Thinking"},
+        {"value": "claude-opus-5-thinking-high-fast", "label": "Claude Opus 5 1M Thinking Fast"},
+        {"value": "claude-fable-5-thinking-xhigh", "label": "Claude Fable 5 1M Extra High Thinking"},
+        {"value": "claude-fable-5-thinking-high", "label": "Claude Fable 5 1M Thinking"},
+        {"value": "claude-sonnet-5-thinking-xhigh", "label": "Claude Sonnet 5 1M Extra High Thinking"},
+        {"value": "claude-sonnet-5-thinking-high", "label": "Claude Sonnet 5 1M Thinking"},
+        {"value": "composer-2.5", "label": "Composer 2.5"},
+        {"value": "gpt-5.2", "label": "GPT-5.2"},
+        {"value": "gemini-3.7-flash-high", "label": "Gemini 3.7 Flash"},
+        {"value": "cursor-grok-4.5-high", "label": "Grok 4.5"},
+        {"value": "cursor-grok-4.5-high-fast", "label": "Grok 4.5 Fast"},
+        {"value": "grok-4.7-medium", "label": "Grok 4.7 Medium"},
+        {"value": "grok-4.7-low", "label": "Grok 4.7 Low"},
+        {"value": "grok-4.7-low-fast", "label": "Grok 4.7 Low Fast"},
+    ],
+    "agy": [
+        {"value": "gemini-4-argon-high", "label": "Gemini 4 Argon (High · 默认)"},
+        {"value": "gemini-4-argon-medium", "label": "Gemini 4 Argon (Medium)"},
+        {"value": "gemini-4-argon-low", "label": "Gemini 4 Argon (Low)"},
+        {"value": "gemini-3.8-flash-high", "label": "Gemini 3.8 Flash (High)"},
+        {"value": "gemini-3.8-flash-medium", "label": "Gemini 3.8 Flash (Medium)"},
+        {"value": "gemini-3.8-flash-low", "label": "Gemini 3.8 Flash (Low)"},
+        {"value": "claude-opus-5-5-high", "label": "Claude Opus 5.5 (High)"},
+        {"value": "claude-opus-5-5-medium", "label": "Claude Opus 5.5 (Medium)"},
+        {"value": "claude-opus-5-5-low", "label": "Claude Opus 5.5 (Low)"},
+        {"value": "claude-sonnet-5-5-high", "label": "Claude Sonnet 5.5 (High)"},
+        {"value": "claude-sonnet-5-5-medium", "label": "Claude Sonnet 5.5 (Medium)"},
+        {"value": "claude-sonnet-5-5-low", "label": "Claude Sonnet 5.5 (Low)"},
+        {"value": "gpt-oss-120b-medium", "label": "GPT-OSS 120B (Medium)"},
+    ],
+}
+
+
+def load_model_options(home_dir=None) -> dict:
+    """从本机各家 CLI 同步好的本地目录文件里读取最新模型与思考档位（0 秒读取，未登录或文件不存在时用内置清单兜底）。"""
+    home = Path(home_dir) if home_dir else Path.home()
+    opts = {k: [dict(item) for item in v] for k, v in MODEL_OPTIONS.items()}
+
+    # 1. 读取 Codex 本机模型目录 (~/.codex/models_cache.json)
+    codex_cache = home / ".codex" / "models_cache.json"
+    if codex_cache.is_file():
+        try:
+            raw = json.loads(codex_cache.read_text(encoding="utf-8"))
+            codex_list = []
+            seen_efforts = []
+            for m in raw.get("models") or []:
+                if not isinstance(m, dict) or m.get("visibility") != "list":
+                    continue
+                slug = (m.get("slug") or "").strip()
+                if not slug:
+                    continue
+                disp = (m.get("display_name") or slug).strip()
+                efforts = [
+                    e.get("effort")
+                    for e in (m.get("supported_reasoning_levels") or [])
+                    if isinstance(e, dict) and e.get("effort")
+                ]
+                for ef in efforts:
+                    if ef not in seen_efforts:
+                        seen_efforts.append(ef)
+                codex_list.append({"value": slug, "label": disp, "efforts": efforts or list(CODEX_EFFORTS)})
+            if codex_list:
+                opts["codex"] = codex_list
+            if seen_efforts:
+                opts["codex_effort"] = [
+                    {"value": ef, "label": _EFFORT_LABELS.get(ef, ef)} for ef in seen_efforts
+                ]
+        except (OSError, ValueError):
+            pass
+
+    # 2. 读取 Cursor 本机配置 (~/.cursor/cli-config.json) 中用户使用过的自定义/新模型并补充
+    cursor_cfg = home / ".cursor" / "cli-config.json"
+    if cursor_cfg.is_file():
+        try:
+            raw = json.loads(cursor_cfg.read_text(encoding="utf-8"))
+            known = {x["value"] for x in opts["cursor"]}
+            for cand in [
+                (raw.get("model") or {}).get("displayModelId"),
+                (raw.get("selectedModel") or {}).get("modelId"),
+                *(raw.get("modelSelectionHistory") or []),
+            ]:
+                if isinstance(cand, str) and cand.strip() and cand not in ("default", "") and cand not in known:
+                    opts["cursor"].insert(1, {"value": cand, "label": cand})
+                    known.add(cand)
+        except (OSError, ValueError):
+            pass
+
+    return opts
 
 CONFIG_FILE = "配置.json"
 
@@ -85,6 +211,27 @@ def save_team(project_dir, team: dict) -> None:
         clean[role] = value
     data = _read(project_dir)
     data["team"] = clean
+    path = _config_path(project_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def save_models(project_dir, models: dict) -> None:
+    """把各家工具选定的模型与思考档位存进 .collab/配置.json，其他设置原样保留。"""
+    if not isinstance(models, dict):
+        raise ConfigError("模型配置格式不对")
+    clean = {}
+    for key in DEFAULT_MODELS:
+        if key not in models or models[key] is None:
+            continue
+        val = str(models[key]).strip()
+        if not val:
+            raise ConfigError(f"{key} 的模型名不能为空")
+        if key == "codex_effort" and val not in CODEX_EFFORTS:
+            raise ConfigError(f"Codex 思考档位不能是 {val!r}：可选 {'、'.join(CODEX_EFFORTS)}")
+        clean[key] = val
+    data = _read(project_dir)
+    data.update(clean)
     path = _config_path(project_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

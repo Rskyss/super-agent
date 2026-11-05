@@ -19,6 +19,7 @@ import socketserver
 import sys
 import threading
 import time
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
@@ -28,7 +29,16 @@ if str(ROOT) not in sys.path:  # 直接用 python3 desktop/server.py 启动时�
     sys.path.insert(0, str(ROOT))
 
 from collab.check import check_team  # noqa: E402
-from collab.config import DEFAULT_TEAM, ConfigError, load_team, save_team  # noqa: E402
+from collab.config import (  # noqa: E402
+    DEFAULT_MODELS,
+    DEFAULT_TEAM,
+    ConfigError,
+    load_model_options,
+    load_models,
+    load_team,
+    save_models,
+    save_team,
+)
 from desktop.chat import ChatHub  # noqa: E402
 from desktop.shell_path import adopt_terminal_path  # noqa: E402
 from desktop.view import card_view, event_text, list_cards  # noqa: E402
@@ -154,14 +164,16 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/team":
             try:
                 team = load_team(project)
+                models = load_models(project)
             except ConfigError as exc:
-                team, problem = dict(DEFAULT_TEAM, dispatcher=None, configured=False), str(exc)
+                team, models, problem = dict(DEFAULT_TEAM, dispatcher=None, configured=False), dict(DEFAULT_MODELS), str(exc)
             else:
                 problem = ""
-            self._json({"team": team, "problem": problem, "git": (Path(project) / ".git").exists(),
-                        "installed": (Path(project) / ".collab").is_dir(), "options": _TEAM_OPTIONS})
+            self._json({"team": team, "models": models, "problem": problem, "git": (Path(project) / ".git").exists(),
+                        "installed": (Path(project) / ".collab").is_dir(), "options": _TEAM_OPTIONS,
+                        "model_options": load_model_options()})
         elif path == "/api/team/check":
-            state = self.server.checks.get(str(Path(project).resolve()))
+            state = self.server.checks.get((str(Path(project).resolve()), query.get("run", "")))
             if state is None:
                 self._json({"results": [], "done": True, "started": False})
                 return
@@ -181,15 +193,18 @@ class Handler(BaseHTTPRequestHandler):
                 return
             try:
                 save_team(project, body.get("team") or {})
+                if body.get("models") is not None:
+                    save_models(project, body.get("models") or {})
             except ConfigError as exc:
                 self._json({"error": str(exc)}, 400)
                 return
             self._json({"ok": True})
         elif path == "/api/team/check":
             team = body.get("team") or {}
-            key = str(Path(project).resolve())
+            models = body.get("models")
+            run_id = uuid.uuid4().hex  # 每次检测各记各的：几个岗位同时测，互不覆盖
             state = {"results": [], "done": False, "lock": threading.Lock()}
-            self.server.checks[key] = state
+            self.server.checks[(str(Path(project).resolve()), run_id)] = state
 
             def collect(item):
                 with state["lock"]:
@@ -197,13 +212,13 @@ class Handler(BaseHTTPRequestHandler):
 
             def run():
                 try:
-                    check_team(project, team=team, on_result=collect, roles=body.get("roles"))
+                    check_team(project, team=team, on_result=collect, roles=body.get("roles"), models=models)
                 finally:
                     with state["lock"]:
                         state["done"] = True
 
             threading.Thread(target=run, daemon=True).start()
-            self._json({"ok": True})
+            self._json({"ok": True, "run": run_id})
         else:
             self._json({"error": "没有这个地址"}, 404)
 
@@ -280,7 +295,7 @@ def make_server(port: int = 0, token=None, hub=None) -> ThreadingHTTPServer:
     server = LocalServer(("127.0.0.1", port), Handler)
     server.token = token          # 聊天口令；没有就不开放聊天
     server.hub = hub if hub is not None else ChatHub()
-    server.checks = {}            # 项目 -> 这次检测连通的进度
+    server.checks = {}            # (项目, 第几次检测) -> 这次检测连通的进度
     return server
 
 

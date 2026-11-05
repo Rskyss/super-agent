@@ -179,12 +179,20 @@ class CodexDispatcher:
 
     def __init__(self, project, emit, background: str = "", marker: str = "【超级助手自动交代】",
                  command=("codex", "app-server"), writer_wait: float = WRITER_WAIT_SECONDS,
-                 writer_poll: float = WRITER_POLL_SECONDS):
+                 writer_poll: float = WRITER_POLL_SECONDS, model: str = None, effort: str = None):
         self.project = str(Path(project).resolve())
         self.emit = emit
         self.background = background
         self.marker = marker
-        self.command = list(command)
+        self.model = model
+        self.effort = effort
+        cmd = list(command)
+        if cmd == ["codex", "app-server"]:
+            if model:
+                cmd.extend(["-c", f'model="{model}"'])
+            if effort:
+                cmd.extend(["-c", f'model_reasoning_effort="{effort}"'])
+        self.command = cmd
         self.writer_wait = writer_wait
         self.writer_poll = writer_poll
         self.proc = None
