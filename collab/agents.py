@@ -83,12 +83,21 @@ def _stop(proc) -> None:
     proc.wait()
 
 
-def watched_runner(cmd, cwd, timeout, quiet_limit=QUIET_LIMIT, poll=POLL_SECONDS):
+def _output_file(live_path):
+    """给了实时输出位置就写进去（桌面窗口能边看边刷新），否则用用完即删的临时文件。"""
+    if live_path:
+        Path(live_path).parent.mkdir(parents=True, exist_ok=True)
+        return open(live_path, "w+", encoding="utf-8", errors="replace")
+    return tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace")
+
+
+def watched_runner(cmd, cwd, timeout, quiet_limit=QUIET_LIMIT, poll=POLL_SECONDS, live_path=None):
     """边跑边看：总时长超过 timeout 抛 TimeoutExpired；副本里连续 quiet_limit 秒
-    没有任何文件变化抛 QuietTimeout。输出写临时文件，避免管道写满卡住。"""
+    没有任何文件变化抛 QuietTimeout。输出写文件，避免管道写满卡住；
+    live_path 给了就写到那里并保留，供实时查看。"""
     started = time.time()
     last_activity = started
-    with tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace") as out:
+    with _output_file(live_path) as out:
         proc = subprocess.Popen(cmd, cwd=cwd, stdout=out, stderr=subprocess.STDOUT,
                                 stdin=subprocess.DEVNULL, text=True, start_new_session=True)
         try:
@@ -115,15 +124,17 @@ def subprocess_runner(cmd, cwd, timeout):
 
 
 def ask(adapter: str, prompt: str, cwd, expect_file=None, timeout=DEFAULT_TIMEOUT,
-        runner=watched_runner, models=None) -> AgentResult:
+        runner=watched_runner, models=None, live_path=None) -> AgentResult:
     """让某家工具执行一次任务。成功条件：退出码 0，且（若指定）期望文件真的存在。
     models 缺省时用包默认值；派发程序应传入 load_models(项目目录) 的结果。
-    默认带看门人：长时间没动静会被停掉，并且不重试（卡住的再跑一遍多半还是卡住）。"""
+    默认带看门人：长时间没动静会被停掉，并且不重试（卡住的再跑一遍多半还是卡住）。
+    live_path：实时输出写到哪里（流转记录预留的位置），不给就不保留。"""
     cmd = _build(adapter, prompt, models or DEFAULT_MODELS)  # 未知适配器直接报错
+    extra = {"live_path": live_path} if live_path else {}  # 旧的 runner 不认这个参数，不给就不传
     output = ""
     for attempt in range(1, MAX_ATTEMPTS + 1):
         try:
-            code, output = runner(cmd, cwd, timeout)
+            code, output = runner(cmd, cwd, timeout, **extra)
         except QuietTimeout as exc:
             return AgentResult(ok=False, output=f"看门人：{exc}，已停止", attempts=attempt)
         except subprocess.TimeoutExpired:

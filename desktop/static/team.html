@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>超级助手 · 团队配置</title>
+<link rel="stylesheet" href="/static/team.css">
+</head>
+<body>
+<main class="cfg" aria-label="团队配置">
+  <h1>这个项目由谁来干？</h1>
+  <p class="lead" id="lead">选好调度员和三位执行员，点“检测连通”确认每个人都能真的干活，再开始。以后可以在菜单「项目 → 团队配置…」里改。</p>
+  <p class="problem" id="problem" hidden></p>
+
+  <h2>调度员 · 和你对话、拆需求、派活</h2>
+  <div class="member" data-role="dispatcher">
+    <div class="role">调度员<small>你的直接对接人</small></div>
+    <div class="pick"><select aria-label="调度员"></select><input type="text" class="custom" placeholder="启动调度员的命令，例如 qwen" aria-label="自定义调度员命令" hidden></div>
+    <div class="state"><span class="dot"></span><span class="txt">还没检测</span></div>
+  </div>
+  <p class="note" id="dispNote"></p>
+
+  <section id="workers">
+    <h2>执行员 · 按顺序接力：先写测试，再写代码，最后复查</h2>
+    <div class="member" data-role="tester">
+      <div class="role">写测试<small>先按验收标准写测试</small></div>
+      <div class="pick"><select aria-label="写测试"></select></div>
+      <div class="state"><span class="dot"></span><span class="txt">还没检测</span></div>
+    </div>
+    <div class="member" data-role="developer">
+      <div class="role">写代码<small>让测试全部通过</small></div>
+      <div class="pick"><select aria-label="写代码"></select></div>
+      <div class="state"><span class="dot"></span><span class="txt">还没检测</span></div>
+    </div>
+    <div class="member" data-role="reviewer">
+      <div class="role">复查<small>只读检查，不改代码</small></div>
+      <div class="pick"><select aria-label="复查"></select></div>
+      <div class="state"><span class="dot"></span><span class="txt">还没检测</span></div>
+    </div>
+    <p class="note">执行员只能选能自动派活的工具：Codex、Cursor、agy。同一家担任几个岗位，只检测一次。</p>
+    <p class="note warn" id="sameWarn" hidden>写代码和复查是同一家：复查就不够独立了（同样的盲区）。</p>
+  </section>
+  <p class="note warn" id="noGit" hidden>这个文件夹还没有版本管理（git），不能派活；现在只能选一位调度员和它聊天。需要的话，让调度员帮你把版本管理建起来。</p>
+
+  <div class="bar">
+    <button class="btn primary" type="button" id="check">检测连通</button>
+    <button class="btn" type="button" id="save" disabled>保存并开始</button>
+    <span class="summary" id="summary">每人会在临时文件夹里试着建一个文件，大约半分钟到一分钟，会用掉一点点额度。</span>
+  </div>
+</main>
+<script src="/static/team.js"></script>
+</body>
+</html>

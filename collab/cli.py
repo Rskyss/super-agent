@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shlex
 import sys
 from datetime import datetime
@@ -18,16 +19,17 @@ from pathlib import Path
 from collab import vcs
 from collab.agents import ask as default_ask
 from collab.archive import archive_card
-from collab.install import InstallError, install_into
-from collab.config import load_models
+from collab.install import InstallError, find_old_package, install_into, migrate
+from collab.config import ConfigError, load_models, run_tools
 from collab.dispatch import run_card
+from collab.flow import record as flow_record
 from collab.judge import judge as default_judge
 from collab.scope import read_allowed
 from collab.ledger import ledger_add
 from collab.state import Card
 from collab.usage import count_lines, find_latest_session, record_card_usage, usage_since
 from collab.watch import snapshot
-from collab.workspace import PLAN_TEMPLATE, has_blanks, init_collab, render_board
+from collab.workspace import PLAN_TEMPLATE, has_blanks, init_collab, profile_path, render_board
 
 _DEV_ADAPTER = "cursor"
 _TEST_ADAPTER = "codex"
@@ -48,8 +50,11 @@ def _backup_row(project: str, card_id: str, tag: str) -> None:
 
 
 def cmd_init(args, **_):
+    if not Path(args.project).is_dir():
+        print(f"项目目录不存在：{args.project}", file=sys.stderr)
+        return 1
     collab = init_collab(args.project)
-    print(f"已初始化协作区：{collab}")
+    print(f"已接入：{collab}（施工过程记录只留在本机，已加进不提交名单）")
     return 0
 
 
@@ -66,6 +71,7 @@ def cmd_new_card(args, **_):
     if not (card_dir / "方案.md").exists():
         (card_dir / "方案.md").write_text(PLAN_TEMPLATE, encoding="utf-8")
     render_board(collab)
+    flow_record(card_dir, "需求", src="你", dst="调度员", summary=text, text=text)
     print(f"已创建 {args.card_id}，状态：待对齐（写好方案、用户批准后才能开工）")
     return 0
 
@@ -76,8 +82,11 @@ def cmd_confirm_profile(args, **_):
     if not collab.exists():
         print("请先执行 init", file=sys.stderr)
         return 1
-    profile = collab / "项目档案.md"
-    if profile.exists() and has_blanks(profile.read_text(encoding="utf-8")):
+    profile = profile_path(args.project)
+    if not profile.exists():
+        print("还没有项目说明：请先起草 docs/项目说明.md（模板见调度手册），用户看过再确认", file=sys.stderr)
+        return 1
+    if has_blanks(profile.read_text(encoding="utf-8")):
         print("项目说明还有空白（（待填）），请先补全再确认", file=sys.stderr)
         return 1
     settings_path = collab / "配置.json"
@@ -115,6 +124,8 @@ def cmd_approve(args, **_):
     card.transition("待派发")
     card.save(state_path)
     render_board(collab)
+    flow_record(card_dir, "批准", src="你", dst="调度员", summary="批准方案，可以开工",
+                text=(card_dir / "方案.md").read_text(encoding="utf-8"))
     ledger_add(args.project, f"{args.card_id}：方案已确认，可以开工")
     print(f"{args.card_id} 方案已确认，可以开工")
     return 0
@@ -128,6 +139,12 @@ def cmd_status(args, **_):
 
 
 def cmd_run(args, ask_fn=None, judge_fn=None, **_):
+    # 开工必须用户亲手允许：调度员在 Codex 的受保护环境里直接开工时（没申请权限），一律拒绝，
+    # 逼它申请提升权限，用户就会在聊天里看到“允许吗？”。用户点了允许后命令在受保护环境外运行，这个标记就不在了。
+    if os.environ.get("CODEX_SANDBOX"):
+        print("开工需要用户亲手允许：请申请提升权限后重新运行这条命令（用户会看到“允许吗？”）。"
+              "在受保护环境里不能开工，这次什么都没做。", file=sys.stderr)
+        return 3
     project = Path(args.project)
     if not vcs.is_git_repo(project):
         print(f"{project} 不是 git 仓库，请先 git init", file=sys.stderr)
@@ -137,13 +154,21 @@ def cmd_run(args, ask_fn=None, judge_fn=None, **_):
         print(f"没有卡片 {args.card_id}，请先 new-card", file=sys.stderr)
         return 1
     card = Card.load(state_path)
-    if card.state != "待派发":
+    resuming = card.state in ("开发中", "待测试", "测试中")
+    if card.state != "待派发" and not resuming:
         print(f"{args.card_id} 当前状态是「{card.state}」，方案确认后（待派发）才能开工", file=sys.stderr)
         return 1
     allowed = read_allowed((_collab(args.project) / "cards" / args.card_id / "需求卡.md")
                            .read_text(encoding="utf-8"))
     if not allowed:
         print("需求卡里还没有写明允许改动的文件范围（“## 允许改动的范围”下面列出文件）", file=sys.stderr)
+        return 1
+
+    # 用谁干活：命令里写了就用命令里的，没写就用团队配置（在动手之前确定，配置坏了就在这里停下）
+    try:
+        tools = run_tools(args.project, dev=args.dev_tool, test=args.test_tool, review=args.review_tool)
+    except ConfigError as exc:
+        print(f"团队配置有问题：{exc}", file=sys.stderr)
         return 1
 
     tag = vcs.snapshot(project, f"pre-{args.card_id}-{datetime.now():%Y%m%d-%H%M%S}")
@@ -164,14 +189,23 @@ def cmd_run(args, ask_fn=None, judge_fn=None, **_):
         session = Path(args.session_jsonl)
     offset = count_lines(session) if session else 0
 
+    reviewer = tools["review"]
+    run_summary = (f"接着上次中断处继续施工：测试员 {tools['test']}，开发员 {tools['dev']}，复查员 {reviewer or '不复查'}"
+                   if resuming else
+                   f"开始施工：测试员 {tools['test']}，开发员 {tools['dev']}，复查员 {reviewer or '不复查'}")
+    flow_record(_collab(args.project) / "cards" / args.card_id, "开跑", src="调度员", dst="程序",
+                summary=run_summary,
+                tools={"测试员": tools["test"], "开发员": tools["dev"], "复查员": reviewer},
+                pid=os.getpid(),
+                text=f"判定命令：{args.test_command}\n页面检查：{args.page_check or '无'}\n独立副本：{worktree}")
     card, verdict = run_card(
         card, collab_dir=_collab(args.project), worktree=str(worktree),
         test_command=shlex.split(args.test_command),
-        dev_adapter=args.dev_tool, test_adapter=args.test_tool,
+        dev_adapter=tools["dev"], test_adapter=tools["test"],
         ask_fn=ask_fn or default_ask, judge_fn=judge_fn or default_judge,
         models=load_models(args.project),
         allowed=allowed, page_command=shlex.split(args.page_check) if args.page_check else None,
-        reviewer_adapter=None if args.review_tool == "none" else args.review_tool,
+        reviewer_adapter=reviewer,
     )
     if session:
         record_card_usage(_collab(args.project), args.card_id, usage_since(session, offset))
@@ -197,10 +231,50 @@ def cmd_install(args, **_):
     try:
         target = install_into(args.project, update=args.update)
     except InstallError as exc:
-        print(f"安装失败：{exc}", file=sys.stderr)
+        print(f"接入失败：{exc}", file=sys.stderr)
         return 1
-    print(f"已安装到 {target}；协作区：{Path(args.project).resolve() / '.collab'}")
-    print("下一步：起草项目说明（.collab/项目档案.md），用户确认后执行 confirm-profile")
+    print("从 v0.2 起不需要再把协作包复制进项目了，直接用超级助手里的那一份。")
+    print(f"已接入：{target}（施工过程记录只留在本机，已加进不提交名单）")
+    if find_old_package(args.project) is not None:
+        print("这个项目里还有一份旧的协作包副本（collab/），可以用 migrate 命令处理。")
+    print("下一步：起草项目说明 docs/项目说明.md，用户确认后执行 confirm-profile")
+    return 0
+
+
+def cmd_check(args, **_):
+    from collab.check import ROLE_NAMES, check_team
+    try:
+        results = check_team(args.project, timeout=args.timeout)
+    except ConfigError as exc:
+        print(f"团队配置有问题：{exc}", file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps(results, ensure_ascii=False, indent=1))
+    else:
+        for r in results:
+            mark = "✅" if r["ok"] else "❌"
+            same = f"（和{ROLE_NAMES[r['shared_with']]}同一家，只测一次）" if r["shared_with"] else ""
+            print(f"{mark} {r['role_name']}：{r['tool_name'] or '—'}　{r['reason']}{same}")
+            if r["how"] and not r["ok"]:
+                print(f"   怎么办：{r['how']}")
+    return 0 if all(r["ok"] for r in results) else 2
+
+
+def cmd_migrate(args, **_):
+    if not Path(args.project).is_dir():
+        print(f"项目目录不存在：{args.project}", file=sys.stderr)
+        return 1
+    report = migrate(args.project, remove_old_package=args.remove_old_package)
+    if report["old_package"]:
+        print("已删除项目里的旧协作包（collab/）。" if report["removed"]
+              else "项目里有一份旧协作包（collab/），这次没有删；要删请加 --remove-old-package。")
+    else:
+        print("项目里没有旧协作包。")
+    if report["profile_moved"]:
+        print("项目档案已复制成 docs/项目说明.md（旧文件保留）。")
+    if report["ignored"]:
+        print("已把 .collab/ 加进不提交名单。")
+    print("协作记录一条没动。")
     return 0
 
 
@@ -218,14 +292,25 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="collab", description="多 agent 协作包")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p = sub.add_parser("install", help="把协作包装进一个项目，并初始化协作区")
+    p = sub.add_parser("install", help="（旧命令）现在等于接入：不复制协作包，只建协作区")
     p.add_argument("project")
-    p.add_argument("--update", action="store_true", help="已装过时，用最新版本替换包文件（协作记录不动）")
+    p.add_argument("--update", action="store_true", help="兼容旧用法，效果与不加相同")
     p.set_defaults(func=cmd_install)
 
-    p = sub.add_parser("init", help="在项目里生成协作区")
+    p = sub.add_parser("init", help="接入一个项目：建 .collab/ 并加进不提交名单（不复制协作包）")
     p.add_argument("project")
     p.set_defaults(func=cmd_init)
+
+    p = sub.add_parser("check", help="检测连通：团队里每个人真干一件小事，建出文件才算通")
+    p.add_argument("project")
+    p.add_argument("--json", action="store_true", help="结果用 JSON 输出（给窗口用）")
+    p.add_argument("--timeout", type=float, default=120, help="每家最长等多少秒，默认 120")
+    p.set_defaults(func=cmd_check)
+
+    p = sub.add_parser("migrate", help="旧装法的项目改成新方式：搬项目说明、加不提交名单；可选删除旧协作包")
+    p.add_argument("project")
+    p.add_argument("--remove-old-package", action="store_true", help="删除项目里的旧协作包副本（用户同意后才加）")
+    p.set_defaults(func=cmd_migrate)
 
     p = sub.add_parser("new-card", help="新建需求卡")
     p.add_argument("project")
@@ -239,10 +324,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--test-command", required=True, help="判定用的测试命令，只看退出码")
     p.add_argument("--session-jsonl", help="Claude 会话记录路径，用于记录额度；填 auto 自动找最新的一份")
     p.add_argument("--page-check", help="真实页面检查命令（由项目定义），通过才算待验收")
-    p.add_argument("--dev-tool", default="cursor", choices=["cursor", "codex", "agy"], help="开发员（写代码）")
-    p.add_argument("--test-tool", default="codex", choices=["cursor", "codex", "agy"], help="测试员（写测试）")
-    p.add_argument("--review-tool", default="agy", choices=["cursor", "codex", "agy", "none"],
-                   help="独立复查（只读）；none 表示不复查")
+    p.add_argument("--dev-tool", default=None, choices=["cursor", "codex", "agy"],
+                   help="开发员（写代码）；不写就用团队配置（默认 Cursor）")
+    p.add_argument("--test-tool", default=None, choices=["cursor", "codex", "agy"],
+                   help="测试员（写测试）；不写就用团队配置（默认 Codex）")
+    p.add_argument("--review-tool", default=None, choices=["cursor", "codex", "agy", "none"],
+                   help="独立复查（只读）；none 表示不复查；不写就用团队配置（默认 agy）")
     p.set_defaults(func=cmd_run)
 
     p = sub.add_parser("confirm-profile", help="确认项目说明（之后才能批准方案）")

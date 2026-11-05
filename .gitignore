@@ -8,3 +8,7 @@ __pycache__/
 
 # 浏览器自动化留下的临时文件
 **/.playwright-mcp/
+
+# 桌面窗口的编译产物（下载的终端组件、编译结果、打包出的应用）
+desktop/mac/.build/
+desktop/mac/build/

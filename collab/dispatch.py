@@ -8,11 +8,13 @@ from __future__ import annotations
 
 import json
 import subprocess
+import time
 from datetime import datetime
 from pathlib import Path
 
 from collab.agents import ask as default_ask
-from collab.judge import ENV_ERROR, PASS, TIMEOUT, judge as default_judge
+from collab.flow import read_flow, record, reply_summary, text_of
+from collab.judge import ENV_ERROR, FAIL, PASS, TIMEOUT, judge as default_judge
 from collab.scope import out_of_scope
 from collab.state import Card
 from collab.vcs import revert_paths
@@ -96,15 +98,48 @@ def _log_step(cdir: Path, step: str, adapter: str, worktree) -> None:
             f"- {datetime.now():%Y-%m-%d %H:%M} | {step} | 执行者：{adapter} | 副本累计改动：{_changed_files(worktree)}\n")
 
 
+_STEP_SUMMARY = {
+    "写测试": "按验收标准先写测试（只写测试，不改产品代码）",
+    "开发": "按测试写代码，让测试全部通过",
+    "返工修改": "测试没过，带着测试输出退回修改",
+    "复查": "只读复查：对照需求检查改动",
+}
+
+
+def _dispatch(ask_fn, cdir: Path, role: str, adapter: str, step: str, prompt: str,
+              worktree, models, round_no: int):
+    """派一次活：开始时记“派活”（含原文、预留实时输出），干完记“回复”（含全文、用时）。"""
+    sent = record(cdir, "派活", src="调度员", dst=role, tool=adapter, step=step, round=round_no,
+                  summary=_STEP_SUMMARY[step], text=prompt, live=True)
+    started = time.time()
+    result = ask_fn(adapter, prompt, worktree, expect_file=None, models=models,
+                    live_path=str(cdir / sent["live"]))
+    text = readable(result.output)
+    record(cdir, "回复", src=role, dst="调度员", tool=adapter, step=step, round=round_no,
+           ok=bool(result.ok), seconds=round(time.time() - started), reply_to=sent["seq"],
+           summary=reply_summary(step, text, result.ok), text=text)
+    return result
+
+
+def _escalate(collab: Path, cdir: Path, card: Card, reason: str) -> None:
+    """转需Claude介入，并在流转记录里写明原因。"""
+    record(cdir, "转人工", src="程序", dst="调度员", summary=reason)
+    card.transition("需Claude介入")
+    _save(collab, card)
+
+
 def _worker_failed(collab: Path, cdir: Path, card: Card, role: str, adapter: str, result):
     """干活的人没完成（报错、超时、被看门人停掉）：把原因写进返工记录，再转人工。"""
     reason = (readable(result.output) or "没有返回任何内容").strip().splitlines()
     tail = reason[-1][:300] if reason else "没有返回任何内容"
     _append(cdir / "返工记录.md",
             f"- {datetime.now():%Y-%m-%d %H:%M} {role}（{adapter}）没有完成：{tail}\n")
-    card.transition("需Claude介入")
-    _save(collab, card)
+    _escalate(collab, cdir, card, f"{role}（{adapter}）没有完成：{tail}")
     return card, None
+
+
+_VERDICT_SUMMARY = {PASS: "测试全部通过", FAIL: "测试没过", ENV_ERROR: "测试环境出错（不是代码的问题）",
+                    TIMEOUT: "测试超时"}
 
 
 def run_card(card: Card, collab_dir, worktree, test_command, dev_adapter, test_adapter,
@@ -118,30 +153,61 @@ def run_card(card: Card, collab_dir, worktree, test_command, dev_adapter, test_a
     changed_fn = changed_fn or _changed_list
     revert_fn = revert_fn or revert_paths
 
-    card.transition("开发中")
+    if card.state != "开发中":
+        if card.state == "待测试":
+            card.state = "开发中"
+        else:
+            card.transition("开发中")
     _save(collab, card)
 
-    # 第一步：测试员按验收标准先写测试（测试先行）
-    prep = ask_fn(test_adapter,
-                  f"{_READ_RULES}按任务卡 {needs} 的验收标准编写自动化测试，放进项目的测试目录。只写测试，不改产品代码。",
-                  worktree, expect_file=None, models=models)
-    if not prep.ok:
-        return _worker_failed(collab, cdir, card, "测试员", test_adapter, prep)
-    _log_step(cdir, "写测试", test_adapter, worktree)
+    past = read_flow(cdir)
+    test_done = any(e.get("kind") == "回复" and e.get("src") == "测试员" and e.get("ok") is True for e in past)
+
+    # 第一步：测试员按验收标准先写测试（测试先行；如果断点续跑前已经写完交活，直接跳过）
+    if not test_done:
+        prep = _dispatch(ask_fn, cdir, "测试员", test_adapter, "写测试",
+                         f"{_READ_RULES}按任务卡 {needs} 的验收标准编写自动化测试，放进项目的测试目录。只写测试，不改产品代码。",
+                         worktree, models, 1)
+        if not prep.ok:
+            return _worker_failed(collab, cdir, card, "测试员", test_adapter, prep)
+        _log_step(cdir, "写测试", test_adapter, worktree)
 
     # 第二步：开发员照着测试写代码，直到测试通过
     dev_prompt = (f"{_READ_RULES}按任务卡实现功能：{needs}。测试已经写好，请让它们全部通过。"
                   f"{_REPORT_ASK}")
     last_output = None  # 上一轮测试的报错，用来发现“原地打转”
+    past_fails = [e for e in past if e.get("kind") in ("判定", "页面检查") and e.get("result") == FAIL]
+    if past_fails and card.rework > 0:
+        last_output = text_of(cdir, past_fails[-1])
+        dev_prompt = (f"{_READ_RULES}上一版测试没过，测试输出如下，请修复后重新提交。\n\n{last_output}\n\n"
+                      f"任务卡：{needs}。{_REPORT_ASK}")
+
+    first_iter = True
     while True:
-        dev = ask_fn(dev_adapter, dev_prompt, worktree, expect_file=None, models=models)
-        if not dev.ok:
-            return _worker_failed(collab, cdir, card, "开发员", dev_adapter, dev)
-        _save_report(cdir, dev.output)
-        _log_step(cdir, "开发" if card.rework == 0 else "返工修改", dev_adapter, worktree)
+        rnd = card.rework + 1
+        dev_already_done = False
+        if first_iter:
+            first_iter = False
+            dev_replies = [i for i, e in enumerate(past)
+                           if e.get("kind") == "回复" and e.get("src") == "开发员"
+                           and e.get("round") == rnd and e.get("ok") is True]
+            if dev_replies:
+                after = past[dev_replies[-1] + 1:]
+                has_fail_after = any(e.get("kind") in ("判定", "页面检查") and e.get("result") != PASS for e in after)
+                if not has_fail_after:
+                    dev_already_done = True
+
+        if not dev_already_done:
+            dev = _dispatch(ask_fn, cdir, "开发员", dev_adapter, "开发" if card.rework == 0 else "返工修改",
+                            dev_prompt, worktree, models, rnd)
+            if not dev.ok:
+                return _worker_failed(collab, cdir, card, "开发员", dev_adapter, dev)
+            _save_report(cdir, dev.output)
+            _log_step(cdir, "开发" if card.rework == 0 else "返工修改", dev_adapter, worktree)
 
         if allowed is not None:
-            bad = out_of_scope(changed_fn(worktree), allowed)
+            changed = changed_fn(worktree)
+            bad = out_of_scope(changed, allowed)
             if bad:
                 # 越界改动由程序直接撤销（开发员在自动模式下不能执行命令，删不掉文件），不算返工
                 revert_fn(worktree, bad)
@@ -150,10 +216,16 @@ def run_card(card: Card, collab_dir, worktree, test_command, dev_adapter, test_a
                 if still:
                     _append(cdir / "返工记录.md",
                             f"- {stamp} 范围外的改动撤销失败：{'、'.join(still)}，转需Claude介入\n")
-                    card.transition("需Claude介入")
-                    _save(collab, card)
+                    record(cdir, "范围", src="程序", ok=False,
+                           summary=f"范围外的改动撤销失败：{'、'.join(still)}", text="\n".join(changed))
+                    _escalate(collab, cdir, card, f"范围外的改动撤销失败：{'、'.join(still)}")
                     return card, None
                 _append(cdir / "返工记录.md", f"- {stamp} 已自动撤销范围外的改动：{'、'.join(bad)}\n")
+                record(cdir, "范围", src="程序", ok=True,
+                       summary=f"已自动撤销范围外的改动：{'、'.join(bad)}", text="\n".join(changed))
+            else:
+                record(cdir, "范围", src="程序", ok=True,
+                       summary=f"改动范围正常（{len(changed)} 个文件）", text="\n".join(changed))
 
         card.transition("待测试")
         card.transition("测试中")
@@ -162,44 +234,51 @@ def run_card(card: Card, collab_dir, worktree, test_command, dev_adapter, test_a
         _append(cdir / "测试结果.md",
                 f"\n## 第 {card.rework + 1} 轮判定\n结论：{verdict.result}\n"
                 f"退出码：{verdict.returncode}\n\n{verdict.output}\n")
+        record(cdir, "判定", src="程序", dst="" if verdict.result == PASS else "开发员",
+               result=verdict.result, round=card.rework + 1, returncode=verdict.returncode,
+               summary=f"第 {card.rework + 1} 轮：{_VERDICT_SUMMARY.get(verdict.result, verdict.result)}"
+                       + ("" if verdict.result == PASS else f"（退出码 {verdict.returncode}）"),
+               text=verdict.output)
 
         if verdict.result == PASS and page_command:
             # 真实页面检查：由项目自己定义的检查命令判断，过了才算待验收
             page = judge_fn(page_command, cwd=worktree, timeout=_TEST_TIMEOUT)
             _append(cdir / "页面检查结果.md",
                     f"\n## 第 {card.rework + 1} 轮页面检查\n结论：{page.result}\n\n{page.output}\n")
+            record(cdir, "页面检查", src="程序", dst="" if page.result == PASS else "开发员",
+                   result=page.result, round=card.rework + 1,
+                   summary=f"页面检查：{page.result}", text=page.output)
             verdict = page
 
         if verdict.result == PASS and reviewer_adapter:
             # 独立复查：由另一个 AI 只读检查改动是否符合需求，写“结论：通过/不通过”
-            review = ask_fn(reviewer_adapter,
-                            f"{_READ_RULES}只读复查：对照任务卡 {needs} 检查本次改动是否符合需求和验收标准。"
-                            f"第一行写“结论：通过”或“结论：不通过”，之后列出问题。不要修改任何文件。",
-                            worktree, expect_file=None, models=models)
+            review = _dispatch(ask_fn, cdir, "复查员", reviewer_adapter, "复查",
+                               f"{_READ_RULES}只读复查：对照任务卡 {needs} 检查本次改动是否符合需求和验收标准。"
+                               f"第一行写“结论：通过”或“结论：不通过”，之后列出问题。不要修改任何文件。",
+                               worktree, models, card.rework + 1)
             review_text = readable(review.output)
             _append(cdir / "复查结果.md", f"\n## 复查（{reviewer_adapter}）\n{review_text}\n")
             if "结论：不通过" in review_text:
-                card.transition("需Claude介入")
-                _save(collab, card)
+                _escalate(collab, cdir, card, f"复查员（{reviewer_adapter}）复查不通过，需要调度员看原因")
                 return card, verdict
 
         if verdict.result == PASS:
             card.transition("待验收")
             _save(collab, card)
+            record(cdir, "结束", src="程序", dst="你", state="待验收",
+                   summary=f"做完了，等你验收（返工 {card.rework} 次）")
             return card, verdict
 
         if verdict.result in (ENV_ERROR, TIMEOUT):
             # 环境或超时问题不是代码的错，不计返工轮数，直接叫 Claude
-            card.transition("需Claude介入")
-            _save(collab, card)
+            _escalate(collab, cdir, card, f"{_VERDICT_SUMMARY[verdict.result]}，需要调度员处理")
             return card, verdict
 
         if last_output is not None and verdict.output.strip() == last_output.strip():
             # 同样的报错连续出现两次：说明在原地打转，再返工也是白费，立刻转人工
             _append(cdir / "返工记录.md",
                     f"- {datetime.now():%Y-%m-%d %H:%M} 同样的报错连续出现两次，判定为原地打转，转需Claude介入\n")
-            card.transition("需Claude介入")
-            _save(collab, card)
+            _escalate(collab, cdir, card, "同样的报错连续出现两次，判定为原地打转")
             return card, verdict
         last_output = verdict.output
 
@@ -213,6 +292,9 @@ def run_card(card: Card, collab_dir, worktree, test_command, dev_adapter, test_a
                     f"- {stamp} 第 {card.rework} 次返工：测试没过（退出码 {verdict.returncode}）\n")
         _save(collab, card)
         if escalate:
+            # on_test_failed 已经把状态转成“需Claude介入”，这里只补记原因
+            record(cdir, "转人工", src="程序", dst="调度员",
+                   summary=f"返工 {card.rework} 次后测试仍没过，需要调度员处理")
             return card, verdict
-        dev_prompt = (f"{_READ_RULES}上一版测试没过，测试输出如下，请修复后重新提交。\n\n{verdict.output}\n\n"
+        dev_prompt =(f"{_READ_RULES}上一版测试没过，测试输出如下，请修复后重新提交。\n\n{verdict.output}\n\n"
                       f"任务卡：{needs}。{_REPORT_ASK}")

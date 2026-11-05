@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>超级助手团队配置设计稿</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Noto+Sans+SC:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  /* 布局：左边团队配置（调度员一行 + 执行员三行，每行带检测状态），右边流转面板随选择实时换人；同一套夜间配色 */
+  --night: #0b1220;
+  --panel: #101a2b;
+  --left: #0d1524;
+  --rail: #26364f;
+  --text: #e8eef6;
+  --dim: #8796ad;
+  --signal: #f5b451;
+  --done: #6fcf9e;
+  --stop: #f07167;
+  --font-body: "Noto Sans SC", "PingFang SC", "Hiragino Sans GB", system-ui, sans-serif;
+  --font-num: "JetBrains Mono", ui-monospace, Menlo, monospace;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body { background: radial-gradient(1200px 600px at 50% -10%, #17263f 0%, var(--night) 60%) fixed, var(--night); color: var(--text); font: 14px/1.6 var(--font-body); display: grid; place-items: center; padding: 24px 16px; }
+.window { width: min(1280px, 100%); height: min(800px, calc(100vh - 48px)); min-height: 620px; display: grid; grid-template-rows: auto minmax(0, 1fr); background: var(--panel); border: 1px solid #1f2d44; border-radius: 14px; overflow: hidden; box-shadow: 0 30px 80px -30px rgba(0, 0, 0, .7); }
+.titlebar { display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-bottom: 1px solid #1c2940; }
+.lights { display: flex; gap: 7px; }
+.lights i { width: 12px; height: 12px; border-radius: 50%; display: block; background: #3a475c; }
+.titlebar .name { flex: 1; text-align: center; color: var(--dim); font-size: 13px; }
+.titlebar .demo { font-size: 11px; color: var(--dim); border: 1px solid var(--rail); border-radius: 999px; padding: 1px 9px; }
+.body { display: grid; grid-template-columns: minmax(0, 1.55fr) 1px minmax(320px, 1fr); min-height: 0; }
+.divider { background: #1c2940; }
+
+.cfg { background: var(--left); overflow-y: auto; padding: 26px 32px 24px; }
+.cfg h1 { margin: 0; font-size: 20px; font-weight: 500; }
+.cfg .lead { color: var(--dim); margin: 4px 0 22px; max-width: 60ch; }
+.cfg h2 { font-size: 13px; color: var(--dim); font-weight: 500; margin: 18px 0 8px; letter-spacing: .04em; }
+.member { display: grid; grid-template-columns: 92px minmax(150px, 200px) minmax(0, 1fr); gap: 14px; align-items: center; padding: 12px 14px; border: 1px solid #1f2d44; border-radius: 12px; margin-bottom: 8px; background: #0f1a2b; }
+.member .role { font-weight: 500; }
+.member .role small { display: block; color: var(--dim); font-weight: 400; font-size: 12px; }
+select { font: inherit; color: var(--text); background: #15233a; border: 1px solid #2a3b56; border-radius: 8px; padding: 6px 10px; width: 100%; }
+select:focus-visible, .btn:focus-visible { outline: 2px solid var(--signal); outline-offset: 2px; }
+.state { font-size: 13px; color: var(--dim); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-height: 22px; }
+.state .dot { width: 8px; height: 8px; border-radius: 50%; background: #3a4a63; flex: none; }
+.state.run { color: var(--signal); }
+.state.run .dot { background: var(--signal); animation: beat 1s ease-in-out infinite; }
+.state.ok { color: var(--done); }
+.state.ok .dot { background: var(--done); }
+.state.bad { color: var(--stop); }
+.state.bad .dot { background: var(--stop); }
+.state .how { color: #c7d2e2; font-size: 12px; width: 100%; padding-left: 16px; }
+.state .retry { font: inherit; font-size: 12px; color: var(--signal); background: none; border: 0; cursor: pointer; padding: 0; text-decoration: underline; }
+.note { font-size: 12px; color: #6a7a92; margin: 6px 2px 0; }
+.bar { display: flex; align-items: center; gap: 12px; margin-top: 22px; flex-wrap: wrap; }
+.btn { font: inherit; font-size: 14px; border-radius: 9px; padding: 8px 18px; cursor: pointer; border: 1px solid var(--rail); background: transparent; color: var(--text); }
+.btn.primary { background: var(--signal); border-color: var(--signal); color: var(--night); font-weight: 500; }
+.btn:disabled { opacity: .45; cursor: default; }
+.summary { font-size: 13px; color: var(--dim); }
+.summary.ok { color: var(--done); }
+.summary.bad { color: var(--stop); }
+
+.side { display: grid; grid-template-rows: auto minmax(0, 1fr); min-height: 0; }
+.side-head { padding: 16px 18px 8px; border-bottom: 1px solid #1c2940; }
+.side-head .proj { font-size: 12px; color: var(--dim); }
+.side-head h2 { margin: 2px 0 2px; font-size: 16px; font-weight: 500; }
+.side-head .now { font-size: 13px; color: var(--dim); }
+.flow { padding: 12px 14px; overflow-y: auto; }
+.st { display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: 8px; align-items: center; height: 56px; padding: 0 8px; }
+.st .f { width: 34px; height: 34px; border-radius: 50%; border: 2px solid var(--rail); background: #15233a; display: grid; place-items: center; font-size: 11px; color: var(--dim); transition: border-color .3s, color .3s; }
+.st .t1 { font-size: 13px; color: var(--dim); }
+.st .t1 b { color: var(--text); font-weight: 500; margin-right: 5px; }
+.st.flash .f { border-color: var(--signal); color: var(--text); }
+@keyframes beat { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+@media (max-width: 860px) { .window { height: auto; } .body { grid-template-columns: 1fr; } .divider { display: none; } .member { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="window">
+  <div class="titlebar">
+    <span class="lights" aria-hidden="true"><i></i><i></i><i></i></span>
+    <span class="name">超级助手 · 视频提取文字 · 团队配置</span>
+    <span class="demo">设计稿 · 检测结果是模拟的（agy 故意演示一次“没登录”）</span>
+  </div>
+  <div class="body">
+    <section class="cfg" aria-label="团队配置">
+      <h1>这个项目由谁来干？</h1>
+      <p class="lead">选好调度员和三位执行员，点“检测连通”确认每个人都能真的干活，再开始。以后可以在菜单「项目 → 团队配置…」里改。</p>
+
+      <h2>调度员 · 和你对话、拆需求、派活</h2>
+      <div class="member" data-key="disp">
+        <div class="role">调度员<small>你的直接对接人</small></div>
+        <select aria-label="调度员"><option value="codex">Codex</option><option value="cursor">Cursor</option><option value="agy">agy</option><option value="custom">自定义命令…</option></select>
+        <div class="state"><span class="dot"></span><span class="txt">还没检测</span></div>
+      </div>
+      <p class="note" id="dispNote">Codex 用聊天视图（一问一答、能看图）；Cursor、agy 先用终端视图。</p>
+
+      <h2>执行员 · 按顺序接力：先写测试，再写代码，最后复查</h2>
+      <div class="member" data-key="test">
+        <div class="role">写测试<small>先按验收标准写测试</small></div>
+        <select aria-label="写测试"><option value="codex">Codex</option><option value="cursor">Cursor</option><option value="agy">agy</option></select>
+        <div class="state"><span class="dot"></span><span class="txt">还没检测</span></div>
+      </div>
+      <div class="member" data-key="dev">
+        <div class="role">写代码<small>让测试全部通过</small></div>
+        <select aria-label="写代码"><option value="cursor">Cursor</option><option value="codex">Codex</option><option value="agy">agy</option></select>
+        <div class="state"><span class="dot"></span><span class="txt">还没检测</span></div>
+      </div>
+      <div class="member" data-key="rev">
+        <div class="role">复查<small>只读检查，不改代码</small></div>
+        <select aria-label="复查"><option value="agy">agy</option><option value="codex">Codex</option><option value="cursor">Cursor</option><option value="none">不复查</option></select>
+        <div class="state"><span class="dot"></span><span class="txt">还没检测</span></div>
+      </div>
+      <p class="note">执行员只能选能自动派活的工具：Codex、Cursor、agy。同一家担任几个岗位，只检测一次。</p>
+      <p class="note" id="sameWarn" hidden style="color:var(--signal)">写代码和复查是同一家：复查就不够独立了（同样的盲区）。</p>
+
+      <div class="bar">
+        <button class="btn primary" type="button" id="check">检测连通</button>
+        <button class="btn" type="button" id="save" disabled title="检测通过后才能开始">保存并开始</button>
+        <span class="summary" id="summary">每人会在临时文件夹里试着建一个文件，约 30 秒，会用掉一点点额度。</span>
+      </div>
+    </section>
+
+    <div class="divider" aria-hidden="true"></div>
+
+    <section class="side" aria-label="流转面板">
+      <div class="side-head"><div class="proj">视频提取文字</div><h2>还没有需求卡</h2><div class="now">配好团队后，在左边对调度员说需求</div></div>
+      <div class="flow" id="flow"></div>
+    </section>
+  </div>
+</div>
+<script>
+(function () {
+  "use strict";
+  var NAMES = { codex: "Codex", cursor: "Cursor", agy: "agy", custom: "自定义", none: "不复查" };
+  var FACES = { codex: "Cx", cursor: "Cu", agy: "ag", custom: "自", none: "—" };
+  var rows = {};
+  document.querySelectorAll(".member").forEach(function (m) { rows[m.getAttribute("data-key")] = m; });
+  function val(k) { return rows[k].querySelector("select").value; }
+
+  // 右边面板随选择换人
+  function drawFlow(flash) {
+    var st = [["你", "你", "提需求"], [FACES[val("disp")], NAMES[val("disp")], "调度", "disp"], [FACES[val("test")], NAMES[val("test")], "写测试", "test"],
+      [FACES[val("dev")], NAMES[val("dev")], "写代码", "dev"], ["检", "程序", "跑测试"], [FACES[val("rev")], NAMES[val("rev")], "复查", "rev"], ["你", "你", "验收"]];
+    document.getElementById("flow").innerHTML = st.map(function (s) {
+      return '<div class="st' + (flash && s[3] === flash ? " flash" : "") + '"><span class="f">' + s[0] + '</span><div class="t1"><b>' + s[1] + "</b>" + s[2] + "</div></div>";
+    }).join("");
+  }
+  drawFlow();
+
+  function setState(k, cls, text, how, retry) {
+    var s = rows[k].querySelector(".state");
+    s.className = "state " + cls;
+    s.innerHTML = '<span class="dot"></span><span class="txt"></span>';
+    s.querySelector(".txt").textContent = text;
+    if (retry) { var b = document.createElement("button"); b.className = "retry"; b.type = "button"; b.textContent = "重试"; b.onclick = function () { runCheck([k], true); }; s.appendChild(b); }
+    if (how) { var h = document.createElement("span"); h.className = "how"; h.textContent = "怎么办：" + how; s.appendChild(h); }
+  }
+
+  var agyLoggedIn = false, results = {};
+  function reset() {
+    results = {};
+    Object.keys(rows).forEach(function (k) { setState(k, "", val(k) === "none" ? "不复查，不用检测" : "还没检测"); });
+    document.getElementById("save").disabled = true;
+    var sum = document.getElementById("summary");
+    sum.className = "summary"; sum.textContent = "每人会在临时文件夹里试着建一个文件，约 30 秒，会用掉一点点额度。";
+    var same = val("dev") === val("rev");
+    document.getElementById("sameWarn").hidden = !same;
+    document.getElementById("dispNote").textContent = val("disp") === "codex"
+      ? "Codex 用聊天视图（一问一答、能看图）；Cursor、agy 先用终端视图。"
+      : NAMES[val("disp")] + " 先用终端视图（聊天视图目前只接了 Codex）。";
+  }
+  Object.keys(rows).forEach(function (k) {
+    rows[k].querySelector("select").addEventListener("change", function () { reset(); drawFlow(k); });
+  });
+
+  // 模拟检测：同一家只测一次；agy 第一次演示“没登录”，重试后通
+  var TIME = { codex: 6, cursor: 11, agy: 8, custom: 1 };
+  function runCheck(keys, isRetry) {
+    var tools = {};
+    keys.forEach(function (k) { if (val(k) !== "none") (tools[val(k)] = tools[val(k)] || []).push(k); });
+    keys.forEach(function (k) { if (val(k) !== "none") setState(k, "run", "检测中…在临时文件夹里试着建一个文件"); });
+    document.getElementById("check").disabled = true;
+    var pending = Object.keys(tools).length;
+    Object.keys(tools).forEach(function (tool) {
+      setTimeout(function () {
+        var bad = tool === "agy" && !agyLoggedIn && !isRetry;
+        if (tool === "agy" && isRetry) agyLoggedIn = true;
+        tools[tool].forEach(function (k, i) {
+          if (bad) setState(k, "bad", "没通：agy 还没登录", "在终端里运行一次 agy，按提示登录后点重试", true);
+          else if (tool === "custom") setState(k, "ok", "已找到这个命令（自定义调度员只能检查装没装）");
+          else setState(k, "ok", "通了 · " + TIME[tool] + " 秒" + (i > 0 ? "（和上面同一家，只测一次）" : ""));
+          results[k] = !bad;
+        });
+        if (--pending === 0) finish();
+      }, TIME[tool] * 180);
+    });
+  }
+  function finish() {
+    document.getElementById("check").disabled = false;
+    document.getElementById("check").textContent = "重新检测";
+    var keys = Object.keys(rows).filter(function (k) { return val(k) !== "none"; });
+    var bad = keys.filter(function (k) { return results[k] === false; });
+    var sum = document.getElementById("summary");
+    if (bad.length) { sum.className = "summary bad"; sum.textContent = bad.length + " 位没通，处理好后点重试。"; document.getElementById("save").disabled = true; }
+    else if (keys.every(function (k) { return results[k]; })) { sum.className = "summary ok"; sum.textContent = "全部通了，可以开始。"; document.getElementById("save").disabled = false; }
+  }
+  document.getElementById("check").addEventListener("click", function () { runCheck(Object.keys(rows), false); });
+  document.getElementById("save").addEventListener("click", function () {
+    document.getElementById("summary").textContent = "已保存。正式版里，这里会切换到和调度员的对话。";
+  });
+  reset();
+})();
+</script>
+</body>
+</html>

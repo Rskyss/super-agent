@@ -1,5 +1,6 @@
 import io
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -10,6 +11,25 @@ from pathlib import Path
 from collab.agents import AgentResult
 from collab.cli import main
 from collab.judge import PASS, Verdict
+
+
+_SAVED_SANDBOX = None
+
+
+def setUpModule():
+    """在 Codex 的受保护环境里跑这些测试时，先去掉那个标记，免得“用假执行者开工”的测试被守卫误拦。"""
+    global _SAVED_SANDBOX
+    _SAVED_SANDBOX = os.environ.pop("CODEX_SANDBOX", None)
+
+
+def tearDownModule():
+    if _SAVED_SANDBOX is not None:
+        os.environ["CODEX_SANDBOX"] = _SAVED_SANDBOX
+
+
+def _git_tags(path) -> list:
+    out = subprocess.run(["git", "tag"], cwd=path, capture_output=True, text=True).stdout
+    return [line for line in out.splitlines() if line.strip()]
 
 
 def _git(cwd, *args):
@@ -152,7 +172,10 @@ class CliTest(unittest.TestCase):
         self.assertIn("（待填）", plan)
 
     def test_confirm_profile_refuses_when_template_still_has_blanks(self):
+        from collab.workspace import PROFILE_TEMPLATE
         _run(["init", str(self.project)])
+        (self.project / "docs").mkdir(exist_ok=True)
+        (self.project / "docs" / "项目说明.md").write_text(PROFILE_TEMPLATE, encoding="utf-8")
         code, out = _run(["confirm-profile", str(self.project)])
         self.assertNotEqual(code, 0)
         self.assertIn("空白", out)
@@ -187,6 +210,24 @@ class CliTest(unittest.TestCase):
         code, out = _run(["run", str(self.project), "CARD-001", "--test-command", "true"])
         self.assertNotEqual(code, 0)
         self.assertIn("允许改动的文件范围", out)
+
+    def test_run_refuses_inside_codex_protected_environment(self):
+        """在 Codex 的受保护环境里（调度员没申请权限）不准开工，逼它申请，让用户看到“允许吗？”。"""
+        _run(["init", str(self.project)])
+        req = self.root / "req.md"
+        req.write_text("加 hello\n\n## 允许改动的范围\n- hello.txt\n", encoding="utf-8")
+        _run(["new-card", str(self.project), "CARD-001", "--requirement", str(req)])
+        _confirm_profile_and_plan(self.project)
+        os.environ["CODEX_SANDBOX"] = "seatbelt"
+        try:
+            code, out = _run(["run", str(self.project), "CARD-001", "--test-command", "true"])
+        finally:
+            del os.environ["CODEX_SANDBOX"]
+        self.assertNotEqual(code, 0)
+        self.assertIn("申请", out)
+        state = json.loads((self.project / ".collab" / "cards" / "CARD-001" / "状态.json").read_text(encoding="utf-8"))
+        self.assertEqual(state["state"], "待派发")  # 什么都没开始
+        self.assertEqual(_git_tags(self.project), [])
 
     def test_run_refuses_non_git_project(self):
         plain = self.root / "plain"

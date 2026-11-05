@@ -11,10 +11,12 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 
+from collab.flow import record
 from collab.ledger import ledger_add
 from collab.state import Card
 
 _MAIN_FILES = {"需求卡.md": "需求共识.md", "方案.md": "方案.md"}
+# 过程摘要随归档进项目文档；交接全文（流转/）和实时输出又多又大，只留在本机 .collab/，不进项目
 _PROCESS_FILES = ("执行记录.md", "测试结果.md", "返工记录.md", "复查结果.md",
                   "页面检查结果.md", "汇报.md", "设计稿.html")
 
@@ -80,6 +82,7 @@ def archive_card(project_dir, card_id: str, feature: str) -> Path:
         src = cdir / src_name
         if src.exists():
             shutil.copy2(src, _free_name(target, dst_name, card_id))
+    record(cdir, "归档", src="调度员", summary=f"记录已归档到 docs/{name}/")
     for src_name in _PROCESS_FILES:
         src = cdir / src_name
         if src.exists():

@@ -32,10 +32,13 @@ def snapshot(repo, label: str) -> str:
 
 
 def add_worktree(repo, card_id: str, dest) -> str:
-    """为卡片建独立副本（分支 card/<id>），与主工作区互不影响。"""
+    """为卡片建独立副本（分支 card/<id>），与主工作区互不影响；中断续跑时已有副本则直接复用。"""
     if not is_git_repo(repo):
         raise NotGitRepo(f"{repo} 不是 git 仓库，请先 git init")
     branch = f"card/{card_id}"
+    dest_path = Path(dest)
+    if dest_path.exists() and (dest_path / ".git").exists():
+        return branch
     _git(repo, "worktree", "add", "-b", branch, str(dest), "HEAD")
     return branch
 

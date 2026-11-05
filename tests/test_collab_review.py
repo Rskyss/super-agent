@@ -135,8 +135,13 @@ class ReadableOutputTest(unittest.TestCase):
 
 class ToolChoiceTest(unittest.TestCase):
     def test_default_tools_are_cursor_codex_agy(self):
+        """命令里不写工具时交给团队配置决定；什么都没配，仍是 Cursor 写代码、Codex 写测试、agy 复查。"""
+        from collab.config import run_tools
         args = build_parser().parse_args(["run", "/tmp/x", "CARD-001", "--test-command", "true"])
-        self.assertEqual((args.dev_tool, args.test_tool, args.review_tool), ("cursor", "codex", "agy"))
+        self.assertEqual((args.dev_tool, args.test_tool, args.review_tool), (None, None, None))
+        with tempfile.TemporaryDirectory() as tmp:
+            tools = run_tools(tmp, args.dev_tool, args.test_tool, args.review_tool)
+        self.assertEqual((tools["dev"], tools["test"], tools["review"]), ("cursor", "codex", "agy"))
 
     def test_tools_can_be_chosen_per_run(self):
         args = build_parser().parse_args(["run", "/tmp/x", "CARD-001", "--test-command", "true",

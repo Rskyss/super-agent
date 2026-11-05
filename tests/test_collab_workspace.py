@@ -10,16 +10,18 @@ class WorkspaceTest(unittest.TestCase):
     def test_init_creates_collab_skeleton(self):
         with tempfile.TemporaryDirectory() as tmp:
             collab = init_collab(tmp)
-            for name in ["README.md", "项目档案.md", "任务板.md", "备份记录.md"]:
+            for name in ["README.md", "任务板.md", "备份记录.md"]:
                 self.assertTrue((collab / name).exists(), name)
             self.assertTrue((collab / "cards").is_dir())
+            # 项目说明改放项目 docs/，不再在协作区里放空模板
+            self.assertFalse((collab / "项目档案.md").exists())
 
     def test_init_does_not_overwrite_existing_files(self):
         with tempfile.TemporaryDirectory() as tmp:
             collab = init_collab(tmp)
-            (collab / "项目档案.md").write_text("我的档案")
+            (collab / "任务板.md").write_text("我的任务板")
             init_collab(tmp)
-            self.assertEqual((collab / "项目档案.md").read_text(), "我的档案")
+            self.assertEqual((collab / "任务板.md").read_text(), "我的任务板")
 
     def test_board_reflects_card_states(self):
         with tempfile.TemporaryDirectory() as tmp:
