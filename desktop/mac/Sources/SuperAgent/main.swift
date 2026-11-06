@@ -966,12 +966,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
     func switchToTerminal(opening: Bool = false, chatMode: String = "continue") {
         whenChatIdle { [weak self] idle in
             guard let self = self else { return }
-            if idle || self.leftView == .terminal || self.confirmInterrupt() {
-                self.leaveConfirmed = true
-                self.showLeft(.terminal, opening: opening, chatMode: chatMode)
-            } else {
-                self.segment.selectedSegment = self.leftView == .chat ? 0 : -1
+            if !idle, self.leftView != .terminal {
+                self.segment.selectedSegment = self.leftView == .chat ? 0 : -1  // 确认后才算切过去
+                guard self.confirmInterrupt() else { return }
             }
+            self.leaveConfirmed = true
+            self.showLeft(.terminal, opening: opening, chatMode: chatMode)
         }
     }
 
@@ -1061,7 +1061,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
         if let url = URL(string: "http://127.0.0.1:\(port)/?\(base)&card=\(card)") {
             web.load(URLRequest(url: url))
         }
-        if let url = URL(string: "http://127.0.0.1:\(port)/static/nav.html?\(base)&selected=\(card)&mode=\(navMode())&token=\(chatToken)") {
+        if let url = URL(string: "http://127.0.0.1:\(port)/static/nav.html?\(base)&selected=\(card)&mode=\(navMode())&token=\(chatToken)&chat=\(Dispatcher.forProject(project)?.hasChat == true ? 1 : 0)") {
             navWeb.load(URLRequest(url: url))
         }
     }

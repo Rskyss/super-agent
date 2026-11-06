@@ -194,6 +194,12 @@ class BlankNewChatTest(unittest.TestCase):
             wait_until(talked, lambda e: e["type"] == "turn_done")
             self.assertIn(talked.adapter.thread_id, [t["id"] for t in talked.list_threads()], words)
 
+    def test_auto_named_conversation_without_user_words_stays_hidden(self):
+        from desktop.dispatchers.codex import _user_words
+        item = {"preview": "M请先读调度手册", "name": "读取项目进度并汇报"}
+        self.assertEqual(_user_words(item, "M"), "")
+        self.assertEqual(_user_words({"preview": "# Files pasted by the user:", "name": "生成美术素材"}, "M"), "生成美术素材")
+
     def test_system_text_and_user_markup_are_told_apart(self):
         from desktop.dispatchers.codex import _is_real_user_text
         for words in ("<el-button type=\"primary\">提交</el-button>", "<my-app></my-app>", "<van-button>", "<div>"):
@@ -369,6 +375,53 @@ class ChatServerTest(unittest.TestCase):
         self.server.server_close()
         self.hub.close_all()
         self.tmp.cleanup()
+
+    def test_thread_list_shows_right_away_from_the_saved_copy(self):
+        """打开软件时不等连接：先显示上次存的列表，连上后再换成最新的。"""
+        (self.project / ".collab").mkdir()
+        self.assertEqual(self.hub.thread_list(self.project), {"threads": [], "current": None, "cached": True})
+        s = self.hub.open(self.project, "codex", with_opening=False)
+        wait_until(s, lambda e: e["type"] == "status" and e["text"].startswith("已连上"))
+        s.send("第一句")
+        wait_until(s, lambda e: e["type"] == "turn_done")
+        live = self.hub.thread_list(self.project)
+        self.assertFalse(live["cached"])
+        self.assertEqual([t["title"] for t in live["threads"]], ["第一句"])
+        self.hub.close_all()
+
+        saved = self.hub.thread_list(self.project)
+        self.assertTrue(saved["cached"])
+        self.assertEqual(saved["current"], live["current"])
+        self.assertEqual([t["title"] for t in saved["threads"]], ["第一句"])
+        self.assertTrue(saved["threads"][0]["current"])
+        fresh_hub = ChatHub(factories=fake_factories())  # 重开软件
+        self.assertEqual(fresh_hub.thread_list(self.project)["current"], live["current"])
+
+    def test_broken_or_missing_saved_list_is_just_empty(self):
+        empty = {"threads": [], "current": None, "cached": True}
+        self.assertEqual(self.hub.thread_list(self.project), empty)  # 没有 .collab 也不报错
+        (self.project / ".collab").mkdir()
+        (self.project / ".collab" / "对话列表.json").write_text("坏了", encoding="utf-8")
+        self.assertEqual(self.hub.thread_list(self.project), empty)
+
+    def test_unreadable_saved_list_is_replaced_once_connected(self):
+        (self.project / ".collab").mkdir()
+        saved = self.project / ".collab" / "对话列表.json"
+        saved.write_bytes(b"\xff\xfe\x00bad")
+        self.assertEqual(self.hub.thread_list(self.project)["threads"], [])
+        s = self.hub.open(self.project, "codex", with_opening=False)
+        wait_until(s, lambda e: e["type"] == "status" and e["text"].startswith("已连上"))
+        s.send("第一句")
+        wait_until(s, lambda e: e["type"] == "turn_done")
+        self.assertEqual([t["title"] for t in self.hub.thread_list(self.project)["threads"]], ["第一句"])
+        self.assertEqual(json.loads(saved.read_text(encoding="utf-8"))["threads"][0]["title"], "第一句")
+
+    def test_wrongly_shaped_saved_list_is_ignored(self):
+        (self.project / ".collab").mkdir()
+        saved = self.project / ".collab" / "对话列表.json"
+        for text in ('{"threads":"abc"}', '{"threads":[null,"x"]}'):
+            saved.write_text(text, encoding="utf-8")
+            self.assertEqual(self.hub.thread_list(self.project)["threads"], [])
 
     def _post(self, path, body, token="口令123"):
         req = urllib.request.Request(self.base + path, data=json.dumps(body).encode("utf-8"), method="POST",

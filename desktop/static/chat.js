@@ -164,6 +164,15 @@ var ChatCore = (function () {
   }
 
   // 一段历史对话的记录直接变成画面（切换时先显示，不等连接）
+  // 在干活但还没有文字往外出时显示“正在处理”；等用户确认时不显示
+  Model.prototype.showWorking = function () {
+    if (!this.busy) return false;
+    var last = this.blocks[this.blocks.length - 1];
+    if (last && last.kind === "ask" && last.state === "open") return false;
+    var part = last && last.kind === "ai" ? last.parts[last.parts.length - 1] : null;
+    return !(part && part.type === "text" && !part.done);
+  };
+
   Model.prototype.dropErrors = function () {
     this.blocks = this.blocks.filter(function (b) { return !(b.kind === "note" && b.tone === "bad"); });
   };
@@ -281,6 +290,7 @@ if (typeof document !== "undefined") (function () {
       dot.className = "conn-dot " + (st.indexOf("已连上") === 0 ? "ok" : (st.indexOf("未连上") === 0 ? "bad" : (st ? "wait" : "")));
     }
     $("status").textContent = st.indexOf("已连上") === 0 ? "" : st;
+    $("working").hidden = !model.showWorking();
     $("send").textContent = model.busy ? "停止" : "↑";
     $("send").className = "btn send-btn " + (model.busy ? "stop" : "primary");
     if (nearBottom) list.scrollTop = list.scrollHeight;

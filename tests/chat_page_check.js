@@ -100,4 +100,23 @@ failed.dropErrors();
 assert.ok(failed.blocks.every(function (b) { return b.tone !== "bad"; }), "旧的报错要清掉");
 assert.strictEqual(failed.blocks[0].kind, "user", "历史内容要留下");
 
+// 调度员在干活但还没有文字出来时，要让用户看得到
+var w = new C.Model();
+assert.strictEqual(w.showWorking(), false, "空闲不显示");
+w.apply({ seq: 1, type: "user", text: "你好" });
+w.apply({ seq: 2, type: "turn_started" });
+assert.strictEqual(w.showWorking(), true, "回复前显示");
+w.apply({ seq: 3, type: "activity", item: "a", label: "读 文件", status: "running" });
+assert.strictEqual(w.showWorking(), true, "用工具时也显示");
+w.apply({ seq: 4, type: "delta", item: "m", text: "好" });
+assert.strictEqual(w.showWorking(), false, "文字正在出来时不显示");
+w.apply({ seq: 5, type: "message", item: "m", text: "好的" });
+assert.strictEqual(w.showWorking(), true, "一段说完还没结束，继续显示");
+w.apply({ seq: 6, type: "approval", id: "p", kind: "命令", command: "ls" });
+assert.strictEqual(w.showWorking(), false, "等你确认时不显示");
+w.apply({ seq: 7, type: "approval_done", id: "p", decision: "accept" });
+assert.strictEqual(w.showWorking(), true);
+w.apply({ seq: 8, type: "turn_done" });
+assert.strictEqual(w.showWorking(), false);
+
 console.log("OK");

@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import json
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -15,6 +16,7 @@ from collab.flow import summarize
 from desktop.dispatchers.codex import CodexDispatcher
 from desktop.opening import opening
 
+THREAD_LIST_FILE = Path(".collab") / "对话列表.json"  # 打开软件先显示它，不等连接；只留在本机
 _NAMES = {"codex": "Codex", "claude": "Claude", "cursor": "Cursor", "agy": "agy"}
 
 
@@ -319,6 +321,29 @@ class ChatSession:
         }
 
 
+def _load_thread_list(path: Path) -> dict:
+    try:
+        saved = json.loads(path.read_text(encoding="utf-8"))
+        threads = saved["threads"]
+        if isinstance(threads, list) and all(isinstance(t, dict) for t in threads):
+            return {"threads": threads, "current": saved.get("current")}
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    return {"threads": [], "current": None}
+
+
+def _save_thread_list(path: Path, data: dict) -> None:
+    """项目还没有协作区就不存；内容没变也不写。存不了不影响使用。"""
+    text = json.dumps(data, ensure_ascii=False).encode("utf-8")
+    try:
+        if path.parent.is_dir() and (not path.exists() or path.read_bytes() != text):
+            spare = path.with_suffix(".tmp")
+            spare.write_bytes(text)
+            spare.replace(path)
+    except OSError:
+        pass
+
+
 class ChatHub:
     """管着当前的会话。一次只连一个项目。"""
 
@@ -345,6 +370,18 @@ class ChatHub:
             old.close()
         s.open(mode, with_opening=with_opening, thread_id=thread_id)
         return s
+
+    def thread_list(self, project) -> dict:
+        """左栏的历史对话：连着调度员就取最新的并存一份；没连上就先给上次存的。"""
+        session = self.get(project)
+        current = getattr(getattr(session, "adapter", None), "thread_id", None)
+        path = Path(project) / THREAD_LIST_FILE
+        if current is not None:
+            threads = session.list_threads()
+            if threads:
+                _save_thread_list(path, {"threads": threads, "current": current})
+            return {"threads": threads, "current": current, "cached": False}
+        return dict(_load_thread_list(path), cached=True)
 
     def get(self, project):
         s = self._session

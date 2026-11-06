@@ -103,6 +103,12 @@ class NavPageTest(unittest.TestCase):
         self.assertIn("self.leftView == .config", saved, "等关连接的几秒里用户可能已经走开了")
         self.assertIn("self.project == place", saved)
 
+    def test_prompt_shows_the_current_view_until_confirmed(self):
+        """弹窗时左上角不能已经高亮终端，看起来像切过去了。"""
+        swift = SWIFT.read_text(encoding="utf-8")
+        body = swift[swift.index("func switchToTerminal"):swift.index("func confirmInterrupt")]
+        self.assertLess(body.index("self.segment.selectedSegment ="), body.index("self.confirmInterrupt()"))
+
     def test_every_way_to_the_terminal_asks_first(self):
         swift = SWIFT.read_text(encoding="utf-8")
         for name in ("@objc func continueChat", "@objc func newChat"):
@@ -134,6 +140,23 @@ class NavPageTest(unittest.TestCase):
         start = start[:start.index("let after =")]
         self.assertIn('(firstTime || who.saved != "codex")', start)
         self.assertIn("role: role", start)
+
+    def test_saved_list_only_fills_an_empty_list(self):
+        """存好的选中只用于刚打开；点新对话后不能又选回上一段。"""
+        nav = (STATIC / "nav.js").read_text(encoding="utf-8")
+        self.assertIn("if (d.cached && threads.length) return;", nav)
+
+    def test_terminal_only_dispatcher_gets_no_conversation_list(self):
+        """换成只能用终端的调度员后，那些行打不开，不该显示。"""
+        nav = (STATIC / "nav.js").read_text(encoding="utf-8")
+        swift = SWIFT.read_text(encoding="utf-8")
+        self.assertIn('params.get("chat") !== "1"', nav)
+        self.assertIn("hasChat", swift[swift.index("func loadPanel"):swift.index("func loadPanel") + 900])
+
+    def test_list_refreshes_soon_after_connecting(self):
+        nav = (STATIC / "nav.js").read_text(encoding="utf-8")
+        self.assertIn("d.cached", nav)
+        self.assertIn("WARM_MS", nav)
 
     def test_coming_back_from_settings_does_not_reconnect(self):
         """连接一直在，页面也一直在收消息，重连只会把消息再放一遍。"""

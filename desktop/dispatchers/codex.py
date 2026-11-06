@@ -140,8 +140,8 @@ def _user_words(item: dict, marker: str) -> str:
     if _is_real_user_text(preview, marker):
         return _clean_title(preview)
     name = (item.get("name") or "").strip()
-    if name and not name.startswith("AGENTS.md"):
-        return _clean_title(name)
+    if name and not name.startswith("AGENTS.md") and not preview.startswith(marker):
+        return _clean_title(name)  # 只有自动交代的对话，Codex 也会起名，这不算用户说过话
     return ""
 
 

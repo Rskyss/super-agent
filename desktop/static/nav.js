@@ -50,7 +50,8 @@ var NavCore = {
 if (typeof module !== "undefined") module.exports = NavCore;
 
 if (typeof document !== "undefined") (function () {
-  var POLL_MS = 1500, THREADS_MS = 5000;
+  var POLL_MS = 1500, THREADS_MS = 5000, WARM_MS = 500, WARM_TRIES = 30;
+  var waiting = true, warmTries = 0;   // 还在用存好的列表：连上前勤快点问，连上马上换成最新的
   var params = new URLSearchParams(location.search);
   var project = params.get("project") || "", dispatcher = params.get("dispatcher") || "", token = params.get("token") || "";
   var selected = params.get("selected") || null, mode = params.get("mode") || "main";
@@ -125,10 +126,12 @@ if (typeof document !== "undefined") (function () {
     }).catch(function () { /* 下一次再取 */ });
   }
   function fetchThreads() {
-    if (!token) return Promise.resolve();
+    if (!token || params.get("chat") !== "1") { waiting = false; return Promise.resolve(); }  // 只能用终端的调度员没有这个列表
     return fetch("/api/chat/threads?" + new URLSearchParams({ project: project, token: token }).toString())
       .then(function (r) { return r.json(); })
       .then(function (d) {
+        waiting = !!d.cached;
+        if (d.cached && threads.length) return;   // 存好的只用于刚打开，别盖掉当前选中
         // 切到终端时对话让出去了，列表保留上一次的
         if (!d.threads || !d.threads.length) return;
         if (d.current === pendingThread) pendingThread = null;
@@ -136,7 +139,9 @@ if (typeof document !== "undefined") (function () {
         drawThreads();
       }).catch(function () { /* 下一次再取 */ });
   }
-  function threadLoop() { fetchThreads().then(function () { setTimeout(threadLoop, THREADS_MS); }); }
+  function threadLoop() {
+    fetchThreads().then(function () { setTimeout(threadLoop, waiting && warmTries++ < WARM_TRIES ? WARM_MS : THREADS_MS); });
+  }
   function loop() { poll().then(function () { setTimeout(loop, POLL_MS); }); }
 
   window.SuperAgentNav = {

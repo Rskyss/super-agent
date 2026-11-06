@@ -71,6 +71,11 @@
 
 .offline { width: 100%; max-width: 720px; margin: 0 auto 8px; background: var(--surface-2); color: var(--accent); border-radius: var(--r-md); padding: 6px 12px; font-size: var(--fs-sm); }
 .offline[hidden] { display: none; }
+.working { box-sizing: border-box; width: 100%; max-width: 784px; margin: 0 auto; padding: 0 32px 8px; display: flex; align-items: center; gap: 8px; font-size: var(--fs-sm); color: var(--faint); }
+.working[hidden] { display: none; }
+.working i { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); animation: working 1.2s ease-in-out infinite; }
+@keyframes working { 50% { opacity: .3; } }
+@media (prefers-reduced-motion: reduce) { .working i { animation: none; } }
 .composer { padding: 4px 32px 20px; }
 .composer-box { max-width: 720px; margin: 0 auto; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: end; background: var(--surface); box-shadow: var(--shadow-2), inset 0 0 0 1px var(--hair); border-radius: 16px; padding: 8px 8px 8px 16px; transition: box-shadow var(--t-base) var(--ease); }
 .composer-box:focus-within { box-shadow: var(--shadow-2), inset 0 0 0 1px rgba(255, 255, 255, .2); }

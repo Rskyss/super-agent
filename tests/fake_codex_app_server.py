@@ -3,6 +3,7 @@
 环境变量：
   FAKE_CODEX_DB     存对话的文件（让“接着上次的对话”能测）
   FAKE_CODEX_IMAGE  “画图”时报出的图片路径
+  FAKE_CODEX_DELAY  回话前等几秒
 按用户消息里的字决定怎么回：含“画”→画图；含“运行”→先问允许吗；含“数”→一直数到被停止；含“读”→读文件；
 含“崩”→直接退出（测连接断了）；其他→简单回一句。
 """
@@ -89,6 +90,7 @@ def run_turn(thread_id, turn_id, text):
     items = [{"type": "userMessage", "id": f"{turn_id}-u", "content": [{"type": "text", "text": text}]}]
     note("turn/started", {"threadId": thread_id, "turn": {"id": turn_id, "status": "inProgress", "items": []}})
     reply, status = "", "completed"
+    time.sleep(float(os.environ.get("FAKE_CODEX_DELAY") or 0))  # 模拟调度员想一会儿才回话
     if "崩" in text:
         os._exit(1)
     if text.startswith("【超级助手自动交代】"):
