@@ -51,8 +51,11 @@ if (typeof module !== "undefined") module.exports = NavCore;
 
 if (typeof document !== "undefined") (function () {
   var POLL_MS = 1500, THREADS_MS = 5000, WARM_MS = 500, WARM_TRIES = 30;
+  var clerkMode = false;
   var waiting = true, warmTries = 0;   // 还在用存好的列表：连上前勤快点问，连上马上换成最新的
   var params = new URLSearchParams(location.search);
+  clerkMode = params.get("clerk") === "1";   // 行政对话都在本机，刷新不花什么
+  if (clerkMode) THREADS_MS = 1500;
   var project = params.get("project") || "", dispatcher = params.get("dispatcher") || "", token = params.get("token") || "";
   var selected = params.get("selected") || null, mode = params.get("mode") || "main";
   var cards = [], threads = [], showAllThreads = false, pendingThread = null, lastKey = "";
@@ -127,7 +130,8 @@ if (typeof document !== "undefined") (function () {
   }
   function fetchThreads() {
     if (!token || params.get("chat") !== "1") { waiting = false; return Promise.resolve(); }  // 只能用终端的调度员没有这个列表
-    return fetch("/api/chat/threads?" + new URLSearchParams({ project: project, token: token }).toString())
+    var feed = clerkMode ? "/api/clerk/list?" : "/api/chat/threads?";
+    return fetch(feed + new URLSearchParams({ project: project, token: token }).toString())
       .then(function (r) { return r.json(); })
       .then(function (d) {
         waiting = !!d.cached;

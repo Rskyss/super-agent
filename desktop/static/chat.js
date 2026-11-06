@@ -198,6 +198,7 @@ if (typeof document !== "undefined") (function () {
   var params = new URLSearchParams(location.search);
   var project = params.get("project") || "", dispatcher = params.get("dispatcher") || "", token = params.get("token") || "";
   var names = { codex: "Codex", claude: "Claude" }, faces = { codex: "Cx", claude: "Cl" };
+  var clerkMode = params.get("clerk") === "1";   // 聊天找行政人员：走 API，不连 Codex
   var model = new ChatCore.Model(), drawn = [];
   var $ = function (id) { return document.getElementById(id); };
   var list = $("msgs");
@@ -318,11 +319,15 @@ if (typeof document !== "undefined") (function () {
 
   $("composer").addEventListener("submit", function (e) {
     e.preventDefault();
-    if (model.busy) { api("/api/chat/stop").catch(function (err) { showError(err.message); }); return; }
+    if (model.busy) {
+      api(clerkMode ? "/api/clerk/stop" : "/api/chat/stop", { conversation: currentThread }).catch(function (err) { showError(err.message); });
+      return;
+    }
     var box = $("input"), text = box.value.trim();
     if (!text) return;
     if (pendingModel) { $("status").textContent = "正在同步，稍等一下再发送"; return; }  // 话留在输入框里
     box.value = ""; resize();
+    if (clerkMode) { clerkSend(text); return; }
     api("/api/chat/send", { text: text }).catch(function (err) { box.value = text; showError(err.message); });
   });
   $("input").addEventListener("keydown", function (e) {
@@ -344,8 +349,35 @@ if (typeof document !== "undefined") (function () {
     $("offline").hidden = true;
   }
 
+  // 行政对话：内容都在本机，切换马上显示，不用连接
+  function clerkOpen(id) {
+    pause();
+    stopped = false;
+    failures = 0;
+    currentThread = id || null;
+    pendingModel = null;
+    model = new ChatCore.Model();
+    drawn = [];
+    list.innerHTML = "";
+    render();
+    api("/api/clerk/focus", { conversation: id || "" }).catch(function () { /* 只影响左栏选中 */ });
+    if (id) { var myGen = ++gen; poll(myGen); }
+  }
+
+  function clerkSend(text) {
+    var fromBlank = !currentThread, mine = gen;   // 回应到之前用户可能已经切走了
+    api("/api/clerk/send", { conversation: currentThread || "", text: text }).then(function (d) {
+      if (!fromBlank || gen !== mine) return;
+      currentThread = d.conversation;
+      api("/api/clerk/focus", { conversation: currentThread }).catch(function () {});
+      var myGen = ++gen;
+      poll(myGen);
+    }).catch(function (err) { $("input").value = text; showError(err.message); });
+  }
+
   // 从终端或设置回来：和切换对话走同一条路，接着当前这段
   function resume() {
+    if (clerkMode) { clerkOpen(currentThread); return; }
     if (blankChat) switchSession("fresh", false, null);
     else switchSession("continue", false, currentThread);
   }
@@ -383,9 +415,12 @@ if (typeof document !== "undefined") (function () {
 
   window.SuperAgentChat = {
     pause: pause, resume: resume,
-    isWorking: function () { return !stopped && !!(model.busy || (pendingModel && pendingModel.busy)); },
-    startFresh: function () { switchSession("fresh", true, null); },
-    openThread: function (id) { if (ChatCore.needsOpen(id, currentThread, connectFailed)) switchSession("continue", false, id); },
+    isWorking: function () { return !clerkMode && !stopped && !!(model.busy || (pendingModel && pendingModel.busy)); },
+    startFresh: function () { if (clerkMode) clerkOpen(null); else switchSession("fresh", true, null); },
+    openThread: function (id) {
+      if (clerkMode) { if (id !== currentThread) clerkOpen(id); return; }
+      if (ChatCore.needsOpen(id, currentThread, connectFailed)) switchSession("continue", false, id);
+    },
   };
   window.addEventListener("pagehide", pause);
   window.addEventListener("beforeunload", pause);
@@ -409,7 +444,8 @@ if (typeof document !== "undefined") (function () {
     if (stopped || myGen !== gen) return;
     var active = pendingModel || model;
     pollCtrl = typeof AbortController !== "undefined" ? new AbortController() : null;
-    fetch("/api/chat/events?" + new URLSearchParams({ project: project, since: active.seq, wait: 20, token: token }).toString(),
+    var feed = clerkMode ? "/api/clerk/events?" : "/api/chat/events?";
+    fetch(feed + new URLSearchParams({ project: project, conversation: currentThread || "", since: active.seq, wait: 20, token: token }).toString(),
           pollCtrl ? { signal: pollCtrl.signal } : {})
       .then(function (r) { return r.json(); })
       .then(function (d) {
@@ -463,6 +499,14 @@ if (typeof document !== "undefined") (function () {
 
   if (!project || !token) {
     $("status").textContent = "请从超级助手窗口打开聊天";
+  } else if (clerkMode) {
+    $("whoFace").textContent = "行";
+    $("who").textContent = "行政";
+    $("input").placeholder = "跟行政说…";
+    fetch("/api/clerk/list?" + new URLSearchParams({ project: project, token: token }).toString())
+      .then(function (r) { return r.json(); })
+      .then(function (d) { clerkOpen(d.threads && d.threads.length ? d.threads[0].id : null); })
+      .catch(function () { clerkOpen(null); });
   } else {
     var initGen = ++gen;
     api("/api/chat/open", { dispatcher: dispatcher, mode: params.get("mode") || "continue",

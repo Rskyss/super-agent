@@ -41,6 +41,7 @@ from collab.config import (  # noqa: E402
 )
 from desktop.chat import ChatHub  # noqa: E402
 from desktop.clerk.client import DEFAULT_BASE_URL, DEFAULT_MODEL, ModelClient, ModelError  # noqa: E402
+from desktop.clerk.desk import ClerkDesk  # noqa: E402
 from desktop.shell_path import adopt_terminal_path  # noqa: E402
 from desktop.view import card_view, event_text, list_cards  # noqa: E402
 
@@ -111,6 +112,9 @@ class Handler(BaseHTTPRequestHandler):
             elif url.path.startswith("/api/chat/"):
                 if self._chat_allowed(query):
                     self._chat_get(url.path, query)
+            elif url.path.startswith("/api/clerk/"):
+                if self._chat_allowed(query):
+                    self._clerk_get(url.path, query)
             elif url.path.startswith("/api/team"):
                 if self._chat_allowed(query):
                     self._team_get(url.path, query)
@@ -223,8 +227,32 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._json({"error": "没有这个地址"}, 404)
 
+    def _clerk_get(self, path: str, query: dict) -> None:
+        desk, project = self.server.desk, query.get("project", "")
+        if path == "/api/clerk/list":
+            self._json(desk.list(project))
+        elif path == "/api/clerk/events":
+            wait = min(float(query.get("wait", "20") or 20), 25)
+            self._json(desk.events(project, query.get("conversation", ""), int(query.get("since", "0") or 0), wait))
+        else:
+            self._json({"error": "没有这个地址"}, 404)
+
     def _clerk_post(self, path: str, body: dict) -> None:
         """窗口把行政人员的密钥交给本机服务：只放内存，不写文件，也不回传。"""
+        desk, project, conversation = self.server.desk, str(body.get("project") or ""), str(body.get("conversation") or "")
+        if path in ("/api/clerk/send", "/api/clerk/stop", "/api/clerk/focus"):
+            if not project or not Path(project).is_dir():
+                self._json({"error": "项目文件夹不存在"}, 400)
+                return
+            try:
+                if path == "/api/clerk/send":
+                    self._json({"ok": True, "conversation": desk.send(project, conversation, str(body.get("text") or ""))})
+                    return
+                (desk.stop if path == "/api/clerk/stop" else desk.focus)(project, conversation)
+                self._json({"ok": True})
+            except RuntimeError as exc:
+                self._json({"error": str(exc)}, 409)
+            return
         client = ModelClient(str(body.get("base_url") or DEFAULT_BASE_URL), str(body.get("model") or DEFAULT_MODEL),
                              str(body.get("api_key") or ""), timeout=30)
         if path == "/api/clerk/test":
@@ -316,6 +344,7 @@ def make_server(port: int = 0, token=None, hub=None) -> ThreadingHTTPServer:
     server.token = token          # 聊天口令；没有就不开放聊天
     server.hub = hub if hub is not None else ChatHub()
     server.clerk = None           # 行政人员的模型连接，密钥只在内存里
+    server.desk = ClerkDesk(lambda: server.clerk)
     server.checks = {}            # (项目, 第几次检测) -> 这次检测连通的进度
     return server
 

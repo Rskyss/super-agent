@@ -25,6 +25,7 @@
 //   --snapshot-delay <秒>       截图前等多久，默认 8 秒
 //   --say <话>                  截图前在聊天里说这句话
 //   --walk <文件>               按顺序点左栏、切换、收起、改窗口大小，把每一步的结果写进文件，然后退出
+//   --walk-clerk --clerk-key-file <文件>  走一遍行政聊天，不碰用户的钥匙串
 //   --walk-work                 只走“调度员干活时切终端、去设置再回来”这几步
 //   --clerk-try <文件> [--clerk-base 地址]  用文件里的密钥走一次第一屏的测试和保存，结果写到“文件.result”
 //   --interrupt-answer <stay|leave>  调度员干活时切终端，代替用户回答提示
@@ -123,7 +124,9 @@ final class ViewSwitch: NSView {
 
 /// 行政人员的密钥：只放本机钥匙串，不写进任何文件
 enum ClerkKey {
-    static var service: String { "local.superagent.clerk" + (argValue("--clerk-try") == nil ? "" : ".selftest") }
+    static var service: String {
+        "local.superagent.clerk" + (argValue("--clerk-try") == nil && argValue("--clerk-ui-test") == nil ? "" : ".selftest")
+    }
 
     static func query() -> [String: Any] {
         [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
@@ -318,6 +321,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
         startServer()
         let withOpening = argValue("--switch-test") == nil
         selectedCard = argValue("--card")
+        clerkReady = savedClerkKey() != nil  // 先定下来：不然终端型调度员会先启动并发话
         showLeft(firstLeft(), opening: withOpening)
         if let dir = argValue("--snapshot") { scheduleSnapshot(into: dir) }
         if let file = argValue("--walk") { scheduleWalk(into: file) }
@@ -771,20 +775,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
             return forced == "chat" ? .chat : (forced == "config" ? .config : .terminal)
         }
         if argValue("--command") != nil { return .terminal }
-        return Dispatcher.forProject(project)?.hasChat == true ? .chat : .terminal
+        return Dispatcher.forProject(project)?.hasChat == true || clerkReady ? .chat : .terminal
     }
 
     /// 打开项目时左边先显示什么：还没选调度员 → 先出团队配置
     func firstLeft() -> LeftView {
         if argValue("--left") != nil || argValue("--command") != nil { return preferredLeft() }
-        return Dispatcher.forProject(project) == nil ? .config : preferredLeft()
+        return Dispatcher.forProject(project) == nil && !clerkReady ? .config : preferredLeft()
     }
 
     /// 切换左边。opening：要不要发开场交代（打开项目时要，来回切换时不要）
     func showLeft(_ view: LeftView, opening: Bool, chatMode: String = "continue") {
         defer { syncRight(); syncNav() }
         let who = Dispatcher.forProject(project)
-        let canChat = who?.hasChat == true
+        let canChat = who?.hasChat == true || clerkReady
         segment.setEnabled(canChat, forSegment: 0)
         segment.setToolTip(canChat ? nil : "这位调度员暂时只能用终端视图", forSegment: 0)
         segment.setEnabled(who != nil, forSegment: 1)
@@ -861,20 +865,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
     func loadChat(mode: String = "continue", opening: Bool = true) {
         guard leftView == .chat else { return }
         pendingOpening = opening
-        guard let port = port, let who = Dispatcher.forProject(project) else {
+        let who = Dispatcher.forProject(project)
+        guard let port = port, who != nil || clerkReady else {
             if chatLoadedKey == nil {
                 chatWeb.loadHTMLString(Self.message("正在连接调度员…", background: "#17181b"), baseURL: nil)
             }
             return  // 数据服务起来后（serverSaid）会再调一次
         }
-        let key = "\(project.path)|\(who.saved)"
+        let saved = who?.saved ?? ""
+        let key = "\(project.path)|\(saved)|\(clerkReady)"
         if mode != "fresh", !opening, chatLoadedKey == key {
             chatWeb.evaluateJavaScript("window.SuperAgentChat && window.SuperAgentChat.resume()", completionHandler: nil)
             return
         }
         chatLoadedKey = key
-        let query = "project=\(urlEncode(project.path))&dispatcher=\(urlEncode(who.saved))&token=\(chatToken)"
-            + "&mode=\(mode)&opening=\(opening ? 1 : 0)"
+        let query = "project=\(urlEncode(project.path))&dispatcher=\(urlEncode(saved))&token=\(chatToken)"
+            + "&mode=\(mode)&opening=\(opening ? 1 : 0)&clerk=\(clerkReady ? 1 : 0)"
         if let url = URL(string: "http://127.0.0.1:\(port)/static/chat.html?\(query)") {
             chatWeb.load(URLRequest(url: url))
         }
@@ -1065,10 +1071,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
         guard port == nil, let line = serverOutput.split(separator: "\n").first(where: { $0.hasPrefix("PORT=") }),
               let value = Int(line.dropFirst(5)) else { return }
         port = value
+        if let key = savedClerkKey() {  // 先把密钥交给本机服务，再打开聊天
+            postLocal("/api/clerk/config", clerkForm(argValue("--clerk-base") ?? clerkBase, clerkModel, key)) { [weak self] _ in
+                self?.openAfterServer()
+            }
+        } else {
+            openAfterServer()
+            DispatchQueue.main.async { [weak self] in self?.setupClerk() }
+        }
+    }
+
+    func openAfterServer() {
         loadPanel()
         loadChat(opening: pendingOpening)
         loadConfig()
-        DispatchQueue.main.async { [weak self] in self?.setupClerk() }
+    }
+
+    func savedClerkKey() -> String? {
+        if argValue("--clerk-try") != nil || argValue("--clerk-ui-test") != nil { return nil }
+        if let file = argValue("--clerk-key-file") {  // 自测：不碰用户的钥匙串
+            return (try? String(contentsOfFile: file, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return selfTest ? nil : ClerkKey.read()
     }
 
     // MARK: 行政人员的第一屏
@@ -1113,11 +1137,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
 
     func setupClerk() {
         if let file = argValue("--clerk-try") { return clerkSelfTest(file) }
-        if let key = ClerkKey.read() {
-            postLocal("/api/clerk/config", clerkForm(clerkBase, clerkModel, key)) { _ in }
-        } else if !selfTest {
-            askClerk()
-        }
+        if let file = argValue("--clerk-ui-test") { return clerkFormSelfTest(file) }
+        if !selfTest { askClerk() }
     }
 
     /// 自测：走和第一屏一样的测试和保存，只用单独的钥匙串项，结束后删掉
@@ -1132,6 +1153,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
         }
     }
 
+    /// 自测：真的打开第一屏，填好后点按钮，看能不能走完。曾经因为界面卡住一直停在“测试中…”
+    func clerkFormSelfTest(_ file: String) {
+        let key = (try? String(contentsOfFile: file, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        DispatchQueue.main.asyncAfter(deadline: .now() + 12) {
+            let state = self.clerkReady ? "已配好" : "没走完"
+            try? "\(state) 表单=\(self.clerkFields == nil ? "已关" : "还开着")\n".write(toFile: file + ".result", atomically: true, encoding: .utf8)
+            ClerkKey.delete()
+            NSApp.terminate(nil)
+        }
+        Timer.scheduledTimer(withTimeInterval: 1, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let form = self?.clerkFields else { return }
+                form.key.stringValue = key
+                form.alert.buttons[0].performClick(nil)
+            }
+        }
+        askClerk()
+    }
+
+    var clerkReady = false  // 配好了行政人员：聊天找行政，不连 Codex
     var clerkFields: (alert: NSAlert, base: NSTextField, model: NSTextField, key: NSSecureTextField)?
 
     func askClerk() {
@@ -1151,23 +1192,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
         save.target = self
         save.action = #selector(clerkSaveClicked(_:))
         clerkFields = (alert, base, model, key)
-        alert.window.initialFirstResponder = key
-        alert.runModal()
-        clerkFields = nil
+        // 用窗口上的弹层：阻塞式弹窗在这里会挡住主线程上的回调，一直停在“测试中…”
+        alert.beginSheetModal(for: window) { [weak self] _ in
+            MainActor.assumeIsolated { self?.clerkFields = nil }
+        }
+        alert.window.makeFirstResponder(key)
     }
 
     @objc func clerkSaveClicked(_ sender: NSButton) {
         guard let form = clerkFields else { return }
         sender.isEnabled = false
         sender.title = "测试中…"
-        tryClerk(base: form.base.stringValue, model: form.model.stringValue, key: form.key.stringValue) { failure in
+        tryClerk(base: form.base.stringValue, model: form.model.stringValue, key: form.key.stringValue) { [self] failure in
             sender.isEnabled = true
             sender.title = "测试并保存"
             if let failure = failure {
                 form.alert.informativeText = failure
             } else {
-                NSApp.stopModal()
-                form.alert.window.orderOut(nil)
+                self.window.endSheet(form.alert.window)
+                self.clerkReady = true
+                self.closeChatOnServer(clearView: true) { [weak self] in
+                    guard let self = self else { return }
+                    self.loadPanel()
+                    self.showLeft(self.preferredLeft(), opening: false)
+                }
             }
         }
     }
@@ -1194,7 +1242,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
         if let url = URL(string: "http://127.0.0.1:\(port)/?\(base)&card=\(card)") {
             web.load(URLRequest(url: url))
         }
-        if let url = URL(string: "http://127.0.0.1:\(port)/static/nav.html?\(base)&selected=\(card)&mode=\(navMode())&token=\(chatToken)&chat=\(Dispatcher.forProject(project)?.hasChat == true ? 1 : 0)") {
+        if let url = URL(string: "http://127.0.0.1:\(port)/static/nav.html?\(base)&selected=\(card)&mode=\(navMode())&token=\(chatToken)&chat=\(Dispatcher.forProject(project)?.hasChat == true || clerkReady ? 1 : 0)&clerk=\(clerkReady ? 1 : 0)") {
             navWeb.load(URLRequest(url: url))
         }
     }
@@ -1309,7 +1357,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
         case #selector(openRecent(_:)): item.state = (item.representedObject as? String) == project?.path ? .on : .off
         case #selector(showChatView(_:)):
             item.state = leftView == .chat ? .on : .off
-            return who?.hasChat == true
+            return who?.hasChat == true || clerkReady
         case #selector(showTerminalView(_:)):
             item.state = leftView == .terminal ? .on : .off
             return who != nil
@@ -1452,6 +1500,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
             ("等同步", {}),
             ("看回来后", { asks("设置回来后") }),
         ]
+        func clerkView(_ name: String) {
+            navWeb.evaluateJavaScript("[].map.call(document.querySelectorAll('.thread'),function(b){return (b.classList.contains('on')?'*':'')+b.querySelector('.tt').textContent}).join(' | ')") { rows, _ in
+                self.chatWeb.evaluateJavaScript("document.getElementById('who').textContent+'：'+document.getElementById('msgs').innerText.replace(/\\s+/g,' ').slice(0,70)") { text, _ in
+                    log += "\(name) 列表：\(rows ?? "?") 中间：\(String(describing: text ?? "?"))\n"
+                }
+            }
+        }
+        let clerkSteps: [(String, () -> Void)] = [
+            ("打开", {}),
+            ("说第一句", { say("你好，只回答一个好字") }),
+            ("等回复", {}),
+            ("等回复2", {}),
+            ("看第一段", { clerkView("第一段") }),
+            ("点新对话", { nav("document.getElementById('newChat').click()") }),
+            ("看空对话", { clerkView("空对话") }),
+            ("说第二句", { say("再说一句，只回答一个行字") }),
+            ("等回复3", {}),
+            ("等回复4", {}),
+            ("看第二段", { clerkView("第二段") }),
+            ("切回第一段", { nav("var b=document.querySelector('.thread:not(.on)');if(b)b.click()") }),
+            ("看切换后", { clerkView("切换后") }),
+            ("去终端", { self.segment.selectedSegment = 1; self.segmentChanged() }),
+            ("回聊天", { self.segment.selectedSegment = 0; self.segmentChanged() }),
+            ("看回来后", { clerkView("回来后") }),
+        ]
         let allSteps: [(String, () -> Void)] = [
             ("打开", {}),
             ("点卡片", { nav("document.querySelector('[data-id=\"\(card)\"]').click()") }),
@@ -1477,7 +1550,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
             ("等切换", {}),
             ("看切换后", { threads("切换后") }),
         ]
-        let steps = CommandLine.arguments.contains("--walk-work") ? workSteps : allSteps
+        let steps = CommandLine.arguments.contains("--walk-clerk") ? clerkSteps
+            : (CommandLine.arguments.contains("--walk-work") ? workSteps : allSteps)
         for (index, step) in steps.enumerated() {
             let at = 6.0 + Double(index) * 2.0
             DispatchQueue.main.asyncAfter(deadline: .now() + at) { step.1() }

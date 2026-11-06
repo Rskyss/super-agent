@@ -4,6 +4,7 @@ import sys
 import threading
 import unittest
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -57,6 +58,45 @@ class ClerkSetupTest(unittest.TestCase):
             self.post("/api/clerk/config", self.form("good-key"), token="错的")
         self.assertEqual(caught.exception.code, 403)
         self.assertIsNone(self.server.clerk)
+
+    def test_conversation_addresses_work_through_the_server(self):
+        project = HERE.parent / "tests"  # 只用来过“文件夹存在”的检查，这里不发话
+        self.assertEqual(self.post("/api/clerk/focus", {"project": str(project), "conversation": ""}), {"ok": True})
+        request = urllib.request.Request(self.base + "/api/clerk/list?" + urllib.parse.urlencode({"project": "/不存在", "token": "口令"}))
+        self.assertEqual(json.loads(urllib.request.urlopen(request, timeout=5).read())["threads"], [])
+
+    def test_chat_page_talks_to_the_clerk_without_touching_codex(self):
+        chat_js = (HERE.parent / "desktop" / "static" / "chat.js").read_text(encoding="utf-8")
+        nav_js = (HERE.parent / "desktop" / "static" / "nav.js").read_text(encoding="utf-8")
+        self.assertIn('params.get("clerk") === "1"', chat_js)
+        self.assertIn("/api/clerk/send", chat_js)
+        self.assertIn("/api/clerk/events", chat_js)
+        self.assertIn("/api/clerk/list", nav_js)
+        start = chat_js[chat_js.rindex("if (!project || !token)"):]
+        self.assertLess(start.index("clerkMode"), start.index("/api/chat/open"))
+
+    def test_window_opens_the_clerk_chat_once_a_key_exists(self):
+        swift = SWIFT.read_text(encoding="utf-8")
+        self.assertIn("clerkReady", swift)
+        self.assertIn("&clerk=", swift)
+        self.assertIn("who?.hasChat == true || clerkReady", swift)
+
+    def test_window_knows_about_the_clerk_before_choosing_what_to_show(self):
+        """否则终端型调度员会先被启动并发出开场交代，白花额度。"""
+        swift = SWIFT.read_text(encoding="utf-8")
+        self.assertLess(swift.index("clerkReady = savedClerkKey() != nil"), swift.index("showLeft(firstLeft()"))
+
+    def test_first_screen_does_not_block_its_own_test_result(self):
+        """runModal 在主线程队列里运行时，测试结果回不来，界面一直停在“测试中…”。"""
+        swift = SWIFT.read_text(encoding="utf-8")
+        ask = swift[swift.index("func askClerk()"):swift.index("@objc func clerkSaveClicked")]
+        self.assertIn("beginSheetModal", ask)
+        self.assertNotIn("runModal", ask)
+
+    def test_late_send_reply_does_not_pull_the_page_back(self):
+        chat_js = (HERE.parent / "desktop" / "static" / "chat.js").read_text(encoding="utf-8")
+        send = chat_js[chat_js.index("function clerkSend"):]
+        self.assertIn("if (!fromBlank || gen !== mine) return;", send[:600])
 
     def test_window_saves_the_key_only_in_the_keychain_after_a_passing_test(self):
         swift = SWIFT.read_text(encoding="utf-8")
