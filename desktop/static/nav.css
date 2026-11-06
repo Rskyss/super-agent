@@ -37,6 +37,11 @@ body { overflow: hidden; }
 .more:hover { color: var(--text); }
 .gh { display: flex; align-items: center; justify-content: space-between; padding: 16px 10px 7px; font-size: var(--fs-base); font-weight: 500; color: var(--text); }
 .gh span:last-child { font-family: var(--font-mono); font-size: var(--fs-xs); font-weight: 400; color: var(--dim); }
+#codexOld { margin-top: 4px; }
+.codex-toggle { width: 100%; background: none; border: 0; cursor: default; color: inherit; }
+.codex-toggle .chev { font-family: inherit; transition: transform var(--t-fast) var(--ease); }
+.codex-toggle[aria-expanded="true"] .chev { transform: rotate(90deg); }
+#codexOldList .thread.on { color: var(--text); }
 
 .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--surface-3); }
 .dot[hidden] { display: none; }

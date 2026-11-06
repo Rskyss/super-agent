@@ -41,6 +41,7 @@ from collab.config import (  # noqa: E402
 )
 from desktop.chat import ChatHub  # noqa: E402
 from desktop.clerk.client import DEFAULT_BASE_URL, DEFAULT_MODEL, ModelClient, ModelError  # noqa: E402
+from desktop.clerk.codex_history import list_history, read_history  # noqa: E402
 from desktop.clerk.desk import ClerkDesk  # noqa: E402
 from desktop.shell_path import adopt_terminal_path  # noqa: E402
 from desktop.view import card_view, event_text, list_cards  # noqa: E402
@@ -234,6 +235,10 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/clerk/events":
             wait = min(float(query.get("wait", "20") or 20), 25)
             self._json(desk.events(project, query.get("conversation", ""), int(query.get("since", "0") or 0), wait))
+        elif path == "/api/clerk/codex/list":
+            self._json({"threads": list_history(project) if project else []})
+        elif path == "/api/clerk/codex/thread":
+            self._json({"events": read_history(project, query.get("id", "")) if project else []})
         else:
             self._json({"error": "没有这个地址"}, 404)
 

@@ -59,6 +59,7 @@ if (typeof document !== "undefined") (function () {
   var project = params.get("project") || "", dispatcher = params.get("dispatcher") || "", token = params.get("token") || "";
   var selected = params.get("selected") || null, mode = params.get("mode") || "main";
   var cards = [], threads = [], showAllThreads = false, pendingThread = null, lastKey = "";
+  var codexOldOpen = false, codexOldLoaded = false, codexThreads = [], codexCurrent = null;
 
   function $(id) { return document.getElementById(id); }
   function esc(s) {
@@ -83,24 +84,54 @@ if (typeof document !== "undefined") (function () {
   function drawThreads() {
     var shown = NavCore.visibleThreads(threads, showAllThreads);
     $("threads").innerHTML = shown.map(function (t) {
-      return '<button class="thread' + (t.current && mode === "main" ? " on" : "") + '" type="button" data-thread="' + esc(t.id) + '" data-current="' + (t.current ? 1 : 0) + '">' +
+      return '<button class="thread' + (t.current && mode === "main" && !codexCurrent ? " on" : "") + '" type="button" data-thread="' + esc(t.id) + '" data-current="' + (t.current ? 1 : 0) + '">' +
         '<span class="tt">' + esc(NavCore.threadTitle(t.title)) + '</span><span class="tm">' + esc(NavCore.timeLabel(t.updated)) + "</span></button>";
     }).join("") + (threads.length > shown.length ? '<button class="more" id="moreThreads" type="button">全部 ' + threads.length + " 段</button>" : "");
   }
+  function drawCodexOld() {
+    var box = $("codexOld"), list = $("codexOldList"), toggle = $("codexOldToggle");
+    if (!clerkMode) { box.hidden = true; return; }
+    box.hidden = false;
+    toggle.setAttribute("aria-expanded", codexOldOpen ? "true" : "false");
+    list.hidden = !codexOldOpen;
+    if (!codexOldOpen) return;
+    if (!codexOldLoaded) { list.innerHTML = '<div class="empty">正在读取…</div>'; return; }
+    if (!codexThreads.length) { box.hidden = true; return; }
+    list.innerHTML = codexThreads.map(function (t) {
+      return '<button class="thread' + (codexCurrent === t.id ? " on" : "") + '" type="button" data-codex="' + esc(t.id) + '">' +
+        '<span class="tt">' + esc(NavCore.threadTitle(t.title)) + '</span><span class="tm">' + esc(NavCore.timeLabel(t.updated)) + "</span></button>";
+    }).join("");
+  }
+  function loadCodexOld() {
+    if (!token) { codexOldLoaded = true; codexThreads = []; drawCodexOld(); return; }
+    fetch("/api/clerk/codex/list?" + new URLSearchParams({ project: project, token: token }).toString())
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        codexThreads = d.threads || [];
+        codexOldLoaded = true;
+        if (!codexThreads.length) codexOldOpen = false;
+        drawCodexOld();
+      })
+      .catch(function () { codexThreads = []; codexOldLoaded = true; drawCodexOld(); });
+  }
   function drawMarks() {
-    $("main").classList.toggle("on", mode === "main");
+    $("main").classList.toggle("on", mode === "main" && !codexCurrent);
     $("gear").classList.toggle("on", mode === "settings");
     drawThreads();
+    drawCodexOld();
   }
 
   $("cards").addEventListener("click", function (ev) {
     var b = ev.target.closest("button[data-id]");
     if (b) tell("superagent://card?id=" + encodeURIComponent(b.getAttribute("data-id")));
   });
-  $("main").addEventListener("click", function () { tell("superagent://main"); });
+  $("main").addEventListener("click", function () {
+    codexCurrent = null; drawMarks();
+    tell("superagent://main");
+  });
   $("gear").addEventListener("click", function () { tell("superagent://settings"); });
   $("newChat").addEventListener("click", function () {
-    pendingThread = null; threads = NavCore.markCurrent(threads, null); drawThreads();
+    pendingThread = null; codexCurrent = null; threads = NavCore.markCurrent(threads, null); drawMarks();
     tell("superagent://new");
   });
   $("threads").addEventListener("click", function (ev) {
@@ -109,9 +140,24 @@ if (typeof document !== "undefined") (function () {
     if (!b) return;
     // 马上标出选中，不等连接
     pendingThread = b.getAttribute("data-thread");
+    codexCurrent = null;
     threads = NavCore.markCurrent(threads, pendingThread);
-    drawThreads();
+    drawMarks();
     tell("superagent://thread?id=" + encodeURIComponent(pendingThread));
+  });
+  $("codexOldToggle").addEventListener("click", function () {
+    codexOldOpen = !codexOldOpen;
+    drawCodexOld();
+    if (codexOldOpen && !codexOldLoaded) loadCodexOld();
+  });
+  $("codexOldList").addEventListener("click", function (ev) {
+    var b = ev.target.closest("button[data-codex]");
+    if (!b) return;
+    codexCurrent = b.getAttribute("data-codex");
+    pendingThread = null;
+    threads = NavCore.markCurrent(threads, null);
+    drawMarks();
+    tell("superagent://codex?id=" + encodeURIComponent(codexCurrent));
   });
   $("q").addEventListener("input", drawList);
 
@@ -149,7 +195,11 @@ if (typeof document !== "undefined") (function () {
   function loop() { poll().then(function () { setTimeout(loop, POLL_MS); }); }
 
   window.SuperAgentNav = {
-    select: function (id, newMode) { selected = id || null; mode = newMode; drawList(); drawMarks(); },
+    select: function (id, newMode) {
+      selected = id || null; mode = newMode;
+      if (newMode !== "main") codexCurrent = null;
+      drawList(); drawMarks();
+    },
     refreshThreads: fetchThreads,
   };
 

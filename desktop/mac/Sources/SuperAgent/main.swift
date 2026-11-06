@@ -943,6 +943,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
             selectCard(nil)
         case "thread":
             if let id = value("id") { openThread(id) }
+        case "codex":
+            if let id = value("id") { openCodexHistory(id) }
         case "new":
             selectCard(nil)
             newChat(nil)
@@ -956,6 +958,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
         default:
             break
         }
+    }
+
+    /// 左栏点了一段旧 Codex 对话：中间只读显示，不打开可写连接
+    func openCodexHistory(_ id: String) {
+        selectCard(nil)
+        let wasChat = leftView == .chat
+        if !wasChat { showLeft(.chat, opening: false) }
+        let open = { [weak self] in
+            guard let self = self, self.leftView == .chat else { return }
+            self.chatWeb.evaluateJavaScript(
+                "window.SuperAgentChat && window.SuperAgentChat.openCodexHistory(\(self.jsValue(id)))",
+                completionHandler: nil)
+        }
+        if wasChat { open() } else { DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: open) }
     }
 
     @objc func openTeamConfig(_ sender: Any?) { showLeft(.config, opening: false) }

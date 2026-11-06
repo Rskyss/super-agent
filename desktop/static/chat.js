@@ -340,6 +340,15 @@ if (typeof document !== "undefined") (function () {
   var threadCache = {}, currentThread = null;   // 读好的历史对话：点的时候直接显示
   var connectFailed = false;                    // 当前这段没连上，再点一次要重连
   var blankChat = false;                        // 新对话还没说话：Codex 还没存档，接不回来
+  var viewingCodex = false;                     // 正在只读看旧 Codex 对话
+  var clerkPlaceholder = "跟行政说…";
+
+  function setComposerLocked(locked, placeholder) {
+    $("input").disabled = !!locked;
+    $("input").placeholder = placeholder || (clerkMode ? clerkPlaceholder : "跟调度员说…");
+    var send = $("send");
+    if (send) send.disabled = !!locked;
+  }
 
   function pause() {
     stopped = true;
@@ -354,6 +363,8 @@ if (typeof document !== "undefined") (function () {
     pause();
     stopped = false;
     failures = 0;
+    viewingCodex = false;
+    setComposerLocked(false, clerkPlaceholder);
     currentThread = id || null;
     pendingModel = null;
     model = new ChatCore.Model();
@@ -362,6 +373,36 @@ if (typeof document !== "undefined") (function () {
     render();
     api("/api/clerk/focus", { conversation: id || "" }).catch(function () { /* 只影响左栏选中 */ });
     if (id) { var myGen = ++gen; poll(myGen); }
+  }
+
+  function openCodexHistory(id) {
+    if (!id) return;
+    pause();
+    stopped = true;
+    viewingCodex = true;
+    currentThread = null;
+    pendingModel = null;
+    model = new ChatCore.Model();
+    model.status = "这段只能看";
+    drawn = [];
+    list.innerHTML = "";
+    setComposerLocked(true, "这段只能看，想继续请用终端");
+    render();
+    fetch("/api/clerk/codex/thread?" + new URLSearchParams({ project: project, id: id, token: token }).toString())
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (!viewingCodex) return;
+        model = ChatCore.modelFrom(d.events || []);
+        model.status = "这段只能看";
+        drawn = [];
+        list.innerHTML = "";
+        render();
+        list.scrollTop = list.scrollHeight;
+      })
+      .catch(function (err) {
+        if (!viewingCodex) return;
+        showError(err.message || "读不到这段旧对话");
+      });
   }
 
   function clerkSend(text) {
@@ -418,9 +459,10 @@ if (typeof document !== "undefined") (function () {
     isWorking: function () { return !clerkMode && !stopped && !!(model.busy || (pendingModel && pendingModel.busy)); },
     startFresh: function () { if (clerkMode) clerkOpen(null); else switchSession("fresh", true, null); },
     openThread: function (id) {
-      if (clerkMode) { if (id !== currentThread) clerkOpen(id); return; }
+      if (clerkMode) { if (id !== currentThread || viewingCodex) clerkOpen(id); return; }
       if (ChatCore.needsOpen(id, currentThread, connectFailed)) switchSession("continue", false, id);
     },
+    openCodexHistory: openCodexHistory,
   };
   window.addEventListener("pagehide", pause);
   window.addEventListener("beforeunload", pause);
@@ -502,7 +544,7 @@ if (typeof document !== "undefined") (function () {
   } else if (clerkMode) {
     $("whoFace").textContent = "行";
     $("who").textContent = "行政";
-    $("input").placeholder = "跟行政说…";
+    $("input").placeholder = clerkPlaceholder;
     fetch("/api/clerk/list?" + new URLSearchParams({ project: project, token: token }).toString())
       .then(function (r) { return r.json(); })
       .then(function (d) { clerkOpen(d.threads && d.threads.length ? d.threads[0].id : null); })
