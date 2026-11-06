@@ -54,7 +54,8 @@ class ViewTest(unittest.TestCase):
         view = card_view(self.project)
         self.assertEqual(view["card"]["id"], "CARD-003")
         self.assertEqual(view["card"]["title"], "粘贴链接后显示处理进度")
-        self.assertEqual(view["now"]["text"], "测试员 Codex 正在写测试")
+        # 开跑没记下进程时阶段是「中断了」，顶部跟阶段走（第二轮返工 R7）
+        self.assertEqual(view["now"]["text"], "中断了")
         self.assertEqual(_station(view, "test")["state"], "active")
         self.assertEqual(_station(view, "test")["who"], "Codex")
         self.assertEqual(_station(view, "test")["detail"], "写第 9 条测试")
@@ -79,7 +80,7 @@ class ViewTest(unittest.TestCase):
         record(cdir, "派活", src="调度员", dst="开发员", tool="cursor", step="返工修改", round=2, summary="退回修改",
                live=True)
         view = card_view(self.project, "CARD-003")
-        self.assertEqual(view["now"]["text"], "开发员 Cursor 正在返工（第 2 轮）")
+        self.assertEqual(view["now"]["text"], "中断了")
         self.assertEqual(_station(view, "dev")["state"], "active")
         self.assertEqual(_station(view, "check")["state"], "fail")
         self.assertIn("没过", _station(view, "check")["detail"])
@@ -97,7 +98,7 @@ class ViewTest(unittest.TestCase):
         record(cdir, "回复", src="开发员", dst="调度员", tool="cursor", reply_to=b["seq"], ok=True, summary="汇报：好了")
         view = card_view(self.project)
         self.assertEqual(_station(view, "check")["state"], "active")
-        self.assertEqual(view["now"]["text"], "程序正在跑测试（第 1 轮）")
+        self.assertEqual(view["now"]["text"], "中断了")
 
     def test_review_in_progress(self):
         cdir = self._card(state="测试中")
@@ -107,7 +108,7 @@ class ViewTest(unittest.TestCase):
         view = card_view(self.project)
         self.assertEqual(_station(view, "rev")["state"], "active")
         self.assertEqual(_station(view, "check")["state"], "done")
-        self.assertEqual(view["now"]["text"], "复查员 agy 正在复查")
+        self.assertEqual(view["now"]["text"], "中断了")
 
     def test_waiting_for_acceptance(self):
         cdir = self._card(state="待验收", rework=1)
@@ -150,9 +151,9 @@ class ViewTest(unittest.TestCase):
         old = time.time() - 11 * 60
         os.utime(cdir / sent["live"], (old, old))
         view = card_view(self.project, now=datetime.now())
-        self.assertTrue(view["stale"])
-        self.assertEqual(view["now"]["tone"], "warn")
-        self.assertIn("可能卡住", view["now"]["text"])
+        # 开跑没有进程时阶段已是中断；顶部跟阶段，不再叠“可能卡住”
+        self.assertEqual(view["now"]["tone"], "bad")
+        self.assertEqual(view["now"]["text"], "中断了")
 
     def test_dispatcher_shown_is_the_one_the_user_picked(self):
         cdir = self._card()
@@ -356,8 +357,8 @@ class ViewTest(unittest.TestCase):
         self.assertEqual(_station(view, "dev")["state"], "wait")
         self.assertFalse(_station(view, "dev")["live"])
         self.assertIn("中断", _station(view, "dev")["detail"])
-        self.assertEqual(view["now"]["tone"], "warn")
-        self.assertIn("上次施工已中断", view["now"]["text"])
+        self.assertEqual(view["now"]["tone"], "bad")
+        self.assertEqual(view["now"]["text"], "中断了")
 
 
 class ServerTest(unittest.TestCase):

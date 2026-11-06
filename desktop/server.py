@@ -206,7 +206,13 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 launch(project, "run", card_id, ["run", project, card_id, "--test-command", test_cmd])
             except TaskBusy:
+                flow_record(cdir, "开工失败", src="程序", dst="你", summary="已有一张卡在施工，等它做完再开工")
                 self._card_action_error("已有一张卡在施工，等它做完再开工")
+                return
+            except OSError as exc:
+                flow_record(cdir, "开工失败", src="程序", dst="你",
+                            summary="开工没能启动起来", text=str(exc))
+                self._card_action_error("开工没能启动起来，可以点接着跑再试，或者先不做了")
                 return
             self._json({"ok": True})
             return
@@ -222,7 +228,13 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 launch(project, "run", card_id, run_args)
             except TaskBusy:
+                flow_record(cdir, "开工失败", src="程序", dst="你", summary="已有一张卡在施工，等它做完再开工")
                 self._card_action_error("已有一张卡在施工，等它做完再开工")
+                return
+            except OSError as exc:
+                flow_record(cdir, "开工失败", src="程序", dst="你",
+                            summary="开工没能启动起来", text=str(exc))
+                self._card_action_error("开工没能启动起来，可以点接着跑再试，或者先不做了")
                 return
             self._json({"ok": True})
             return

@@ -13,13 +13,16 @@ from collab.state import Card
 
 
 def process_start(pid) -> str:
-    """读进程启动时间；读不到返回空字符串。"""
+    """读进程启动时间；读不到返回空字符串。固定英文和 UTC，避免语言/时区影响比对。"""
     if pid is None:
         return ""
+    env = dict(os.environ)
+    env["LC_ALL"] = "C"
+    env["TZ"] = "UTC"
     try:
         out = subprocess.check_output(
             ["ps", "-o", "lstart=", "-p", str(int(pid))],
-            stderr=subprocess.DEVNULL, text=True,
+            stderr=subprocess.DEVNULL, text=True, env=env,
         )
     except (OSError, ValueError, TypeError, subprocess.CalledProcessError):
         return ""
@@ -208,6 +211,12 @@ def card_phase(project: str, card_id: str) -> dict:
         return _plan_phase(project, card_id, cdir, events)
 
     if state == "待派发":
+        start_results = [e for e in events if e.get("kind") in ("开工", "开工失败")]
+        if start_results and start_results[-1].get("kind") == "开工失败":
+            return {
+                "code": "start_failed", "label": "开工失败", "tone": "bad", "needs_you": True,
+                "detail": "", "actions": ["resume", "discard"],
+            }
         started = False
         if run_rec is not None and run_rec.get("card") == card_id:
             started = True

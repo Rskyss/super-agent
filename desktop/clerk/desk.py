@@ -289,7 +289,15 @@ class ClerkDesk:
             if not self._alive(conv, turn):
                 raise _Stopped
             use_tools = round_no < MAX_TOOL_ROUNDS
-            answer = client.chat(messages, on_text=on_text, tools=TOOLS if use_tools else None)
+            try:
+                answer = client.chat(messages, on_text=on_text, tools=TOOLS if use_tools else None)
+            except ModelError as exc:
+                prior = "\n".join(parts)
+                if prior:
+                    extra = (exc.partial or "").strip()
+                    merged = prior if not extra else f"{prior}\n{extra}"
+                    raise ModelError(str(exc), partial=merged) from exc
+                raise
             reply = answer.get("text") or ""
             if reply.strip():
                 parts.append(reply.strip())

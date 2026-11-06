@@ -163,7 +163,10 @@ def _read(project_dir) -> dict:
     if not path.exists():
         return {}
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        raw = path.read_bytes()
+        data = json.loads(raw.decode("utf-8"))
+    except UnicodeDecodeError as exc:
+        raise ConfigError(f"{path} 编码不对，读不出来") from exc
     except json.JSONDecodeError as exc:
         raise ConfigError(f"{path} 不是合法 JSON：{exc}") from exc
     if not isinstance(data, dict):

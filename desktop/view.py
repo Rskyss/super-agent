@@ -13,7 +13,7 @@ from pathlib import Path
 
 from collab.config import ConfigError, load_team
 from collab.flow import read_flow, summarize, text_of, working_now
-from collab.phase import card_phase
+from collab.phase import card_phase, process_is_alive
 from collab.judge import PASS
 from collab.state import Card
 
@@ -51,18 +51,6 @@ def _when(event):
 
 
 _INTERNAL_HEADINGS = ("务必先看", "执行员", "不要调用", "注意事项", "重要提示")
-
-
-def _pid_alive(pid) -> bool:
-    if not pid:
-        return True
-    try:
-        os.kill(int(pid), 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except (PermissionError, ValueError, TypeError):
-        return True
 
 
 def _title(cdir: Path, card_id: str) -> str:
@@ -373,11 +361,13 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
     requirement = next((e for e in events if e.get("kind") == "需求"), None)
 
     runs = [e for e in events if e.get("kind") == "开跑"]
-    last_run_pid = runs[-1].get("pid") if runs else None
+    last_run = runs[-1] if runs else None
+    last_run_pid = last_run.get("pid") if last_run else None
+    last_run_started = last_run.get("started") if last_run else None
     interrupted_run = bool(
         state in ("开发中", "待测试", "测试中")
         and last_run_pid is not None
-        and not _pid_alive(last_run_pid)
+        and not process_is_alive(last_run_pid, last_run_started)
     )
     disp_busy_after = bool(chat and (chat["busy"] or chat["asking"]) and state == "待验收")
 
@@ -487,13 +477,16 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
     if open_ev and quiet is not None and quiet > QUIET_WARN_SECONDS and state not in TERMINAL_STATES:
         view["stale"] = True
         now_text, tone = now_text + "（超过 10 分钟没动静，可能卡住）", "warn"
-    # 这些阶段顶部一句话跟阶段标签一致；调度员/工人正在干活的细节文案优先保留
+    # 这些阶段顶部一句话跟阶段标签一致；放弃/中断不论还有没有未完成的派活都跟阶段走
     code = phase.get("code")
     chat_live = bool(chat and (chat.get("busy") or chat.get("asking")))
-    if (code in ("plan_failed", "plan_waiting", "planning", "dropped", "start_failed")
+    tone_map = {"wait": "wait", "run": "run", "bad": "bad", "ok": "ok", "done": "idle"}
+    if code in ("dropped", "interrupted"):
+        now_text = phase.get("label") or now_text
+        tone = tone_map.get(phase.get("tone"), tone)
+    elif (code in ("plan_failed", "plan_waiting", "planning", "start_failed")
             and not chat_live and not open_ev and not testing):
         now_text = phase.get("label") or now_text
-        tone = {"wait": "wait", "run": "run", "bad": "bad", "ok": "ok", "done": "idle"}.get(
-            phase.get("tone"), tone)
+        tone = tone_map.get(phase.get("tone"), tone)
     view["now"] = {"text": now_text, "tone": tone}
     return view

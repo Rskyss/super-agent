@@ -356,16 +356,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
-        var chosen: URL?
-        let done = DispatchSemaphore(value: 0)
-        panel.begin { response in
-            if response == .OK { chosen = panel.url }
-            done.signal()
-        }
-        while done.wait(timeout: .now() + 0.05) == .timedOut {
-            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
-        }
-        return chosen
+        // 系统弹窗要用 runModal，手工空转等收不到鼠标和键盘，会卡死
+        return panel.runModal() == .OK ? panel.url : nil
     }
 
     // MARK: 打开项目：接入 / 迁移
@@ -423,18 +415,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
             + "协作记录一条都不会动。不删也不影响使用。"
         alert.addButton(withTitle: "删掉旧协作包")
         alert.addButton(withTitle: "先留着")
-        var ok = false
-        let done = DispatchSemaphore(value: 0)
-        let host = window ?? NSApp.windows.first
-        guard let host = host else { return false }
-        alert.beginSheetModal(for: host) { response in
-            ok = response == .alertFirstButtonReturn
-            done.signal()
-        }
-        while done.wait(timeout: .now() + 0.05) == .timedOut {
-            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
-        }
-        return ok
+        // 系统弹窗要用 runModal，手工空转等会卡死
+        return alert.runModal() == .alertFirstButtonReturn
     }
 
     /// 打开另一个项目（菜单“打开项目…”或“最近打开”）
@@ -1089,18 +1071,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
         alert.informativeText = "切到终端会中断这一轮，还没完成的内容可能丢失。"
         alert.addButton(withTitle: "留在聊天")
         alert.addButton(withTitle: "切到终端")
-        var leave = false
-        let done = DispatchSemaphore(value: 0)
-        let host = window ?? NSApp.windows.first
-        guard let host = host else { return false }
-        alert.beginSheetModal(for: host) { response in
-            leave = response == .alertSecondButtonReturn
-            done.signal()
-        }
-        while done.wait(timeout: .now() + 0.05) == .timedOut {
-            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
-        }
-        return leave
+        // 系统弹窗要用 runModal，手工空转等会卡死
+        return alert.runModal() == .alertSecondButtonReturn
     }
 
     // MARK: 右边：本机数据服务 + 面板页面

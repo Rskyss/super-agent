@@ -263,9 +263,7 @@ def stop_construction(project: str, card_id: str) -> None:
         _stopping.add(key)
     try:
         rec = _read_backend_raw(project, "run")
-        if rec is None:
-            return
-        if str(rec.get("card") or "") != str(card_id):
+        if rec is None or str(rec.get("card") or "") != str(card_id):
             raise StopWrongCard("这张卡不是从这里开工的，请到终端里停")
         try:
             pid = int(rec["pid"])
