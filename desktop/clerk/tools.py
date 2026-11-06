@@ -8,6 +8,7 @@ from pathlib import Path
 
 from collab.config import ConfigError, load_team
 from collab.flow import read_flow
+from collab.phase import card_phase
 from collab.state import Card
 
 _MAX_RESULT = 6000
@@ -166,7 +167,8 @@ def _list_cards(project: str) -> str:
         except (OSError, ValueError, KeyError, TypeError):
             continue
         title = _card_title(state_file.parent, card.card_id)
-        rows.append(f"{card.card_id}｜{title}｜{card.state}｜返工 {card.rework} 次")
+        label = card_phase(project, card.card_id).get("label") or card.state
+        rows.append(f"{card.card_id}｜{title}｜{card.state}｜{label}｜返工 {card.rework} 次")
     return "\n".join(rows) if rows else "还没有任务卡片。"
 
 
@@ -183,7 +185,11 @@ def _read_card(project: str, args: dict) -> str:
     except (OSError, ValueError, KeyError, TypeError):
         return "这张卡片读不出来。"
     title = _card_title(cdir, card.card_id)
-    lines = [f"编号：{card.card_id}", f"标题：{title}", f"状态：{card.state}", f"返工次数：{card.rework}"]
+    label = card_phase(project, card.card_id).get("label") or card.state
+    lines = [
+        f"编号：{card.card_id}", f"标题：{title}", f"状态：{card.state}",
+        f"阶段：{label}", f"返工次数：{card.rework}",
+    ]
     flow = read_flow(cdir)
     recent = flow[-12:]
     if recent:
@@ -202,12 +208,11 @@ def _read_card(project: str, args: dict) -> str:
 
 
 def _list_installed_tools() -> str:
-    """用 shutil.which 只检查是否存在可执行文件，不运行。"""
+    """用 shutil.which 只检查是否存在可执行文件，不运行；不外传路径。"""
     lines = []
     for cmd, label in (("codex", "Codex"), ("agent", "Cursor（agent 命令）"), ("agy", "agy")):
-        path = shutil.which(cmd)
-        if path:
-            lines.append(f"{label}：已安装（{path}）")
+        if shutil.which(cmd):
+            lines.append(f"{label}：已安装")
         else:
             lines.append(f"{label}：未在 PATH 中找到")
     return "\n".join(lines)

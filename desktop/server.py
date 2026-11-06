@@ -15,6 +15,7 @@ import argparse
 import hmac
 import json
 import os
+import re
 import socketserver
 import sys
 import threading
@@ -67,6 +68,7 @@ _TYPES = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8"
 _IMAGE_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif",
                 ".webp": "image/webp"}
 _MAX_BODY = 1024 * 1024  # 聊天消息最多 1MB，够用了
+_CARD_ID = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -146,16 +148,22 @@ class Handler(BaseHTTPRequestHandler):
                 self._card_action_error("这张卡现在不能标记为先不做。")
                 return
             card.save(state_path)
+            flow_record(cdir, "放弃", src="你", dst="程序", summary="先不做")
             render_board(Path(project) / ".collab")
             ledger_add(project, f"{card_id}：标记为先不做")
             self._json({"ok": True})
             return
 
         if action == "replan":
+            busy = running(project, "plan")
+            if busy is not None and str(busy.get("card") or "") != card_id:
+                self._card_action_error("另一张卡的方案正在写，等它写完再重写")
+                return
             try:
                 launch(project, "plan", card_id, ["plan", project, card_id])
             except TaskBusy:
-                pass
+                self._card_action_error("另一张卡的方案正在写，等它写完再重写")
+                return
             self._json({"ok": True})
             return
 
@@ -258,6 +266,9 @@ class Handler(BaseHTTPRequestHandler):
                 card_id = query.get("card", "")
                 if not project or not Path(project).is_dir() or not card_id:
                     self._json({"error": "需要项目和卡片"}, 400)
+                    return
+                if not _CARD_ID.fullmatch(card_id):
+                    self._json({"error": "卡片编号不对"}, 400)
                     return
                 self._json(self._plan_payload(project, card_id))
             elif url.path == "/api/text":
@@ -440,6 +451,9 @@ class Handler(BaseHTTPRequestHandler):
             action = str(body.get("action") or "").strip()
             if not project or not Path(project).is_dir() or not card_id or not action:
                 self._json({"error": "需要项目、卡片和操作"}, 400)
+                return
+            if not _CARD_ID.fullmatch(card_id):
+                self._json({"error": "卡片编号不对"}, 400)
                 return
             self._do_card_action(project, card_id, action)
             return

@@ -14,7 +14,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from collab.config import ConfigError, load_team, _check_member  # noqa: SLF001
+from collab.config import ConfigError, load_team, save_team_member
 from collab.flow import record as flow_record
 from collab.phase import card_phase, process_is_alive, process_start
 from collab.tasks import TaskError, new_card
@@ -38,29 +38,9 @@ def _folder(project: str) -> Path:
     return Path(project) / FOLDER
 
 
-def _config_path(project: str) -> Path:
-    return Path(project) / ".collab" / "配置.json"
-
-
 def _apply_team_change(project: str, role: str, tool: str) -> None:
-    """合并写入 .collab/配置.json 的 team；未选调度员时不能走 save_team（会拒绝 None）。"""
-    path = _config_path(project)
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
-    except (OSError, ValueError):
-        raw = {}
-    if not isinstance(raw, dict):
-        raw = {}
-    team = raw.get("team")
-    if not isinstance(team, dict):
-        team = {}
-    _check_member(role, tool)
-    team[role] = tool
-    raw["team"] = team
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(raw, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    tmp.replace(path)
+    """合并写入单个角色；配置读不出时抛错，不覆盖。"""
+    save_team_member(project, role, tool)
     load_team(project)
 
 
@@ -496,8 +476,7 @@ def _user_stop_after_last_run(events: list) -> bool:
             continue
         if int(e.get("seq") or 0) <= last_seq:
             continue
-        summary = str(e.get("summary") or "")
-        if "用户" in summary:
+        if e.get("src") == "你":
             return True
     return False
 

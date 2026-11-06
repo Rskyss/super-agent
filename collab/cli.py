@@ -30,7 +30,7 @@ from collab.scope import read_allowed
 from collab.ledger import ledger_add
 from collab.state import Card
 from collab.usage import count_lines, find_latest_session, record_card_usage, usage_since
-from collab.watch import snapshot
+from collab.watch import TERMINAL_STATES, snapshot
 from collab.workspace import PLAN_TEMPLATE, has_blanks, init_collab, profile_path, render_board
 
 _DEV_ADAPTER = "cursor"
@@ -254,7 +254,7 @@ def cmd_watch(args, **_):
         text = snapshot(args.project, args.card_id)
         print(f"--- {_dt.now():%H:%M:%S} ---\n{text}\n", flush=True)
         state = Card.load(_card_state_path(args.project, args.card_id)).state
-        if args.once or state in ("待验收", "已合并", "需Claude介入"):
+        if args.once or state in TERMINAL_STATES:
             return 0
         time.sleep(args.interval)
 

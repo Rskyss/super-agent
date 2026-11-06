@@ -216,6 +216,34 @@ def save_team(project_dir, team: dict) -> None:
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
+def save_team_member(project_dir, role: str, tool: str) -> None:
+    """合并写入单个角色，保留配置文件其他字段；读不出配置时抛错，不覆盖。"""
+    path = _config_path(project_dir)
+    data = {}
+    if path.exists():
+        try:
+            raw = path.read_text(encoding="utf-8")
+            data = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ConfigError(f"{path} 不是合法 JSON：{exc}") from exc
+        except OSError as exc:
+            raise ConfigError(f"读不了团队配置：{exc}") from exc
+        if not isinstance(data, dict):
+            raise ConfigError(f"{path} 顶层必须是对象")
+    _check_member(role, tool)
+    team = data.get("team")
+    if not isinstance(team, dict):
+        team = {}
+    else:
+        team = dict(team)
+    team[role] = tool
+    data["team"] = team
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    tmp.replace(path)
+
+
 def save_models(project_dir, models: dict) -> None:
     """把各家工具选定的模型与思考档位存进 .collab/配置.json，其他设置原样保留。"""
     if not isinstance(models, dict):

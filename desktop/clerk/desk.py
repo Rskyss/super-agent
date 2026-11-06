@@ -270,6 +270,8 @@ class ClerkDesk:
             if conv.turn != turn:
                 return
             conv.busy = False
+        if not (reply or "").strip() and not failure:
+            reply = "这次没有得到回复，请再说一次。"
         if reply:
             conv.emit({"type": "message", "item": item, "text": reply})
             self._keep_reply(conv, reply)
@@ -282,16 +284,18 @@ class ClerkDesk:
     def _tool_loop(self, conv: _Conversation, client, turn: int, on_text) -> str:
         """带工具的多轮：有 tool_calls 就执行后继续问；到上限后再问一次，这次不带工具。"""
         messages = self._prompt(conv)
-        reply = ""
+        parts = []
         for round_no in range(MAX_TOOL_ROUNDS + 1):
             if not self._alive(conv, turn):
                 raise _Stopped
             use_tools = round_no < MAX_TOOL_ROUNDS
             answer = client.chat(messages, on_text=on_text, tools=TOOLS if use_tools else None)
             reply = answer.get("text") or ""
+            if reply.strip():
+                parts.append(reply.strip())
             calls = answer.get("tool_calls") or []
             if not use_tools or not calls:
-                return reply
+                return "\n".join(parts) if parts else reply
             messages.append({
                 "role": "assistant",
                 "content": reply or None,
@@ -322,7 +326,7 @@ class ClerkDesk:
                 label = LABELS.get(name, "读 资料")
                 conv.emit({"type": "activity", "item": call_id, "label": label, "status": "done"})
                 messages.append({"role": "tool", "tool_call_id": call_id, "content": result})
-        return reply
+        return "\n".join(parts)
 
     def notify(self, project: str, conversation: str, text: str) -> bool:
         """往来源对话写一条行政通知并发 message 事件。对话不存在则跳过（由调用方决定是否仍记已汇报）。"""
