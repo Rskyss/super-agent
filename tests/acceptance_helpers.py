@@ -99,6 +99,9 @@ if "--output-schema" in args:
     with open(out, "w", encoding="utf-8") as fh:
         fh.write(answer)
     sys.exit(0)
+os.makedirs("tests", exist_ok=True)   # 假测试员真的交出一个测试文件
+with open("tests/test_fake.py", "a", encoding="utf-8") as fh:
+    fh.write("# 假测试\n")
 print("写好了")
 '''
 

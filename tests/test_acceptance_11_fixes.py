@@ -89,9 +89,14 @@ class TestsCannotBeRemoved(Case):
         self.assertFalse((self.worktree / "e2e" / "b.txt").exists())
 
     def test_tests_survive_when_the_tester_fails_halfway(self):
-        self.counted("codex", 'mkdir -p tests\necho 真测试 > tests/test_new.py\nexit 1', 'echo 写好了')
+        # 工具失败会自动重试一次，所以要连续失败才算测试员没交活
+        broken = Path(self.tmp) / "broken"
+        broken.write_text("测试员这次会失败", encoding="utf-8")
+        write_script(self.bin / "codex", f'mkdir -p tests\necho 真测试 > tests/test_new.py\n'
+                                         f'[ -f "{broken}" ] && exit 1\necho 写好了\n')
         self.start("test -f tests/test_new.py")
         self.assertEqual(self.finished(), "需Claude介入")
+        broken.unlink()
         self.assertEqual(self.act("resume")[0], 200)
         wait_until(lambda: self.state() == "待验收", 25, "接着跑后没有完成")
         self.assertTrue((self.worktree / "tests" / "test_new.py").exists())
@@ -99,6 +104,116 @@ class TestsCannotBeRemoved(Case):
     def test_file_names_with_brackets(self):
         from collab.scope import out_of_scope
         self.assertEqual(out_of_scope(["tests/[id].test.ts"], ["tests/[id].test.ts"]), [])
+
+
+class TesterMustDeliver(Case):
+    def test_tester_writing_nothing_stops_the_card(self):
+        # 真实 Codex 拒绝动手时只回一句话，退出状态却是成功
+        dev_log = Path(self.tmp) / "dev.log"
+        write_script(self.bin / "agent", f'echo x >> "{dev_log}"\necho 写好了\n')
+        write_script(self.bin / "codex", 'echo 请确认是否解除限制\n')
+        self.start()
+        self.assertEqual(self.finished(), "需Claude介入")
+        self.assertIn("没有写出任何测试", self.phase()["detail"])
+        self.assertFalse(dev_log.exists(), "开发员不该开工")
+
+    def test_carrying_on_asks_the_tester_again(self):
+        write_script(self.bin / "codex", 'echo 请确认是否解除限制\n')
+        self.start()
+        self.assertEqual(self.finished(), "需Claude介入")
+        write_script(self.bin / "codex", 'echo 真测试 > test_new.py\necho 写好了\n')
+        self.assertEqual(self.act("resume")[0], 200)
+        wait_until(lambda: self.state() == "待验收", 25, "接着跑后没有完成")
+        self.assertTrue((self.worktree / "test_new.py").exists())
+
+    def test_read_only_rule_of_planning_does_not_reach_the_workers(self):
+        from collab.planner import _build_prompt
+        self.assertIn("写给后面干活的人", _build_prompt(Path(self.tmp), "需求", False))
+        said = Path(self.tmp) / "said.log"
+        write_script(self.bin / "codex", f'printf "%s" "$*" >> "{said}"\necho 真测试 > test_new.py\necho 写好了\n')
+        self.start()
+        self.finished()
+        self.assertIn("写方案这一步", said.read_text(encoding="utf-8"))
+
+
+class FailedToolsAreRetried(Case):
+    def test_a_failed_tool_gets_one_more_try(self):
+        from collab.agents import ask
+        calls = []
+
+        def flaky(command, cwd, timeout):
+            calls.append(command)
+            return (1, "网络断了") if len(calls) == 1 else (0, "好了")
+
+        self.assertTrue(ask("codex", "做事", self.project, runner=flaky).ok)
+        self.assertEqual(len(calls), 2)
+
+
+class ChangedFilesAreReadCorrectly(Case):
+    def notes(self):
+        return [e.get("summary") or "" for e in read_flow(self.collab / "cards" / "CARD-001") if e.get("kind") == "范围"]
+
+    def test_new_test_folder_is_not_blamed_on_the_developer(self):
+        write_script(self.bin / "codex", 'mkdir e2e\necho 真测试 > e2e/a.txt\necho 写好了\n')
+        self.start()
+        self.assertEqual(self.finished(), "待验收")
+        for note in self.notes():
+            self.assertNotIn("撤销", note)
+            self.assertNotIn("恢复", note)
+
+    def test_script_in_a_new_folder_stays_runnable(self):
+        write_script(self.bin / "codex", 'mkdir e2e\nprintf "#!/bin/sh\\nexit 0\\n" > e2e/run.sh\nchmod +x e2e/run.sh\necho 写好了\n')
+        self.start("./e2e/run.sh")
+        self.assertEqual(self.finished(), "待验收")
+
+    def test_developer_file_in_an_allowed_new_folder_is_kept(self):
+        cdir = self.ready("test -f src/feature/new.py")
+        need = cdir / "需求卡.md"
+        need.write_text(need.read_text(encoding="utf-8") + "- src/feature/new.py\n", encoding="utf-8")
+        write_script(self.bin / "agent", 'mkdir -p src/feature\necho 代码 > src/feature/new.py\necho 写好了\n')
+        self.assertEqual(self.act("approve")[0], 200)
+        self.assertEqual(self.finished(), "待验收")
+
+    def test_test_file_with_a_space_is_protected(self):
+        write_script(self.bin / "codex", 'mkdir -p tests\necho "exit 1" > "tests/my test.sh"\necho 写好了\n')
+        write_script(self.bin / "agent", 'echo "exit 0" > "tests/my test.sh"\necho 写好了\n')
+        self.start('sh "tests/my test.sh"')
+        self.assertEqual(self.finished(), "需Claude介入")
+
+    def test_rewritten_tests_leave_no_old_copy(self):
+        broken = Path(self.tmp) / "broken"
+        broken.write_text("第一次失败", encoding="utf-8")
+        write_script(self.bin / "codex", f'mkdir -p tests\nif [ -f "{broken}" ]; then echo 旧 > tests/old.txt; exit 1; fi\n'
+                                         'rm -f tests/old.txt\necho 新 > tests/new.txt\necho 写好了\n')
+        self.start("test -f tests/new.txt")
+        self.assertEqual(self.finished(), "需Claude介入")
+        broken.unlink()
+        self.assertEqual(self.act("resume")[0], 200)
+        wait_until(lambda: self.state() == "待验收", 25, "接着跑后没有完成")
+        self.assertFalse((self.worktree / "tests" / "old.txt").exists())
+        self.assertFalse((self.collab / "cards" / "CARD-001" / "测试快照" / "tests" / "old.txt").exists())
+
+    def test_test_replaced_by_a_folder_is_restored(self):
+        write_script(self.bin / "codex", 'mkdir -p tests\necho 真测试 > tests/test_new.py\necho 写好了\n')
+        write_script(self.bin / "agent", 'rm tests/test_new.py\nmkdir tests/test_new.py\necho 写好了\n')
+        self.start("test -f tests/test_new.py")
+        self.assertEqual(self.finished(), "待验收")
+
+    def test_test_replaced_by_a_link_does_not_write_through_it(self):
+        write_script(self.bin / "codex", 'mkdir -p tests\necho 真测试 > tests/test_new.py\necho 写好了\n')
+        write_script(self.bin / "agent", 'rm tests/test_new.py\nln -s ../src/app.py tests/test_new.py\necho 写好了\n')
+        self.start()
+        self.finished()
+        self.assertEqual((self.worktree / "src" / "app.py").read_text(encoding="utf-8"), "x = 1\n")
+        self.assertFalse((self.worktree / "tests" / "test_new.py").is_symlink())
+
+
+class ApproveChecksFirst(Case):
+    def test_broken_start_file_does_not_half_approve(self):
+        cdir = self.ready()
+        (cdir / "开工.json").write_text("坏的", encoding="utf-8")
+        self.assertEqual(self.act("approve")[0], 409)
+        self.assertEqual(self.state(), "待对齐")
 
 
 class ReviewRework(Case):

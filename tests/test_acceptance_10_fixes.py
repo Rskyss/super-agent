@@ -357,6 +357,7 @@ class NoFalsePass(ServerCase, Base):
         said = Path(self.tmp) / "said.log"
         for name in ("codex", "agent", "agy"):
             write_script(self.bin / name, f'printf "{name}:%s\\n" "$*" >> "{said}"\n'
+                                          + ("echo 真测试 > test_new.py\n" if name == "codex" else "")
                                           + ("echo 结论：通过\n" if name == "agy" else "echo 写好了\n"))
         self.start("true")
         self.finished()
