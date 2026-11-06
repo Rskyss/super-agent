@@ -13,6 +13,7 @@ import uuid
 from pathlib import Path
 
 from desktop.clerk.client import ModelError
+from desktop.clerk import tasks as clerk_tasks
 from desktop.clerk.tools import LABELS, TOOLS, run_tool
 
 FOLDER = Path(".collab") / "行政对话"
@@ -24,6 +25,8 @@ ROLE = ("你是超级助手的行政人员，用户的前台和行政。用大�
         "你能查项目说明、台账、卡片和团队设置。"
         "问进度必须先查，不能凭记忆。"
         "你不能改代码、运行命令、推送或合并。"
+        "用户明确要改产品或写代码时，先问清楚，再调用 propose_task。"
+        "闲聊、问进度不调用。不能说“已经建好卡”，用户点确认才算。"
         "不清楚时一次只问一个问题，给出推荐答案和一句话理由。"
         "不知道就直说，不编造。"
         "这个项目叫：{name}。")
@@ -84,6 +87,7 @@ class ClerkDesk:
 
     @staticmethod
     def _read_lines(path: Path) -> list:
+        """读对话文件。提议行 role=proposal 只记位置，不进模型上下文。"""
         lines = []
         try:
             raws = path.read_bytes().splitlines()
@@ -92,9 +96,13 @@ class ClerkDesk:
         for raw in raws:
             try:
                 saved = json.loads(raw.decode("utf-8"))
-                role, text = saved["role"], saved["text"]
+                role = saved["role"]
             except (ValueError, KeyError, TypeError):
                 continue
+            if role == "proposal" and isinstance(saved.get("id"), str):
+                lines.append(("proposal", saved["id"]))
+                continue
+            text = saved.get("text")
             if role in ("user", "assistant") and isinstance(text, str):
                 lines.append((role, text))
         return lines
@@ -131,10 +139,16 @@ class ClerkDesk:
         if not create and not path.exists():
             return None
         conv = _Conversation(str(project), cid)
-        for role, text in self._read_lines(path):
-            conv.messages.append({"role": role, "content": text})
+        for role, payload in self._read_lines(path):
+            if role == "proposal":
+                data = clerk_tasks.load_proposal(project, payload)
+                if data:
+                    conv.emit(dict(clerk_tasks.event_from_proposal(data), history=True,
+                                   item=f"h{len(conv.events)}"))
+                continue
+            conv.messages.append({"role": role, "content": payload})
             kind = "user" if role == "user" else "message"
-            conv.emit({"type": kind, "text": text, "item": f"h{len(conv.events)}", "history": True})
+            conv.emit({"type": kind, "text": payload, "item": f"h{len(conv.events)}", "history": True})
         with self._lock:
             return self._open.setdefault(key, conv)
 
@@ -292,13 +306,41 @@ class ClerkDesk:
                     args = json.loads(raw)
                     if not isinstance(args, dict):
                         raise ValueError("not a dict")
-                    result = run_tool(conv.project, name, args)
+                    if name == "propose_task":
+                        result = clerk_tasks.propose(conv, args)
+                    else:
+                        result = run_tool(conv.project, name, args)
                 except (ValueError, TypeError):
                     result = "参数看不懂"
                 label = LABELS.get(name, "读 资料")
                 conv.emit({"type": "activity", "item": call_id, "label": label, "status": "done"})
                 messages.append({"role": "tool", "tool_call_id": call_id, "content": result})
         return reply
+
+    def decide_proposal(self, project: str, conversation: str, pid: str, decision: str) -> dict:
+        """用户点确认或先不做。不经过模型。"""
+        from collab.tasks import TaskError
+        try:
+            result = clerk_tasks.decide(project, conversation, pid, decision)
+        except LookupError as exc:
+            raise LookupError(str(exc)) from exc
+        except TaskError as exc:
+            raise RuntimeError(str(exc)) from exc
+        except RuntimeError:
+            raise
+        conv = self._conversation(project, conversation)
+        if conv is None and not result.get("repeat"):
+            raise LookupError("找不到这段对话")
+        if conv is not None and not result.get("repeat"):
+            if result["state"] == "confirmed":
+                text = f"已生成卡片 {result['card']}，接下来写方案。"
+            else:
+                text = "好的，先不做。"
+            conv.emit({"type": "proposal_done", "id": pid, "state": result["state"],
+                       "card": result.get("card") or ""})
+            conv.emit({"type": "message", "text": text, "item": uuid.uuid4().hex})
+            self._keep_reply(conv, text)
+        return result
 
     def _name(self, conv: _Conversation, client, reply: str) -> None:
         """起名失败不要紧，标题先用用户的第一句话。"""

@@ -44,6 +44,16 @@ TOOLS = [
         "description": "读团队配置",
         "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
     }},
+    {"type": "function", "function": {
+        "name": "propose_task",
+        "description": "向用户出示“变成任务？”确认框。用户点确认才建卡。",
+        "parameters": {"type": "object", "properties": {
+            "title": {"type": "string", "description": "任务标题"},
+            "do": {"type": "string", "description": "要做什么"},
+            "not_do": {"type": "string", "description": "不做什么"},
+            "done_when": {"type": "string", "description": "怎么算做完"},
+        }, "required": ["title", "do", "not_do", "done_when"], "additionalProperties": False},
+    }},
 ]
 
 LABELS = {
@@ -52,6 +62,7 @@ LABELS = {
     "list_cards": "读 卡片列表",
     "read_card": "读 卡片",
     "read_team": "读 团队设置",
+    "propose_task": "读 提议",
 }
 
 

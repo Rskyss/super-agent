@@ -119,6 +119,21 @@ var ChatCore = (function () {
           if (b.kind === "ask" && b.id === ev.id) { b.state = ev.decision; this._touch(b); break; }
         }
         break;
+      case "proposal":
+        this._push({
+          kind: "proposal", id: ev.id, proposalKind: ev.kind || "task",
+          title: ev.title || "", do: ev.do || "", not_do: ev.not_do || "", done_when: ev.done_when || "",
+          state: ev.state || "open", card: ev.card || "",
+        });
+        break;
+      case "proposal_done":
+        for (i = this.blocks.length - 1; i >= 0; i--) {
+          var pb = this.blocks[i];
+          if (pb.kind === "proposal" && pb.id === ev.id) {
+            pb.state = ev.state; pb.card = ev.card || ""; this._touch(pb); break;
+          }
+        }
+        break;
       case "turn_started": this.busy = true; break;
       case "turn_done":
         this.busy = false;
@@ -257,6 +272,34 @@ if (typeof document !== "undefined") (function () {
       if (b.command) el.querySelector("code").textContent = b.command;
       if (b.reason) el.querySelector("p").textContent = "理由：" + b.reason;
       el.setAttribute("data-ask", b.id);
+    } else if (b.kind === "proposal") {
+      var result = {
+        confirmed: b.card ? ("已生成卡片 " + b.card) : "已确认",
+        cancelled: "好的，先不做。",
+        replaced: "已换成新的提议",
+      }[b.state];
+      el.className = "ask proposal" + (b.state === "open" ? "" : (b.state === "cancelled" ? " no" : " done"));
+      if (b.state === "open") {
+        el.innerHTML = "<h3></h3><div class=\"rows\">" +
+          "<div><span>要做什么</span><p></p></div>" +
+          "<div><span>不做什么</span><p></p></div>" +
+          "<div><span>怎么算做完</span><p></p></div></div>" +
+          "<div class=\"btns\"><button class=\"btn primary\" data-prop=\"confirm\">确认</button>" +
+          "<button class=\"btn\" data-prop=\"cancel\">先不做</button></div>";
+        el.querySelector("h3").textContent = "变成任务？";
+        var ps = el.querySelectorAll(".rows p");
+        ps[0].textContent = b.do; ps[1].textContent = b.not_do; ps[2].textContent = b.done_when;
+        if (b.title) {
+          var title = document.createElement("p");
+          title.className = "prop-title";
+          title.textContent = b.title;
+          el.querySelector("h3").after(title);
+        }
+      } else {
+        el.innerHTML = "<h3></h3>";
+        el.querySelector("h3").textContent = result || b.state;
+      }
+      el.setAttribute("data-proposal", b.id);
     } else if (b.kind === "note") {
       el.className = "note " + (b.tone || "");
       el.textContent = b.text;
@@ -312,6 +355,19 @@ if (typeof document !== "undefined") (function () {
       card.querySelectorAll("button").forEach(function (b) { b.disabled = true; });
       api("/api/chat/answer", { id: card.getAttribute("data-ask"), decision: ans.getAttribute("data-ans") })
         .catch(function (err) { showError(err.message); card.querySelectorAll("button").forEach(function (b) { b.disabled = false; }); });
+      return;
+    }
+    var prop = t.closest("[data-prop]");
+    if (prop) {
+      var box = prop.closest("[data-proposal]");
+      box.querySelectorAll("button").forEach(function (b) { b.disabled = true; });
+      api("/api/clerk/proposal", {
+        conversation: currentThread || "", id: box.getAttribute("data-proposal"),
+        decision: prop.getAttribute("data-prop"),
+      }).catch(function (err) {
+        showError(err.message);
+        box.querySelectorAll("button").forEach(function (b) { b.disabled = false; });
+      });
     }
   });
 

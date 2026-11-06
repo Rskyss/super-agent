@@ -43,6 +43,7 @@ from desktop.chat import ChatHub  # noqa: E402
 from desktop.clerk.client import DEFAULT_BASE_URL, DEFAULT_MODEL, ModelClient, ModelError  # noqa: E402
 from desktop.clerk.codex_history import list_history, read_history  # noqa: E402
 from desktop.clerk.desk import ClerkDesk  # noqa: E402
+from collab.tasks import TaskError  # noqa: E402
 from desktop.shell_path import adopt_terminal_path  # noqa: E402
 from desktop.view import card_view, event_text, list_cards  # noqa: E402
 
@@ -256,6 +257,19 @@ class Handler(BaseHTTPRequestHandler):
                 (desk.stop if path == "/api/clerk/stop" else desk.focus)(project, conversation)
                 self._json({"ok": True})
             except RuntimeError as exc:
+                self._json({"error": str(exc)}, 409)
+            return
+        if path == "/api/clerk/proposal":
+            if not project or not Path(project).is_dir():
+                self._json({"error": "项目文件夹不存在"}, 400)
+                return
+            try:
+                answer = desk.decide_proposal(project, conversation, str(body.get("id") or ""),
+                                             str(body.get("decision") or ""))
+                self._json({"ok": True, "card": answer.get("card") or "", "state": answer.get("state")})
+            except LookupError as exc:
+                self._json({"error": str(exc)}, 404)
+            except (RuntimeError, TaskError) as exc:
                 self._json({"error": str(exc)}, 409)
             return
         if path == "/api/clerk/clear":
