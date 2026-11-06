@@ -1,19 +1,30 @@
-"""行政提议：模型只能提议，用户点确认才建卡；确认不经过模型。"""
+"""行政提议与后台任务：模型只能提议，用户确认才建卡；后台子进程与本机服务分离。"""
 from __future__ import annotations
 
+import errno
+import fcntl
 import json
+import os
+import subprocess
+import sys
 import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from collab.tasks import TaskError, new_card
+
+COLLAB_PACKAGE = Path(__file__).resolve().parent.parent.parent / "collab"
 
 FOLDER = Path(".collab") / "行政提议"
 _FIELDS = ("title", "do", "not_do", "done_when")
 _FIELD_NAMES = {"title": "标题", "do": "要做什么", "not_do": "不做什么", "done_when": "怎么算做完"}
 _lock = threading.Lock()
+
+
+class TaskBusy(Exception):
+    """同一种后台任务已经在跑。"""
 
 
 def _folder(project: str) -> Path:
@@ -118,6 +129,10 @@ def decide(project: str, conversation: str, pid: str, decision: str) -> dict:
         data["state"] = "confirmed"
         data["card"] = card
         _save(project, data)
+        try:
+            launch(project, "plan", card, ["plan", project, card])
+        except TaskBusy:
+            pass
         return {"ok": True, "card": card, "state": "confirmed", "repeat": False}
 
 
@@ -128,3 +143,112 @@ def event_from_proposal(data: dict) -> dict:
         "not_do": data.get("not_do") or "", "done_when": data.get("done_when") or "",
         "state": data.get("state") or "open", "card": data.get("card") or "",
     }
+
+
+def _collab(project: str) -> Path:
+    return Path(project) / ".collab"
+
+
+def _record_path(project: str, kind: str) -> Path:
+    folder = _collab(project) / "后台"
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder / f"{kind}.json"
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except (OSError, ValueError, TypeError):
+        return True
+
+
+def running(project: str, kind: str) -> Optional[Dict[str, Any]]:
+    path = _record_path(project, kind)
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    pid = data.get("pid")
+    if pid is None:
+        try:
+            path.unlink()
+        except OSError:
+            pass
+        return None
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        try:
+            path.unlink()
+        except OSError:
+            pass
+        return None
+    if not _pid_alive(pid):
+        try:
+            path.unlink()
+        except OSError:
+            pass
+        return None
+    return data
+
+
+def launch(project: str, kind: str, card_id: str, args: list) -> int:
+    path = _record_path(project, kind)
+    lock_path = path.with_suffix(".lock")
+    log_path = _collab(project) / "cards" / card_id / "后台输出.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    proc = None
+    tmp_path = path.with_suffix(".json.tmp")
+    with open(lock_path, "a+", encoding="utf-8") as lock_fh:
+        fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)
+        if running(project, kind) is not None:
+            raise TaskBusy("已有同类任务在跑")
+        try:
+            log = open(log_path, "a", encoding="utf-8", buffering=1)
+            proc = subprocess.Popen(
+                [sys.executable, "-B", str(COLLAB_PACKAGE), *args],
+                cwd=str(project),
+                stdin=subprocess.DEVNULL,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+            log.close()
+            payload = json.dumps({"card": card_id, "pid": proc.pid, "time": time.time()}, ensure_ascii=False)
+            tmp_path.write_text(payload + "\n", encoding="utf-8")
+            os.replace(str(tmp_path), str(path))
+
+            def _wait():
+                proc.wait()
+                try:
+                    if path.is_file():
+                        cur = json.loads(path.read_text(encoding="utf-8"))
+                        if isinstance(cur, dict) and int(cur.get("pid") or 0) == proc.pid:
+                            path.unlink()
+                except (OSError, ValueError):
+                    pass
+
+            threading.Thread(target=_wait, daemon=True).start()
+            return proc.pid
+        except OSError:
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+            try:
+                path.unlink()
+            except OSError:
+                pass
+            if proc:
+                try:
+                    proc.kill()
+                except OSError:
+                    pass
+            raise

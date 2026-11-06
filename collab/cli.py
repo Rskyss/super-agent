@@ -22,6 +22,7 @@ from collab.archive import archive_card
 from collab.install import InstallError, find_old_package, install_into, migrate
 from collab.config import ConfigError, load_models, run_tools
 from collab.dispatch import run_card
+from collab.planner import plan_card
 from collab.flow import record as flow_record
 from collab.judge import judge as default_judge
 from collab.scope import read_allowed
@@ -129,6 +130,10 @@ def cmd_approve(args, **_):
     ledger_add(args.project, f"{args.card_id}：方案已确认，可以开工")
     print(f"{args.card_id} 方案已确认，可以开工")
     return 0
+
+
+def cmd_plan(args, **_):
+    return plan_card(args.project, args.card_id)
 
 
 def cmd_status(args, **_):
@@ -340,6 +345,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("project")
     p.add_argument("card_id")
     p.set_defaults(func=cmd_approve)
+
+    p = sub.add_parser("plan", help="按需求卡写拆解方案（只读）")
+    p.add_argument("project")
+    p.add_argument("card_id")
+    p.set_defaults(func=cmd_plan)
 
     p = sub.add_parser("watch", help="实时查看某张卡的进度（每隔几秒刷新）")
     p.add_argument("project")

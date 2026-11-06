@@ -13,11 +13,12 @@ from pathlib import Path
 
 from collab.config import ConfigError, load_team
 from collab.flow import read_flow, summarize, text_of, working_now
+from collab.phase import card_phase
 from collab.judge import PASS
 from collab.state import Card
 
 QUIET_WARN_SECONDS = 10 * 60  # 超过 10 分钟没有任何动静，提示可能卡住
-TERMINAL_STATES = {"待验收", "已合并", "需Claude介入"}
+TERMINAL_STATES = {"待验收", "已合并", "需Claude介入", "已放弃"}
 
 TOOL_NAMES = {"claude": "Claude", "codex": "Codex", "cursor": "Cursor", "agy": "agy"}
 TOOL_FACES = {"claude": "Cl", "codex": "Cx", "cursor": "Cu", "agy": "ag"}
@@ -103,8 +104,9 @@ def list_cards(project_dir) -> list:
     cards = []
     for card_id, cdir in _card_dirs(project).items():
         card = Card.load(cdir / "状态.json")
+        phase = card_phase(str(project), card_id)
         cards.append({"id": card_id, "title": _title(cdir, card_id), "state": card.state,
-                      "rework": card.rework, "updated": _updated(cdir)})
+                      "rework": card.rework, "updated": _updated(cdir), "phase": phase})
     cards.sort(key=lambda c: (c["updated"], c["id"]), reverse=True)
     return cards
 
@@ -346,8 +348,9 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
         if e.get("kind") == "派活" and e.get("dst") in tools and e.get("tool"):
             tools[e["dst"]] = e["tool"]
     stations = _stations(tools, reviewer_on, dispatcher)
+    phase = card_phase(str(project), card_id)
     view = dict(base, card={"id": card_id, "title": _title(cdir, card_id), "state": state,
-                            "rework": card.rework, "round": rnd},
+                            "rework": card.rework, "round": rnd, "phase": phase},
                 stations=stations, handoffs=_handoffs(events))
 
     if not events:

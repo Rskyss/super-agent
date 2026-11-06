@@ -8,7 +8,7 @@ from pathlib import Path
 from collab.state import Card
 
 QUIET_WARN_SECONDS = 10 * 60  # 超过 10 分钟没有任何文件变化，提示可能卡住
-TERMINAL_STATES = {"待验收", "已合并", "需Claude介入"}
+TERMINAL_STATES = {"待验收", "已合并", "需Claude介入", "已放弃"}
 
 
 def _fmt(delta) -> str:

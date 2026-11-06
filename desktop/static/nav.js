@@ -4,7 +4,10 @@
 
 /* 规则层：不碰页面，tests/nav_page_check.js 用 node 直接检查。 */
 var NavCore = {
-  dotFor: function (state) {
+  dotFor: function (card) {
+    var ph = card && typeof card === "object" && card.phase;
+    if (ph && ph.tone && ph.label) return { tone: ph.tone, label: ph.label };
+    var state = typeof card === "string" ? card : (card && card.state) || "";
     if (state === "待对齐" || state === "待派发") return { tone: "wait", label: "等你确认" };
     if (state === "开发中" || state === "待测试" || state === "测试中") return { tone: "run", label: "进行中" };
     if (state === "待验收") return { tone: "ok", label: "等你验收" };
@@ -23,7 +26,7 @@ var NavCore = {
   ordered: function (cards) {
     var rank = { wait: 0, ok: 0, bad: 0, run: 1, done: 2 };
     return [0, 1, 2].reduce(function (all, level) {
-      return all.concat(cards.filter(function (c) { return rank[NavCore.dotFor(c.state).tone] === level; }));
+      return all.concat(cards.filter(function (c) { return rank[NavCore.dotFor(c).tone] === level; }));
     }, []);
   },
   threadTitle: function (title) { return String(title || "").replace(/（[^）]*）$/, "") || "对话"; },
@@ -75,7 +78,7 @@ if (typeof document !== "undefined") (function () {
     if (!cards.length) { $("cards").innerHTML = head + '<div class="empty">还没有卡片</div>'; return; }
     if (!list.length) { $("cards").innerHTML = head + '<div class="empty">没有找到</div>'; return; }
     $("cards").innerHTML = head + NavCore.ordered(list).map(function (c) {
-      var dot = NavCore.dotFor(c.state), on = mode === "card" && c.id === selected;
+      var dot = NavCore.dotFor(c), on = mode === "card" && c.id === selected;
       var sub = dot.label + (c.rework ? " · 返工 " + c.rework + " 次" : "");
       return '<button class="item' + (on ? " on" : "") + '" type="button" data-id="' + esc(c.id) + '" title="' + esc(c.id) + '">' +
         '<span class="lead"><i class="dot ' + dot.tone + '"></i></span><span class="tt">' + esc(c.title) + '</span><span class="sub">' + esc(sub) + "</span></button>";
@@ -169,7 +172,9 @@ if (typeof document !== "undefined") (function () {
       $("cardArea").hidden = !v.installed;
       $("busy").hidden = !(v.card && v.card.id === "调度中" && v.card.state === "调度中");
       cards = v.cards;
-      var key = JSON.stringify(cards.map(function (c) { return [c.id, c.title, c.state, c.rework]; }));
+      var key = JSON.stringify(cards.map(function (c) {
+        return [c.id, c.title, c.state, c.rework, c.phase ? c.phase.code : ""];
+      }));
       if (key !== lastKey) { lastKey = key; drawList(); }   // 没变化不重画：不打断滚动
       if (selected && mode === "card" && NavCore.keepSelected(selected, cards) === null) tell("superagent://main");
     }).catch(function () { /* 下一次再取 */ });

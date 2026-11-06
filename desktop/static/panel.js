@@ -16,8 +16,10 @@ if (typeof document !== "undefined") (function () {
   var project = params.get("project") || "";
   var dispatcher = params.get("dispatcher") || "";  // 桌面窗口告诉面板：用户选的调度员是谁
   var selected = params.get("card") || null;   // 窗口指定的卡片；null 表示跟随最新的一张
+  var token = params.get("token") || "";
   var view = null, fetchedAt = 0, filterWho = null;
   var opened = {}, texts = {};
+  var planCache = null;
 
   function $(id) { return document.getElementById(id); }
   function esc(s) {
@@ -28,6 +30,80 @@ if (typeof document !== "undefined") (function () {
   function mmss(sec) { sec = Math.max(0, Math.round(sec)); return Math.floor(sec / 60) + ":" + (sec % 60 < 10 ? "0" : "") + (sec % 60); }
   function ago(sec) { sec = Math.max(0, Math.round(sec)); return sec < 60 ? sec + " 秒" : Math.floor(sec / 60) + " 分钟"; }
   function since() { return (Date.now() - fetchedAt) / 1000; }
+
+  function cardHeaders() {
+    var h = { "Content-Type": "application/json" };
+    if (token) h["X-Chat-Token"] = token;
+    return h;
+  }
+
+  function postCard(action) {
+    return fetch("/api/clerk/card", { method: "POST", headers: cardHeaders(),
+      body: JSON.stringify({ project: project, card: view.card.id, action: action }) })
+      .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, status: r.status, d: d }; }); });
+  }
+
+  function phaseHint(ph) {
+    if (!ph) return "";
+    var parts = [ph.label || ""];
+    if (ph.detail) parts.push(ph.detail);
+    return parts.join(" · ");
+  }
+
+  function actionSpec(code) {
+    var approve = { key: "approve", label: "批准并开工" };
+    var discard = { key: "discard", label: "不做了", danger: true };
+    var replan = { key: "replan", label: "重写方案" };
+    var resume = { key: "resume", label: "接着跑" };
+    var stop = { key: "stop", label: "停下" };
+    if (code === "plan_ready") return [approve, discard, replan];
+    if (code === "plan_failed") return [replan, discard];
+    if (code === "interrupted" || code === "blocked") return [resume, discard];
+    if (code === "running") return [stop];
+    return [];
+  }
+
+  function renderActions() {
+    var bar = $("actions"), btns = $("actionBtns"), hint = $("phaseHint");
+    if (!view || !view.card || !view.card.phase) { bar.hidden = true; return; }
+    var ph = view.card.phase;
+    var specs = actionSpec(ph.code);
+    if (!specs.length) { bar.hidden = true; return; }
+    bar.hidden = false;
+    hint.textContent = phaseHint(ph);
+    btns.innerHTML = specs.map(function (s) {
+      return '<button type="button" data-act="' + esc(s.key) + '" class="' + (s.danger ? "danger" : "") + '">' + esc(s.label) + "</button>";
+    }).join("");
+  }
+
+  $("actions").addEventListener("click", function (ev) {
+    var b = ev.target.closest("button[data-act]");
+    if (!b || !view || !view.card) return;
+    var act = b.getAttribute("data-act");
+    if (act === "discard" && !window.confirm("确定标记为「不做了」？这张卡会停下来。")) return;
+    postCard(act).then(function (res) {
+      if (!res.ok && res.d && res.d.error) alert(res.d.error);
+      poll();
+    });
+  });
+
+  function renderPlan() {
+    var sec = $("planSection"), show = view && view.card && view.card.phase && view.card.phase.code === "plan_ready";
+    if (!show) { sec.hidden = true; return; }
+    sec.hidden = false;
+    if (!planCache) return;
+    $("planText").textContent = planCache.plan || "";
+    $("planAllowed").textContent = (planCache.allowed || []).join("\n");
+    $("planTest").textContent = planCache.test_command || "";
+    var blk = $("profileBlock"), prev = $("planProfile");
+    if (planCache.new_profile && planCache.profile_text) {
+      blk.hidden = false;
+      prev.textContent = planCache.profile_text;
+    } else {
+      blk.hidden = true;
+      prev.textContent = "";
+    }
+  }
 
   // ---------- 流程：7 步先搭好，之后只改内容 ----------
   var GLYPH = {
@@ -148,6 +224,22 @@ if (typeof document !== "undefined") (function () {
       if (v.error) { $("blank").hidden = false; $("blank").textContent = v.error; return; }
       view = v; fetchedAt = Date.now();
       renderShell(v); renderFlow(v); tick();
+      renderActions();
+      var needPlan = v.card && v.card.phase && v.card.phase.code === "plan_ready";
+      var cid = v.card && v.card.id;
+      if (needPlan && cid && token) {
+        fetch("/api/plan?" + new URLSearchParams({ project: project, card: cid, token: token }))
+          .then(function (r) { return r.json(); })
+          .then(function (d) {
+            if (!d || d.error) return;
+            planCache = d;
+            renderPlan();
+          })
+          .catch(function () {});
+      } else {
+        planCache = null;
+        renderPlan();
+      }
       var logKey = (v.card ? v.card.id : "") + ":" + v.handoffs.length;
       if (!$("pane-log").hidden && logKey !== lastLogKey) drawList();
       lastLogKey = logKey;

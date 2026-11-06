@@ -9,6 +9,16 @@
 </head>
 <body>
 <main class="side" id="side" aria-label="卡片详情">
+  <div class="actions" id="actions" hidden>
+    <div class="phase-hint" id="phaseHint"></div>
+    <div class="action-btns" id="actionBtns"></div>
+  </div>
+  <section class="plan-preview" id="planSection" hidden>
+    <div class="plan-block"><h2 class="plan-h">方案</h2><pre id="planText"></pre></div>
+    <div class="plan-block"><h2 class="plan-h">允许改动的文件</h2><pre id="planAllowed"></pre></div>
+    <div class="plan-block"><h2 class="plan-h">测试命令</h2><pre id="planTest"></pre></div>
+    <div class="plan-block" id="profileBlock" hidden><h2 class="plan-h">项目说明（草稿）</h2><pre id="planProfile"></pre></div>
+  </section>
   <nav class="seg" role="tablist" aria-label="卡片内容">
     <button class="tab" role="tab" id="tab-flow" aria-selected="true" aria-controls="pane-flow" type="button">流程</button>
     <button class="tab" role="tab" id="tab-log" aria-selected="false" aria-controls="pane-log" type="button">交接<span class="n" id="count">0</span></button>

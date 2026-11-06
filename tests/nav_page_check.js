@@ -5,13 +5,15 @@ var path = require("path");
 var N = require(path.join(__dirname, "..", "desktop", "static", "nav.js"));
 var P = require(path.join(__dirname, "..", "desktop", "static", "panel.js"));
 
-// 1. 卡片状态到圆点
-["待对齐", "待派发"].forEach(function (s) { assert.strictEqual(N.dotFor(s).tone, "wait"); });
-["开发中", "待测试", "测试中"].forEach(function (s) { assert.strictEqual(N.dotFor(s).tone, "run"); });
-assert.deepStrictEqual(N.dotFor("待验收"), { tone: "ok", label: "等你验收" });
-assert.deepStrictEqual(N.dotFor("需Claude介入"), { tone: "bad", label: "需要你处理" });
-assert.deepStrictEqual(N.dotFor("已合并"), { tone: "done", label: "已完成" });
-assert.deepStrictEqual(N.dotFor("没见过的状态"), { tone: "done", label: "没见过的状态" });
+// 1. 卡片圆点：优先用 phase，没有时退回状态
+["待对齐", "待派发"].forEach(function (s) { assert.strictEqual(N.dotFor({ state: s }).tone, "wait"); });
+["开发中", "待测试", "测试中"].forEach(function (s) { assert.strictEqual(N.dotFor({ state: s }).tone, "run"); });
+assert.deepStrictEqual(N.dotFor({ state: "待验收" }), { tone: "ok", label: "等你验收" });
+assert.deepStrictEqual(N.dotFor({ state: "需Claude介入" }), { tone: "bad", label: "需要你处理" });
+assert.deepStrictEqual(N.dotFor({ state: "已合并" }), { tone: "done", label: "已完成" });
+assert.deepStrictEqual(N.dotFor({ state: "没见过的状态" }), { tone: "done", label: "没见过的状态" });
+assert.deepStrictEqual(N.dotFor({ state: "待对齐", phase: { tone: "bad", label: "方案没写成" } }),
+  { tone: "bad", label: "方案没写成" });
 
 // 2. 搜索：标题和编号，不分大小写
 var cards = [{ id: "CARD-001", title: "三处显示问题修复" }, { id: "CARD-002", title: "Audio 听感" }];

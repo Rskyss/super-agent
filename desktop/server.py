@@ -29,6 +29,7 @@ if str(ROOT) not in sys.path:  # 直接用 python3 desktop/server.py 启动时�
     sys.path.insert(0, str(ROOT))
 
 from collab.check import check_team  # noqa: E402
+from collab.cli import cmd_approve, cmd_confirm_profile  # noqa: E402
 from collab.config import (  # noqa: E402
     DEFAULT_MODELS,
     DEFAULT_TEAM,
@@ -39,10 +40,17 @@ from collab.config import (  # noqa: E402
     save_models,
     save_team,
 )
+from collab.flow import read_flow  # noqa: E402
+from collab.ledger import ledger_add  # noqa: E402
+from collab.phase import card_phase  # noqa: E402
+from collab.scope import read_allowed  # noqa: E402
+from collab.state import Card, InvalidTransition  # noqa: E402
+from collab.workspace import has_blanks, profile_path, render_board  # noqa: E402
 from desktop.chat import ChatHub  # noqa: E402
 from desktop.clerk.client import DEFAULT_BASE_URL, DEFAULT_MODEL, ModelClient, ModelError  # noqa: E402
 from desktop.clerk.codex_history import list_history, read_history  # noqa: E402
 from desktop.clerk.desk import ClerkDesk  # noqa: E402
+from desktop.clerk.tasks import TaskBusy, launch  # noqa: E402
 from collab.tasks import TaskError  # noqa: E402
 from desktop.shell_path import adopt_terminal_path  # noqa: E402
 from desktop.view import card_view, event_text, list_cards  # noqa: E402
@@ -76,6 +84,107 @@ class Handler(BaseHTTPRequestHandler):
     def _json(self, data, status: int = 200) -> None:
         self._send(status, json.dumps(data, ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8")
 
+    def _plan_payload(self, project: str, card_id: str) -> dict:
+        project_p = Path(project)
+        cdir = project_p / ".collab" / "cards" / card_id
+        plan_path = cdir / "方案.md"
+        plan_text = plan_path.read_text(encoding="utf-8") if plan_path.is_file() else ""
+        need = (cdir / "需求卡.md").read_text(encoding="utf-8") if (cdir / "需求卡.md").is_file() else ""
+        allowed = read_allowed(need) or []
+        start_path = cdir / "开工.json"
+        test_cmd = ""
+        if start_path.is_file():
+            try:
+                test_cmd = str(json.loads(start_path.read_text(encoding="utf-8")).get("test_command") or "")
+            except (OSError, ValueError, TypeError):
+                test_cmd = ""
+        new_profile = False
+        for ev in reversed(read_flow(cdir)):
+            if ev.get("kind") == "方案":
+                new_profile = bool(ev.get("new_profile"))
+                break
+        prof_file = profile_path(project)
+        profile_text = ""
+        if new_profile and prof_file.is_file():
+            profile_text = prof_file.read_text(encoding="utf-8")
+        return {
+            "plan": plan_text, "allowed": allowed, "test_command": test_cmd,
+            "new_profile": new_profile, "profile_text": profile_text,
+        }
+
+    def _card_action_error(self, text: str) -> None:
+        self._json({"error": text}, 409)
+
+    def _do_card_action(self, project: str, card_id: str, action: str) -> None:
+        phase = card_phase(project, card_id)
+        actions = phase.get("actions") or []
+        if action not in actions:
+            self._card_action_error("现在不能做这个操作，请先看我说的阶段。")
+            return
+        cdir = Path(project) / ".collab" / "cards" / card_id
+        state_path = cdir / "状态.json"
+        if not state_path.is_file():
+            self._card_action_error("找不到这张卡片。")
+            return
+        card = Card.load(state_path)
+
+        if action == "discard":
+            try:
+                card.transition("已放弃")
+            except InvalidTransition:
+                self._card_action_error("这张卡现在不能标记为先不做。")
+                return
+            card.save(state_path)
+            render_board(Path(project) / ".collab")
+            ledger_add(project, f"{card_id}：标记为先不做")
+            self._json({"ok": True})
+            return
+
+        if action == "replan":
+            try:
+                launch(project, "plan", card_id, ["plan", project, card_id])
+            except TaskBusy:
+                pass
+            self._json({"ok": True})
+            return
+
+        if action == "approve":
+            prof = profile_path(project)
+            if not prof.is_file():
+                self._card_action_error("还没有项目说明：请先在文档里写好「项目说明」。")
+                return
+            settings_path = Path(project) / ".collab" / "配置.json"
+            settings = {}
+            if settings_path.is_file():
+                try:
+                    settings = json.loads(settings_path.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    settings = {}
+            phase_data = self._plan_payload(project, card_id)
+            need_confirm = bool(phase_data["new_profile"] or not settings.get("project_profile_confirmed"))
+            if need_confirm:
+                body = prof.read_text(encoding="utf-8")
+                if has_blanks(body):
+                    self._card_action_error("项目说明里还有空白：请先补全再在协作区里确认。")
+                    return
+                ns = argparse.Namespace(project=project)
+                if cmd_confirm_profile(ns) != 0:
+                    self._card_action_error("项目说明还不能确认：请先按提示补全。")
+                    return
+            ns2 = argparse.Namespace(project=project, card_id=card_id)
+            code = cmd_approve(ns2)
+            if code != 0:
+                self._card_action_error("方案里还有空白：请先在卡片里补全。")
+                return
+            self._json({"ok": True})
+            return
+
+        if action in ("resume", "stop"):
+            self._json({"error": "这一步要等下一版再做"}, 409)
+            return
+
+        self._card_action_error("看不懂这个操作。")
+
     def _static(self, rel: str) -> None:
         target = (STATIC / rel).resolve()
         if STATIC not in target.parents or not target.is_file():
@@ -99,6 +208,12 @@ class Handler(BaseHTTPRequestHandler):
                                      chat_session=session))
             elif url.path == "/api/cards":
                 self._json(list_cards(project) if project and Path(project).is_dir() else [])
+            elif url.path == "/api/plan":
+                card_id = query.get("card", "")
+                if not project or not Path(project).is_dir() or not card_id:
+                    self._json({"error": "需要项目和卡片"}, 400)
+                    return
+                self._json(self._plan_payload(project, card_id))
             elif url.path == "/api/text":
                 session = getattr(self.server, "hub", None) and self.server.hub.get(project)
                 text = event_text(project, query.get("card", ""), int(query.get("seq", "0") or 0),
@@ -271,6 +386,14 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"error": str(exc)}, 404)
             except (RuntimeError, TaskError) as exc:
                 self._json({"error": str(exc)}, 409)
+            return
+        if path == "/api/clerk/card":
+            card_id = str(body.get("card") or "").strip()
+            action = str(body.get("action") or "").strip()
+            if not project or not Path(project).is_dir() or not card_id or not action:
+                self._json({"error": "需要项目、卡片和操作"}, 400)
+                return
+            self._do_card_action(project, card_id, action)
             return
         if path == "/api/clerk/clear":
             self.server.clerk = None

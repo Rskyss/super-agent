@@ -1286,7 +1286,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
         let who = urlEncode(Dispatcher.forProject(project)?.saved ?? "")
         let base = "project=\(urlEncode(project.path))&dispatcher=\(who)"
         let card = selectedCard.map(urlEncode) ?? ""
-        if let url = URL(string: "http://127.0.0.1:\(port)/?\(base)&card=\(card)") {
+        if let url = URL(string: "http://127.0.0.1:\(port)/?\(base)&card=\(card)&token=\(chatToken)") {
             web.load(URLRequest(url: url))
         }
         if let url = URL(string: "http://127.0.0.1:\(port)/static/nav.html?\(base)&selected=\(card)&mode=\(navMode())&token=\(chatToken)&chat=\(Dispatcher.forProject(project)?.hasChat == true || clerkReady ? 1 : 0)&clerk=\(clerkReady ? 1 : 0)") {
