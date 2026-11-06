@@ -16,7 +16,7 @@ from typing import Any, Dict, Optional
 
 from collab.config import ConfigError, load_team, _check_member  # noqa: SLF001
 from collab.flow import record as flow_record
-from collab.phase import card_phase, process_is_alive
+from collab.phase import card_phase, process_is_alive, process_start
 from collab.tasks import TaskError, new_card
 
 COLLAB_PACKAGE = Path(__file__).resolve().parent.parent.parent / "collab"
@@ -255,52 +255,15 @@ def _record_path(project: str, kind: str) -> Path:
     return folder / f"{kind}.json"
 
 
-def _pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except (OSError, ValueError, TypeError):
-        return True
+class StopWrongCard(Exception):
+    """后台记录不是这张卡：不能从这里停。"""
 
 
-def stop_construction(project: str) -> None:
-    """对施工进程组先发 SIGTERM，5 秒后仍在则 SIGKILL。"""
-    rec = running(project, "run")
-    if not rec:
-        return
-    try:
-        pid = int(rec["pid"])
-    except (TypeError, ValueError):
-        return
-    try:
-        os.killpg(pid, signal.SIGTERM)
-    except ProcessLookupError:
-        return
-    except OSError:
-        try:
-            os.kill(pid, signal.SIGTERM)
-        except OSError:
-            return
-    deadline = time.time() + 5
-    while time.time() < deadline:
-        if not _pid_alive(pid):
-            break
-        time.sleep(0.05)
-    if _pid_alive(pid):
-        try:
-            os.killpg(pid, signal.SIGKILL)
-        except OSError:
-            try:
-                os.kill(pid, signal.SIGKILL)
-            except OSError:
-                pass
-    while _pid_alive(pid):
-        time.sleep(0.05)
+_stop_lock = threading.Lock()
+_stopping = set()
 
 
-def running(project: str, kind: str) -> Optional[Dict[str, Any]]:
+def _read_backend_raw(project: str, kind: str) -> Optional[Dict[str, Any]]:
     path = _record_path(project, kind)
     if not path.is_file():
         return None
@@ -308,7 +271,61 @@ def running(project: str, kind: str) -> Optional[Dict[str, Any]]:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    if not isinstance(data, dict):
+    return data if isinstance(data, dict) else None
+
+
+def stop_construction(project: str, card_id: str) -> None:
+    """只停这张卡。正在停时第二次直接成功。工具不响应则强停，总等待上限 8 秒。"""
+    key = f"{project}\0{card_id}"
+    with _stop_lock:
+        if key in _stopping:
+            return
+        _stopping.add(key)
+    try:
+        rec = _read_backend_raw(project, "run")
+        if rec is None:
+            return
+        if str(rec.get("card") or "") != str(card_id):
+            raise StopWrongCard("这张卡不是从这里开工的，请到终端里停")
+        try:
+            pid = int(rec["pid"])
+        except (TypeError, ValueError, KeyError):
+            return
+        started = rec.get("started")
+        try:
+            os.killpg(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return
+        except OSError:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except OSError:
+                return
+        deadline = time.time() + 8
+        while time.time() < deadline:
+            if not process_is_alive(pid, started):
+                break
+            time.sleep(0.05)
+        if process_is_alive(pid, started):
+            try:
+                os.killpg(pid, signal.SIGKILL)
+            except OSError:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except OSError:
+                    pass
+        kill_deadline = time.time() + 2
+        while time.time() < kill_deadline and process_is_alive(pid, started):
+            time.sleep(0.05)
+    finally:
+        with _stop_lock:
+            _stopping.discard(key)
+
+
+def running(project: str, kind: str) -> Optional[Dict[str, Any]]:
+    path = _record_path(project, kind)
+    data = _read_backend_raw(project, kind)
+    if data is None:
         return None
     pid = data.get("pid")
     if pid is None:
@@ -318,14 +335,14 @@ def running(project: str, kind: str) -> Optional[Dict[str, Any]]:
             pass
         return None
     try:
-        pid = int(pid)
+        pid_i = int(pid)
     except (TypeError, ValueError):
         try:
             path.unlink()
         except OSError:
             pass
         return None
-    if not _pid_alive(pid):
+    if not process_is_alive(pid_i, data.get("started")):
         try:
             path.unlink()
         except OSError:
@@ -346,6 +363,8 @@ def launch(project: str, kind: str, card_id: str, args: list) -> int:
         if running(project, kind) is not None:
             raise TaskBusy("已有同类任务在跑")
         try:
+            env = os.environ.copy()
+            env.pop("SUPERAGENT_CHAT_TOKEN", None)
             log = open(log_path, "a", encoding="utf-8", buffering=1)
             proc = subprocess.Popen(
                 [sys.executable, "-B", str(COLLAB_PACKAGE), *args],
@@ -354,20 +373,26 @@ def launch(project: str, kind: str, card_id: str, args: list) -> int:
                 stdout=log,
                 stderr=subprocess.STDOUT,
                 start_new_session=True,
+                env=env,
             )
             log.close()
-            payload = json.dumps({"card": card_id, "pid": proc.pid, "time": time.time()}, ensure_ascii=False)
+            started = process_start(proc.pid)
+            payload = json.dumps(
+                {"card": card_id, "pid": proc.pid, "time": time.time(), "started": started},
+                ensure_ascii=False,
+            )
             tmp_path.write_text(payload + "\n", encoding="utf-8")
             os.replace(str(tmp_path), str(path))
-            if kind == "plan":
-                try:
-                    flow_record(
-                        _collab(project) / "cards" / card_id,
-                        "写方案", src="程序", dst="Codex",
-                        summary="开始写方案", pid=proc.pid,
-                    )
-                except OSError:
-                    pass
+            try:
+                cdir = _collab(project) / "cards" / card_id
+                if kind == "plan":
+                    flow_record(cdir, "写方案", src="程序", dst="Codex",
+                                summary="开始写方案", pid=proc.pid, started=started)
+                elif kind == "run":
+                    flow_record(cdir, "开工", src="程序", dst="程序",
+                                summary="开始施工", pid=proc.pid, started=started)
+            except OSError:
+                pass
 
             def _wait():
                 proc.wait()
@@ -398,7 +423,9 @@ def launch(project: str, kind: str, card_id: str, args: list) -> int:
             raise
 
 
-_REPORT_CODES = frozenset({"plan_ready", "plan_failed", "review", "blocked", "interrupted"})
+_REPORT_CODES = frozenset({
+    "plan_ready", "plan_failed", "review", "blocked", "interrupted", "start_failed",
+})
 
 
 def _card_title(cdir: Path, card_id: str) -> str:
@@ -497,6 +524,8 @@ def _report_text(code: str, title: str, phase: dict) -> str:
         return base + "。"
     if code == "interrupted":
         return f"「{title}」中断了，可以点卡片接着跑。"
+    if code == "start_failed":
+        return f"「{title}」开工失败，可以点卡片接着跑，或者不做了。"
     return ""
 
 
@@ -537,46 +566,52 @@ class TaskWatcher:
         if not root.is_dir():
             return
         for cdir in sorted(root.iterdir(), key=lambda p: p.name):
-            if not cdir.is_dir():
-                continue
-            state_path = cdir / "状态.json"
-            if not state_path.is_file():
-                continue
-            card_id = cdir.name
-            has_source = (cdir / "来源.json").is_file()
-            phase = card_phase(project, card_id)
-            code = str(phase.get("code") or "")
-
-            if has_source and code == "plan_waiting" and running(project, "plan") is None:
-                try:
-                    launch(project, "plan", card_id, ["plan", project, card_id])
-                except TaskBusy:
-                    pass
-
-            prev = _load_reported_code(cdir)
-            if prev is None:
-                if has_source:
-                    _save_reported_code(cdir, code)
+            try:
+                self._tick_card(project, cdir)
+            except Exception:
                 continue
 
-            if code == prev:
-                continue
+    def _tick_card(self, project: str, cdir: Path) -> None:
+        if not cdir.is_dir():
+            return
+        state_path = cdir / "状态.json"
+        if not state_path.is_file():
+            return
+        card_id = cdir.name
+        has_source = (cdir / "来源.json").is_file()
+        phase = card_phase(project, card_id)
+        code = str(phase.get("code") or "")
 
-            if not has_source:
+        if has_source and code == "plan_waiting" and running(project, "plan") is None:
+            try:
+                launch(project, "plan", card_id, ["plan", project, card_id])
+            except TaskBusy:
+                pass
+
+        prev = _load_reported_code(cdir)
+        if prev is None:
+            if has_source:
                 _save_reported_code(cdir, code)
-                continue
+            return
 
-            if code not in _REPORT_CODES:
-                _save_reported_code(cdir, code)
-                continue
+        if code == prev:
+            return
 
-            if code == "interrupted" and _user_stop_after_last_run(_flow_events(cdir)):
-                _save_reported_code(cdir, code)
-                continue
-
-            conversation = _conversation_from_source(cdir)
-            title = _card_title(cdir, card_id)
-            text = _report_text(code, title, phase)
-            if text and conversation:
-                self._desk.notify(project, conversation, text)
+        if not has_source:
             _save_reported_code(cdir, code)
+            return
+
+        if code not in _REPORT_CODES:
+            _save_reported_code(cdir, code)
+            return
+
+        if code == "interrupted" and _user_stop_after_last_run(_flow_events(cdir)):
+            _save_reported_code(cdir, code)
+            return
+
+        conversation = _conversation_from_source(cdir)
+        title = _card_title(cdir, card_id)
+        text = _report_text(code, title, phase)
+        if text and conversation:
+            self._desk.notify(project, conversation, text)
+        _save_reported_code(cdir, code)

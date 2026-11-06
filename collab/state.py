@@ -49,9 +49,12 @@ class Card:
     def save(self, path: Path) -> None:
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(
+        payload = json.dumps(
             {"card_id": self.card_id, "state": self.state, "rework": self.rework},
-            ensure_ascii=False, indent=2), encoding="utf-8")
+            ensure_ascii=False, indent=2)
+        spare = path.with_suffix(path.suffix + ".tmp")
+        spare.write_text(payload, encoding="utf-8")
+        spare.replace(path)
 
     @classmethod
     def load(cls, path: Path) -> "Card":

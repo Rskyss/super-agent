@@ -30,7 +30,8 @@ def new_card(project, title, do, not_do, done_when, conversation="") -> str:
         next_no = 1
         for path in cards.iterdir():
             match = _CARD_SHAPE.match(path.name)
-            if match and path.is_dir() and (path / "状态.json").exists():
+            # 空目录也算占用编号，避免建卡撞上
+            if match and path.is_dir():
                 next_no = max(next_no, int(match.group(1)) + 1)
         card_id = f"CARD-{next_no:03d}"
         cdir = cards / card_id

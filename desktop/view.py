@@ -99,12 +99,15 @@ def _updated(cdir: Path) -> float:
 
 
 def list_cards(project_dir) -> list:
-    """项目里所有卡片，最近有动静的排在最前。"""
+    """项目里所有卡片，最近有动静的排在最前。读不出来的卡直接跳过。"""
     project = Path(project_dir)
     cards = []
     for card_id, cdir in _card_dirs(project).items():
-        card = Card.load(cdir / "状态.json")
-        phase = card_phase(str(project), card_id)
+        try:
+            card = Card.load(cdir / "状态.json")
+            phase = card_phase(str(project), card_id)
+        except (OSError, ValueError, TypeError, KeyError):
+            continue
         cards.append({"id": card_id, "title": _title(cdir, card_id), "state": card.state,
                       "rework": card.rework, "updated": _updated(cdir), "phase": phase})
     cards.sort(key=lambda c: (c["updated"], c["id"]), reverse=True)

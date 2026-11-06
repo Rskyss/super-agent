@@ -50,7 +50,9 @@ from desktop.chat import ChatHub  # noqa: E402
 from desktop.clerk.client import DEFAULT_BASE_URL, DEFAULT_MODEL, ModelClient, ModelError  # noqa: E402
 from desktop.clerk.codex_history import list_history, read_history  # noqa: E402
 from desktop.clerk.desk import ClerkDesk  # noqa: E402
-from desktop.clerk.tasks import TaskBusy, TaskWatcher, launch, running, stop_construction  # noqa: E402
+from desktop.clerk.tasks import (  # noqa: E402
+    StopWrongCard, TaskBusy, TaskWatcher, launch, running, stop_construction,
+)
 from collab.tasks import TaskError  # noqa: E402
 from desktop.shell_path import adopt_terminal_path  # noqa: E402
 from desktop.view import card_view, event_text, list_cards  # noqa: E402
@@ -218,7 +220,11 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if action == "stop":
-            stop_construction(project)
+            try:
+                stop_construction(project, card_id)
+            except StopWrongCard as exc:
+                self._card_action_error(str(exc))
+                return
             flow_record(cdir, "停下", src="你", dst="程序", summary="施工已停下")
             self._json({"ok": True})
             return

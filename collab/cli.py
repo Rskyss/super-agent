@@ -206,8 +206,15 @@ def cmd_run(args, ask_fn=None, judge_fn=None, **_):
                    if resuming else
                    f"开始施工：测试员 {tools['test']}，开发员 {tools['dev']}，复查员 {reviewer or '不复查'}")
     main_pid = os.getpid()
+    from collab.phase import process_start
+    started_at = process_start(main_pid)
+    _stopping = {"done": False}
 
     def _on_signal(signum, frame):
+        # 第一次收到结束信号后忽略后续，确保能走完收尾
+        if _stopping["done"]:
+            return
+        _stopping["done"] = True
         kill_current_tool_process_group()
         raise SystemExit(128 + signum)
 
@@ -220,7 +227,7 @@ def cmd_run(args, ask_fn=None, judge_fn=None, **_):
     flow_record(_collab(args.project) / "cards" / args.card_id, "开跑", src="调度员", dst="程序",
                 summary=run_summary,
                 tools={"测试员": tools["test"], "开发员": tools["dev"], "复查员": reviewer},
-                pid=main_pid,
+                pid=main_pid, started=started_at,
                 text=f"判定命令：{args.test_command}\n页面检查：{args.page_check or '无'}\n独立副本：{worktree}")
     card, verdict = run_card(
         card, collab_dir=_collab(args.project), worktree=str(worktree),

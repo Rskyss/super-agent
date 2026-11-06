@@ -24,14 +24,11 @@ _active_tool = None  # 当前派活里的工具进程，供 collab run 收到结
 
 
 def kill_current_tool_process_group() -> None:
-    """对当前正在运行的工具进程组发 SIGTERM（与停下施工一致）。"""
+    """对当前正在运行的工具进程组先温和结束，再强制结束。"""
     proc = _active_tool
-    if proc is None or proc.poll() is not None:
+    if proc is None:
         return
-    try:
-        os.killpg(proc.pid, signal.SIGTERM)
-    except (ProcessLookupError, PermissionError, OSError):
-        pass
+    _stop(proc)
 
 
 def cursor_command(prompt: str, model: str = DEFAULT_MODELS["cursor"]):
@@ -88,10 +85,8 @@ def _newest_mtime(root) -> float:
 
 
 def _stop(proc) -> None:
-    """连同它拉起的子进程一起停掉；先温和结束，不行再强停。"""
-    if proc.poll() is not None:
-        proc.wait()
-        return
+    """连同它拉起的子进程一起停掉；先温和结束，不行再强停。
+    工具已正常退出时也要清进程组，避免留下空闲子进程。"""
     try:
         os.killpg(proc.pid, signal.SIGTERM)
     except (ProcessLookupError, PermissionError, OSError):
@@ -99,15 +94,25 @@ def _stop(proc) -> None:
     deadline = time.time() + 5
     while proc.poll() is None and time.time() < deadline:
         try:
-            proc.wait(timeout=min(0.2, deadline - time.time()))
+            proc.wait(timeout=min(0.2, max(0.01, deadline - time.time())))
         except subprocess.TimeoutExpired:
             pass
     if proc.poll() is None:
         try:
             os.killpg(proc.pid, signal.SIGKILL)
         except (ProcessLookupError, PermissionError, OSError):
-            proc.kill()
-    proc.wait()
+            try:
+                proc.kill()
+            except OSError:
+                pass
+    try:
+        proc.wait(timeout=1)
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
 
 
 def _output_file(live_path):
@@ -141,10 +146,8 @@ def watched_runner(cmd, cwd, timeout, quiet_limit=QUIET_LIMIT, poll=POLL_SECONDS
                     raise subprocess.TimeoutExpired(cmd, timeout)
                 if now - last_activity > quiet_limit:
                     raise QuietTimeout(int(now - last_activity))
-        except BaseException:
-            _stop(proc)
-            raise
         finally:
+            _stop(proc)
             if _active_tool is proc:
                 _active_tool = None
         out.seek(0)

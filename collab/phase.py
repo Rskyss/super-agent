@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from pathlib import Path
 from typing import Optional
 
@@ -11,16 +12,34 @@ from collab.scope import read_allowed
 from collab.state import Card
 
 
-def process_is_alive(pid) -> bool:
+def process_start(pid) -> str:
+    """读进程启动时间；读不到返回空字符串。"""
+    if pid is None:
+        return ""
+    try:
+        out = subprocess.check_output(
+            ["ps", "-o", "lstart=", "-p", str(int(pid))],
+            stderr=subprocess.DEVNULL, text=True,
+        )
+    except (OSError, ValueError, TypeError, subprocess.CalledProcessError):
+        return ""
+    return (out or "").strip()
+
+
+def process_is_alive(pid, started=None) -> bool:
+    """全项目唯一的判活。给了 started 时，启动时间对不上算没活着。"""
     if pid is None:
         return False
     try:
         os.kill(int(pid), 0)
-        return True
     except ProcessLookupError:
         return False
     except (OSError, ValueError, TypeError):
         return True
+    if started is not None and str(started) != "":
+        if process_start(pid) != str(started):
+            return False
+    return True
 
 
 def _collab(project: str) -> Path:
@@ -61,7 +80,7 @@ def _plan_process_alive(project: str, card_id: str) -> bool:
         pid = int(pid)
     except (TypeError, ValueError):
         return False
-    return process_is_alive(pid)
+    return process_is_alive(pid, data.get("started"))
 
 
 def _last_of(events: list, kind: str) -> Optional[dict]:
@@ -176,18 +195,41 @@ def card_phase(project: str, card_id: str) -> dict:
     run_live = (
         run_rec is not None
         and run_rec.get("card") == card_id
-        and process_is_alive(run_rec.get("pid"))
+        and process_is_alive(run_rec.get("pid"), run_rec.get("started"))
     )
 
     runs = [e for e in events if e.get("kind") == "开跑"]
     last_run = runs[-1] if runs else None
     last_pid = last_run.get("pid") if last_run else None
-    run_proc_dead = last_pid is not None and not process_is_alive(last_pid)
+    last_started = last_run.get("started") if last_run else None
+    run_proc_dead = last_pid is not None and not process_is_alive(last_pid, last_started)
 
     if state == "待对齐":
         return _plan_phase(project, card_id, cdir, events)
 
     if state == "待派发":
+        started = False
+        if run_rec is not None and run_rec.get("card") == card_id:
+            started = True
+            if process_is_alive(run_rec.get("pid"), run_rec.get("started")):
+                return {
+                    "code": "ready", "label": "准备开工", "tone": "run", "needs_you": False,
+                    "detail": "", "actions": [],
+                }
+        starts = [e for e in events if e.get("kind") == "开工"]
+        if starts:
+            started = True
+            last_start = starts[-1]
+            if process_is_alive(last_start.get("pid"), last_start.get("started")):
+                return {
+                    "code": "ready", "label": "准备开工", "tone": "run", "needs_you": False,
+                    "detail": "", "actions": [],
+                }
+        if started:
+            return {
+                "code": "start_failed", "label": "开工失败", "tone": "bad", "needs_you": True,
+                "detail": "", "actions": ["resume", "discard"],
+            }
         return {
             "code": "ready", "label": "准备开工", "tone": "run", "needs_you": False,
             "detail": "", "actions": [],

@@ -24,11 +24,19 @@ def is_git_repo(path) -> bool:
 
 
 def snapshot(repo, label: str) -> str:
-    """在当前 HEAD 打标记，返回标记名。用于出事时一键回到开工前。"""
+    """在当前 HEAD 打标记，返回标记名。用于出事时一键回到开工前。
+    同一秒内重试开工时标签可能撞车，自动加后缀。"""
     if not is_git_repo(repo):
         raise NotGitRepo(f"{repo} 不是 git 仓库，请先 git init")
-    _git(repo, "tag", label)
-    return label
+    name = label
+    for attempt in range(20):
+        try:
+            _git(repo, "tag", name)
+            return name
+        except subprocess.CalledProcessError:
+            name = f"{label}-{attempt + 1}"
+    _git(repo, "tag", f"{label}-{os.getpid()}")
+    return f"{label}-{os.getpid()}"
 
 
 def add_worktree(repo, card_id: str, dest) -> str:
