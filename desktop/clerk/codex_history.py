@@ -24,7 +24,7 @@ class _Session:
         self._pending = {}
         self._next = 0
         reader = threading.Thread(target=self._read_loop, daemon=True)
-        getattr(reader, "start")()
+        reader.start()
 
     def _read_loop(self) -> None:
         try:

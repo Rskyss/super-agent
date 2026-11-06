@@ -7,6 +7,24 @@ var PanelCore = {
   stepClass: function (state) { return ["done", "active", "wait", "fail"].indexOf(state) >= 0 ? state : "idle"; },
   // 去掉记录里的内部前缀，只留内容
   cleanDetail: function (text) { return String(text || "").replace(/^(汇报|结论)：/, ""); },
+  // 只按 phase.actions 出按钮；行政没开时不显示
+  actionButtons: function (phase, clerkOn) {
+    if (!clerkOn) return [];
+    var labels = {
+      approve: { key: "approve", label: "批准并开工" },
+      discard: { key: "discard", label: "不做了", danger: true },
+      replan: { key: "replan", label: "重写方案" },
+      resume: { key: "resume", label: "接着跑" },
+      stop: { key: "stop", label: "停下" },
+    };
+    var actions = (phase && phase.actions) || [];
+    var out = [];
+    for (var i = 0; i < actions.length; i++) {
+      var spec = labels[actions[i]];
+      if (spec) out.push(spec);
+    }
+    return out;
+  },
 };
 if (typeof module !== "undefined") module.exports = PanelCore;
 
@@ -17,9 +35,11 @@ if (typeof document !== "undefined") (function () {
   var dispatcher = params.get("dispatcher") || "";  // 桌面窗口告诉面板：用户选的调度员是谁
   var selected = params.get("card") || null;   // 窗口指定的卡片；null 表示跟随最新的一张
   var token = params.get("token") || "";
+  var clerkOn = params.get("clerk") === "1";
   var view = null, fetchedAt = 0, filterWho = null;
   var opened = {}, texts = {};
   var planCache = null;
+  var actionBusy = false;
 
   function $(id) { return document.getElementById(id); }
   function esc(s) {
@@ -50,40 +70,34 @@ if (typeof document !== "undefined") (function () {
     return parts.join(" · ");
   }
 
-  function actionSpec(code) {
-    var approve = { key: "approve", label: "批准并开工" };
-    var discard = { key: "discard", label: "不做了", danger: true };
-    var replan = { key: "replan", label: "重写方案" };
-    var resume = { key: "resume", label: "接着跑" };
-    var stop = { key: "stop", label: "停下" };
-    if (code === "plan_ready") return [approve, discard, replan];
-    if (code === "plan_failed") return [replan, discard];
-    if (code === "interrupted" || code === "blocked") return [resume, discard];
-    if (code === "running") return [stop];
-    return [];
-  }
-
   function renderActions() {
     var bar = $("actions"), btns = $("actionBtns"), hint = $("phaseHint");
     if (!view || !view.card || !view.card.phase) { bar.hidden = true; return; }
     var ph = view.card.phase;
-    var specs = actionSpec(ph.code);
+    var specs = PanelCore.actionButtons(ph, clerkOn);
     if (!specs.length) { bar.hidden = true; return; }
     bar.hidden = false;
     hint.textContent = phaseHint(ph);
     btns.innerHTML = specs.map(function (s) {
-      return '<button type="button" data-act="' + esc(s.key) + '" class="' + (s.danger ? "danger" : "") + '">' + esc(s.label) + "</button>";
+      return '<button type="button" data-act="' + esc(s.key) + '" class="' + (s.danger ? "danger" : "") + '"'
+        + (actionBusy ? " disabled" : "") + ">" + esc(s.label) + "</button>";
     }).join("");
   }
 
   $("actions").addEventListener("click", function (ev) {
     var b = ev.target.closest("button[data-act]");
-    if (!b || !view || !view.card) return;
+    if (!b || !view || !view.card || actionBusy) return;
     var act = b.getAttribute("data-act");
     if (act === "discard" && !window.confirm("确定标记为「不做了」？这张卡会停下来。")) return;
+    actionBusy = true;
+    renderActions();
     postCard(act).then(function (res) {
       if (!res.ok && res.d && res.d.error) alert(res.d.error);
+      actionBusy = false;
       poll();
+    }).catch(function () {
+      actionBusy = false;
+      renderActions();
     });
   });
 

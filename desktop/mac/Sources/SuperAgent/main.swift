@@ -276,7 +276,7 @@ struct Dispatcher {
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, NSMenuItemValidation, NSWindowDelegate,
-    WKNavigationDelegate, LocalProcessTerminalViewDelegate {
+    WKNavigationDelegate, WKUIDelegate, LocalProcessTerminalViewDelegate {
     var window: NSWindow!
     var split: NSSplitView!
     var navWeb: WKWebView!               // 左栏页面
@@ -356,8 +356,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
-        guard panel.runModal() == .OK else { return nil }
-        return panel.url
+        var chosen: URL?
+        let done = DispatchSemaphore(value: 0)
+        panel.begin { response in
+            if response == .OK { chosen = panel.url }
+            done.signal()
+        }
+        while done.wait(timeout: .now() + 0.05) == .timedOut {
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
+        }
+        return chosen
     }
 
     // MARK: 打开项目：接入 / 迁移
@@ -415,7 +423,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
             + "协作记录一条都不会动。不删也不影响使用。"
         alert.addButton(withTitle: "删掉旧协作包")
         alert.addButton(withTitle: "先留着")
-        return alert.runModal() == .alertFirstButtonReturn
+        var ok = false
+        let done = DispatchSemaphore(value: 0)
+        let host = window ?? NSApp.windows.first
+        guard let host = host else { return false }
+        alert.beginSheetModal(for: host) { response in
+            ok = response == .alertFirstButtonReturn
+            done.signal()
+        }
+        while done.wait(timeout: .now() + 0.05) == .timedOut {
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
+        }
+        return ok
     }
 
     /// 打开另一个项目（菜单“打开项目…”或“最近打开”）
@@ -524,6 +543,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
 
         buildLeft()
         web = makeWeb(message: "正在启动…")
+        web.uiDelegate = self
         rightBox = NSView()
         rightBox.wantsLayer = true
         rightBox.layer?.backgroundColor = panelBackground.cgColor
@@ -720,8 +740,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
     func makeWeb(message: String, background: String = "#131417") -> WKWebView {
         let view = WKWebView(frame: NSRect(x: 0, y: 0, width: 520, height: 800), configuration: WKWebViewConfiguration())
         view.setValue(false, forKey: "drawsBackground")  // 加载前不闪白
+        view.uiDelegate = self
         view.loadHTMLString(Self.message(message, background: background), baseURL: nil)
         return view
+    }
+
+    // 右栏/聊天页的 confirm、alert：用窗口弹层，回调必须调用，不然页面会卡住
+    func webView(_ webView: WKWebView, runJavaScriptAlertPanelWithMessage message: String,
+                 initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping @MainActor @Sendable () -> Void) {
+        let alert = NSAlert()
+        alert.messageText = message
+        alert.addButton(withTitle: "好")
+        guard let window = window else { completionHandler(); return }
+        alert.beginSheetModal(for: window) { _ in
+            MainActor.assumeIsolated { completionHandler() }
+        }
+    }
+
+    func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String,
+                 initiatedByFrame frame: WKFrameInfo,
+                 completionHandler: @escaping @MainActor @Sendable (Bool) -> Void) {
+        let alert = NSAlert()
+        alert.messageText = message
+        alert.addButton(withTitle: "确定")
+        alert.addButton(withTitle: "取消")
+        guard let window = window else { completionHandler(false); return }
+        alert.beginSheetModal(for: window) { response in
+            MainActor.assumeIsolated { completionHandler(response == .alertFirstButtonReturn) }
+        }
     }
 
     static func message(_ text: String, background: String = "#131417") -> String {
@@ -941,6 +987,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
             if let id = value("id") { selectCard(id) }
         case "main":
             selectCard(nil)
+            chatWeb.evaluateJavaScript(
+                "window.SuperAgentChat && window.SuperAgentChat.closeCodexHistory && window.SuperAgentChat.closeCodexHistory()",
+                completionHandler: nil)
         case "thread":
             if let id = value("id") { openThread(id) }
         case "codex":
@@ -1040,7 +1089,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
         alert.informativeText = "切到终端会中断这一轮，还没完成的内容可能丢失。"
         alert.addButton(withTitle: "留在聊天")
         alert.addButton(withTitle: "切到终端")
-        return alert.runModal() == .alertSecondButtonReturn
+        var leave = false
+        let done = DispatchSemaphore(value: 0)
+        let host = window ?? NSApp.windows.first
+        guard let host = host else { return false }
+        alert.beginSheetModal(for: host) { response in
+            leave = response == .alertSecondButtonReturn
+            done.signal()
+        }
+        while done.wait(timeout: .now() + 0.05) == .timedOut {
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
+        }
+        return leave
     }
 
     // MARK: 右边：本机数据服务 + 面板页面
@@ -1286,7 +1346,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
         let who = urlEncode(Dispatcher.forProject(project)?.saved ?? "")
         let base = "project=\(urlEncode(project.path))&dispatcher=\(who)"
         let card = selectedCard.map(urlEncode) ?? ""
-        if let url = URL(string: "http://127.0.0.1:\(port)/?\(base)&card=\(card)&token=\(chatToken)") {
+        if let url = URL(string: "http://127.0.0.1:\(port)/?\(base)&card=\(card)&token=\(chatToken)&clerk=\(clerkReady ? 1 : 0)") {
             web.load(URLRequest(url: url))
         }
         if let url = URL(string: "http://127.0.0.1:\(port)/static/nav.html?\(base)&selected=\(card)&mode=\(navMode())&token=\(chatToken)&chat=\(Dispatcher.forProject(project)?.hasChat == true || clerkReady ? 1 : 0)&clerk=\(clerkReady ? 1 : 0)") {

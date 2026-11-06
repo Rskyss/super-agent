@@ -487,6 +487,14 @@ if (typeof document !== "undefined") (function () {
       });
   }
 
+  function closeCodexHistory() {
+    if (!viewingCodex) return;
+    viewingCodex = false;
+    setComposerLocked(false, "");
+    if (clerkMode) clerkOpen(currentThread);
+    else resume();
+  }
+
   function clerkSend(text) {
     var fromBlank = !currentThread, mine = gen;   // 回应到之前用户可能已经切走了
     api("/api/clerk/send", { conversation: currentThread || "", text: text }).then(function (d) {
@@ -545,6 +553,7 @@ if (typeof document !== "undefined") (function () {
       if (ChatCore.needsOpen(id, currentThread, connectFailed)) switchSession("continue", false, id);
     },
     openCodexHistory: openCodexHistory,
+    closeCodexHistory: closeCodexHistory,
   };
   window.addEventListener("pagehide", pause);
   window.addEventListener("beforeunload", pause);

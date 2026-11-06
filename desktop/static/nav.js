@@ -7,14 +7,16 @@ var NavCore = {
   dotFor: function (card) {
     var ph = card && typeof card === "object" && card.phase;
     if (ph && ph.tone && ph.label) return { tone: ph.tone, label: ph.label };
-    var state = typeof card === "string" ? card : (card && card.state) || "";
-    if (state === "待对齐" || state === "待派发") return { tone: "wait", label: "等你确认" };
-    if (state === "开发中" || state === "待测试" || state === "测试中") return { tone: "run", label: "进行中" };
-    if (state === "待验收") return { tone: "ok", label: "等你验收" };
-    if (state === "需Claude介入") return { tone: "bad", label: "需要你处理" };
-    if (state === "已合并") return { tone: "done", label: "已完成" };
+    var state = (card && card.state) || "";
     return { tone: "done", label: state };
   },
+  emptyText: function (cards, filtered, rest) {
+    if (!(cards || []).length) return "还没有卡片";
+    if (!(filtered || []).length) return "没有找到";
+    if (!(rest || []).length) return "";  // 都在「等你处理」里，不显示任务卡片分组
+    return null;
+  },
+
   filter: function (cards, text) {
     var q = String(text || "").trim().toLowerCase();
     if (!q) return cards;
@@ -126,8 +128,9 @@ if (typeof document !== "undefined") (function () {
     });
     drawNeedsYou();
     var head = '<div class="gh"><span>任务卡片</span>' + (cards.length ? "<span>" + cards.length + "</span>" : "") + "</div>";
-    if (!cards.length) { $("cards").innerHTML = head + '<div class="empty">还没有卡片</div>'; return; }
-    if (!list.length) { $("cards").innerHTML = head + '<div class="empty">没有找到</div>'; return; }
+    var empty = NavCore.emptyText(cards, filtered, list);
+    if (empty === "") { $("cards").innerHTML = ""; return; }
+    if (empty) { $("cards").innerHTML = head + '<div class="empty">' + empty + "</div>"; return; }
     $("cards").innerHTML = head + NavCore.ordered(list).map(function (c) {
       var dot = NavCore.dotFor(c), on = mode === "card" && c.id === selected;
       var sub = dot.label + (c.rework ? " · 返工 " + c.rework + " 次" : "");

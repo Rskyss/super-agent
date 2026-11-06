@@ -389,6 +389,8 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
     if chat and (chat["busy"] or chat["asking"]) and state in ("待对齐", "待派发", "待验收"):
         _set(stations, "disp", "wait" if chat["asking"] else "active", chat["step_text"],
              live=bool(chat["busy"]), elapsed=chat["elapsed"], quiet=chat["quiet"])
+    elif phase.get("code") == "plan_ready":
+        _set(stations, "disp", "wait", "方案写好了，等你批准")
     else:
         _set(stations, "disp", *disp.get(state, ("done", "派活后盯进度，有人卡住会叫你")))
 
@@ -485,5 +487,13 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
     if open_ev and quiet is not None and quiet > QUIET_WARN_SECONDS and state not in TERMINAL_STATES:
         view["stale"] = True
         now_text, tone = now_text + "（超过 10 分钟没动静，可能卡住）", "warn"
+    # 这些阶段顶部一句话跟阶段标签一致；调度员/工人正在干活的细节文案优先保留
+    code = phase.get("code")
+    chat_live = bool(chat and (chat.get("busy") or chat.get("asking")))
+    if (code in ("plan_failed", "plan_waiting", "planning", "dropped", "start_failed")
+            and not chat_live and not open_ev and not testing):
+        now_text = phase.get("label") or now_text
+        tone = {"wait": "wait", "run": "run", "bad": "bad", "ok": "ok", "done": "idle"}.get(
+            phase.get("tone"), tone)
     view["now"] = {"text": now_text, "tone": tone}
     return view
