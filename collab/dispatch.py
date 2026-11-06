@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import subprocess
 import time
 from datetime import datetime
@@ -16,7 +17,7 @@ from pathlib import Path
 from collab.agents import ask as default_ask
 from collab.flow import read_flow, record, reply_summary, text_of
 from collab.judge import ENV_ERROR, FAIL, PASS, TIMEOUT, judge as default_judge
-from collab.scope import out_of_scope
+from collab.scope import is_cache, out_of_scope
 from collab.state import Card
 from collab.vcs import revert_paths
 from collab.workspace import render_board
@@ -56,11 +57,23 @@ def _changed_files(worktree) -> str:
 def _changed_list(worktree) -> list:
     """副本里改动过的文件路径列表（不带引号，中文路径也原样保留）。"""
     try:
-        proc = subprocess.run(["git", "-c", "core.quotepath=off", "status", "--porcelain"],
+        proc = subprocess.run(["git", "status", "--porcelain", "-uall", "-z"],
                               cwd=worktree, capture_output=True, text=True, check=True)
     except (subprocess.CalledProcessError, FileNotFoundError, OSError):
         return []
-    return [line[3:] for line in proc.stdout.splitlines() if line.strip()]
+    found, items, index = [], proc.stdout.split("\0"), 0
+    while index < len(items):
+        item = items[index]
+        index += 1
+        if len(item) < 4:
+            continue
+        found.append(item[3:])
+        if "R" in item[:2] or "C" in item[:2]:
+            old_name = items[index] if index < len(items) else ""
+            index += 1  # 改名和复制时，下一段是旧名字
+            if "R" in item[:2] and old_name:
+                found.append(old_name)  # 改名等于动了旧文件，也要过范围检查
+    return found
 
 
 def readable(output: str) -> str:
@@ -90,7 +103,7 @@ _DEV_TEST_NOTE = "测试文件由测试员负责，不要修改；改了也会�
 def _plan_hint(cdir: Path) -> str:
     plan = cdir / "方案.md"
     if plan.is_file():
-        return f"请严格按方案文件 {plan} 执行，尤其遵守其中「明确不做什么」。"
+        return f"请严格按方案文件 {plan} 执行，尤其遵守其中「明确不做什么」。方案里如果写着只输出方案、不修改文件，那只约束写方案这一步，不约束你。"
     return "请严格按任务卡执行，尤其遵守其中「明确不做什么」。"
 
 
@@ -157,13 +170,14 @@ def _expand_to_files(worktree, paths: list) -> list:
 def _snapshot_test_files(cdir: Path, worktree, files: list) -> None:
     snap = cdir / _TEST_SNAPSHOT
     root = Path(worktree)
+    shutil.rmtree(snap, ignore_errors=True)
     for rel in files:
         src = root / rel
         if not src.is_file():
             continue
         dest = snap / rel
         dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_bytes(src.read_bytes())
+        shutil.copy2(src, dest)
 
 
 def _restore_test_snapshot(cdir: Path, worktree) -> list:
@@ -180,13 +194,17 @@ def _restore_test_snapshot(cdir: Path, worktree) -> list:
         dest = root / rel
         data = path.read_bytes()
         try:
-            same = dest.is_file() and dest.read_bytes() == data
+            same = dest.is_file() and not dest.is_symlink() and dest.read_bytes() == data
         except OSError:
             same = False
         if same:
             continue
+        if dest.is_dir() and not dest.is_symlink():
+            shutil.rmtree(dest, ignore_errors=True)
+        elif dest.exists() or dest.is_symlink():
+            dest.unlink()
         dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_bytes(data)
+        shutil.copy2(path, dest)
         restored.append(rel)
     return restored
 
@@ -292,7 +310,7 @@ _VERDICT_SUMMARY = {PASS: "测试全部通过", FAIL: "测试没过", ENV_ERROR:
 def run_card(card: Card, collab_dir, worktree, test_command, dev_adapter, test_adapter,
              ask_fn=default_ask, judge_fn=default_judge, models=None,
              allowed=None, changed_fn=None, page_command=None, reviewer_adapter=None,
-             revert_fn=None):
+             revert_fn=None, require_tests=False):
     collab = Path(collab_dir)
     cdir = _card_dir(collab, card)
     cdir.mkdir(parents=True, exist_ok=True)
@@ -309,6 +327,10 @@ def run_card(card: Card, collab_dir, worktree, test_command, dev_adapter, test_a
 
     past = read_flow(cdir)
     test_done = any(e.get("kind") == "回复" and e.get("src") == "测试员" and e.get("ok") is True for e in past)
+    if require_tests and test_done and (cdir / _BEFORE_TESTER).is_file() and not _load_test_files(cdir):
+        # 测试员上次没交活：重新派，并把当前改动算作基线，不能当成它写的测试
+        test_done = False
+        _save_json_list(cdir / _BEFORE_TESTER, _changed_list(worktree))
     plan_hint = _plan_hint(cdir)
 
     # 复查不通过后接着跑：看复查结论，不看最新转人工原因；之后没有成功开发员回复才强制重改
@@ -322,13 +344,17 @@ def run_card(card: Card, collab_dir, worktree, test_command, dev_adapter, test_a
                          f"只写测试，不改产品代码。{plan_hint}",
                          worktree, models, 1)
         # 用真实改动列表记测试文件（不走注入的 changed_fn；中途失败也先快照，接着跑才不会当越界删掉）
-        added = _expand_to_files(worktree, [p for p in _changed_list(worktree) if p not in before_tester])
+        added = _expand_to_files(worktree, [p for p in _changed_list(worktree)
+                                            if p not in before_tester and not is_cache(p)])
         if added:
             _save_test_files(cdir, added)
             _snapshot_test_files(cdir, worktree, added)
         if not prep.ok:
             return _worker_failed(collab, cdir, card, "测试员", test_adapter, prep)
         _log_step(cdir, "写测试", test_adapter, worktree)
+        if require_tests and not _load_test_files(cdir):
+            _escalate(collab, cdir, card, f"测试员（{test_adapter}）没有写出任何测试：{reply_summary('写测试', readable(prep.output), True)}")
+            return card, None
 
     tester_files = _load_test_files(cdir)
     effective_allowed = list(allowed) + tester_files if allowed is not None else None

@@ -11,7 +11,7 @@ _ALWAYS_IGNORED = (".collab/", ".collab", "node_modules", "node_modules/")
 _CACHE_DIRS = ("__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache")
 
 
-def _is_cache(path: str) -> bool:
+def is_cache(path: str) -> bool:
     parts = [p for p in path.split("/") if p]
     return path.endswith(".pyc") or any(part in _CACHE_DIRS for part in parts)
 
@@ -62,9 +62,9 @@ def out_of_scope(changed, allowed) -> list:
     bad = []
     for path in changed:
         path = str(path).replace("\\", "/")
-        if path in _ALWAYS_IGNORED or path.startswith(".collab/"):
+        if path in _ALWAYS_IGNORED or path.startswith(".collab/") or "node_modules" in path.split("/"):
             continue
-        if _is_cache(path):  # 运行测试时自动生成的缓存，不是谁改的代码
+        if is_cache(path):  # 运行测试时自动生成的缓存，不是谁改的代码
             continue
         if _is_secret(path):
             bad.append(path)

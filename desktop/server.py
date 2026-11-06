@@ -194,14 +194,14 @@ class Handler(BaseHTTPRequestHandler):
                 if cmd_confirm_profile(ns) != 0:
                     self._card_action_error("项目说明还不能确认：请先按提示补全。")
                     return
+            test_cmd = self._start_test_command(project, card_id).strip()
+            if not test_cmd:
+                self._card_action_error("还没有施工用的测试命令：请先写好方案。")
+                return
             ns2 = argparse.Namespace(project=project, card_id=card_id)
             code = cmd_approve(ns2)
             if code != 0:
                 self._card_action_error("方案里还有空白：请先在卡片里补全。")
-                return
-            test_cmd = self._start_test_command(project, card_id).strip()
-            if not test_cmd:
-                self._card_action_error("还没有施工用的测试命令：请先写好方案。")
                 return
             try:
                 launch(project, "run", card_id, ["run", project, card_id, "--test-command", test_cmd])

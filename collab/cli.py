@@ -238,7 +238,7 @@ def cmd_run(args, ask_fn=None, judge_fn=None, **_):
         allowed=allowed,
         page_command=(["/bin/bash", "-o", "pipefail", "-c", args.page_check]
                       if args.page_check else None),
-        reviewer_adapter=reviewer,
+        reviewer_adapter=reviewer, require_tests=True,
     )
     if session:
         record_card_usage(_collab(args.project), args.card_id, usage_since(session, offset))

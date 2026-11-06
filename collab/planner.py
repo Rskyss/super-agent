@@ -159,7 +159,8 @@ def _replace_allowed_section(requirement_text: str, allowed_paths: list) -> str:
 def _build_prompt(card_dir: Path, requirement_text: str, need_profile: bool) -> str:
     lines = [
         "你可以用只读命令查看项目，但不要修改任何文件。",
-        "根据下面的需求卡，用大白话写一份拆解方案。",
+        "根据下面的需求卡，用大白话写一份拆解方案。这份方案是写给后面干活的人看的。",
+        "「不要修改文件」只约束你写方案这一步；方案内容里不要写这一条，也不要写“本次只输出方案”。",
         "输出必须是 JSON，一个对象，键必须齐全："
         + ", ".join(_PLAN_SCHEMA_KEYS)
         + "。",

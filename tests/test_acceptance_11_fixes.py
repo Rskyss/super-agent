@@ -216,6 +216,44 @@ class ApproveChecksFirst(Case):
         self.assertEqual(self.state(), "待对齐")
 
 
+class LastReviewFixes(Case):
+    def test_carrying_on_does_not_freeze_the_developer_code(self):
+        # 测试员没交活，副本里已有别的改动，接着跑时这些改动不能算成测试文件
+        write_script(self.bin / "codex", 'echo 请确认\n')
+        self.start("grep -q 第二版 src/app.py")
+        self.assertEqual(self.finished(), "需Claude介入")
+        (self.worktree / "src" / "app.py").write_text("第一版\n", encoding="utf-8")
+        write_script(self.bin / "codex", 'echo 真测试 > test_new.py\necho 写好了\n')
+        write_script(self.bin / "agent", 'echo 第二版 > src/app.py\necho 写好了\n')
+        self.assertEqual(self.act("resume")[0], 200)
+        wait_until(lambda: self.state() == "待验收", 25, "接着跑后没有完成")
+        files = json.loads((self.collab / "cards" / "CARD-001" / "测试文件.json").read_text(encoding="utf-8"))
+        self.assertEqual(files, ["test_new.py"])
+
+    def test_installed_dependencies_are_left_alone(self):
+        from collab.scope import out_of_scope
+        self.assertEqual(out_of_scope(["node_modules/a/index.js", "web/node_modules/b.js"], ["src/app.py"]), [])
+
+    def test_moving_a_file_out_of_its_place_is_caught(self):
+        docs = Path(self.project) / "docs"
+        docs.mkdir(exist_ok=True)
+        (docs / "guide.md").write_text("说明\n", encoding="utf-8")
+        self.git("add", ".")
+        self.git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "guide")
+        cdir = self.ready()
+        need = cdir / "需求卡.md"
+        need.write_text(need.read_text(encoding="utf-8") + "- src/guide.md\n", encoding="utf-8")
+        write_script(self.bin / "agent", 'git mv docs/guide.md src/guide.md\necho 写好了\n')
+        self.assertEqual(self.act("approve")[0], 200)
+        self.assertEqual(self.finished(), "需Claude介入")
+
+    def test_cache_files_do_not_count_as_tests(self):
+        write_script(self.bin / "codex", 'mkdir __pycache__\necho x > __pycache__/a.pyc\necho 请确认\n')
+        self.start()
+        self.assertEqual(self.finished(), "需Claude介入")
+        self.assertIn("没有写出任何测试", self.phase()["detail"])
+
+
 class ReviewRework(Case):
     def test_opinion_survives_a_failed_developer(self):
         dev_log = Path(self.tmp) / "dev.log"
