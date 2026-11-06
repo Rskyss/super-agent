@@ -178,7 +178,8 @@ def ask(adapter: str, prompt: str, cwd, expect_file=None, timeout=DEFAULT_TIMEOU
         except subprocess.TimeoutExpired:
             return AgentResult(ok=False, output="超时", attempts=attempt)
         if code != 0:
-            continue
+            # 非零退出是真失败，不重试；重试只留给「说写好了但文件没落盘」
+            return AgentResult(ok=False, output=output, attempts=attempt)
         if expect_file is None or (Path(cwd) / expect_file).exists():
             return AgentResult(ok=True, output=output, attempts=attempt)
     return AgentResult(ok=False, output=output, attempts=MAX_ATTEMPTS)

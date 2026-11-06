@@ -53,6 +53,9 @@ def _bad_scope_reason(path: str) -> Optional[str]:
     parts = [x for x in p.split("/") if x]
     if ".." in parts:
         return "不能写带 .. 的路径"
+    first = parts[0] if parts else ""
+    if any(ch in first for ch in "*?["):
+        return "第一段不能用通配符"
     if any(ch in p for ch in "*?[") and (".env" in p or ".git" in p):
         return "不能用通配符匹配敏感文件"
     for part in parts:

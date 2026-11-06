@@ -57,15 +57,19 @@ def _matches(path: str, pattern: str) -> bool:
 
 
 def out_of_scope(changed, allowed) -> list:
-    """返回越界的文件。目录（以 / 结尾或裸目录名）按“目录下的内容”判断。"""
+    """返回越界的文件。先比完全相同的路径，再按通配符/目录匹配。"""
+    exact = {str(p).replace("\\", "/") for p in (allowed or []) if str(p).strip()}
     bad = []
     for path in changed:
+        path = str(path).replace("\\", "/")
         if path in _ALWAYS_IGNORED or path.startswith(".collab/"):
             continue
         if _is_cache(path):  # 运行测试时自动生成的缓存，不是谁改的代码
             continue
         if _is_secret(path):
             bad.append(path)
+            continue
+        if path in exact:
             continue
         if any(_matches(path, pattern) for pattern in allowed):
             continue

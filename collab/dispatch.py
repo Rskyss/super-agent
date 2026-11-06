@@ -82,6 +82,9 @@ def readable(output: str) -> str:
 
 _REPORT_ASK = "完成后，在回复的最后一行写“汇报：”加不超过100字的说明（改了什么、测试情况）。不要另建汇报文件。"
 _TEST_FILES = "测试文件.json"
+_BEFORE_TESTER = "测试前改动.json"
+_TEST_SNAPSHOT = "测试快照"
+_DEV_TEST_NOTE = "测试文件由测试员负责，不要修改；改了也会在判定前被恢复。"
 
 
 def _plan_hint(cdir: Path) -> str:
@@ -91,8 +94,7 @@ def _plan_hint(cdir: Path) -> str:
     return "请严格按任务卡执行，尤其遵守其中「明确不做什么」。"
 
 
-def _load_test_files(cdir: Path) -> list:
-    path = cdir / _TEST_FILES
+def _load_json_list(path: Path) -> list:
     if not path.is_file():
         return []
     try:
@@ -104,9 +106,115 @@ def _load_test_files(cdir: Path) -> list:
     return [str(p) for p in data if str(p).strip()]
 
 
-def _save_test_files(cdir: Path, files: list) -> None:
-    path = cdir / _TEST_FILES
+def _load_test_files(cdir: Path) -> list:
+    return _load_json_list(cdir / _TEST_FILES)
+
+
+def _save_json_list(path: Path, files: list) -> None:
     path.write_text(json.dumps(list(files), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def _save_test_files(cdir: Path, files: list) -> None:
+    _save_json_list(cdir / _TEST_FILES, files)
+
+
+def _remember_before_tester(cdir: Path, worktree) -> list:
+    """第一次派测试员前记下改动；已有文件不覆盖，接着跑时仍以第一次为准。"""
+    path = cdir / _BEFORE_TESTER
+    if path.is_file():
+        return _load_json_list(path)
+    before = _changed_list(worktree)
+    _save_json_list(path, before)
+    return before
+
+
+def _expand_to_files(worktree, paths: list) -> list:
+    """目录展开成具体文件；只保留文件路径，目录本身不进允许范围。"""
+    root = Path(worktree)
+    seen = set()
+    out = []
+    for raw in paths:
+        rel = str(raw).replace("\\", "/").strip()
+        if not rel or rel in seen:
+            continue
+        full = root / rel
+        if full.is_dir():
+            for child in sorted(full.rglob("*")):
+                if not child.is_file():
+                    continue
+                item = child.relative_to(root).as_posix()
+                if item not in seen:
+                    seen.add(item)
+                    out.append(item)
+            continue
+        if rel.endswith("/"):
+            continue
+        seen.add(rel)
+        out.append(rel)
+    return out
+
+
+def _snapshot_test_files(cdir: Path, worktree, files: list) -> None:
+    snap = cdir / _TEST_SNAPSHOT
+    root = Path(worktree)
+    for rel in files:
+        src = root / rel
+        if not src.is_file():
+            continue
+        dest = snap / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(src.read_bytes())
+
+
+def _restore_test_snapshot(cdir: Path, worktree) -> list:
+    """判定前把测试快照写回副本。没有快照的旧卡跳过。"""
+    snap = cdir / _TEST_SNAPSHOT
+    if not snap.is_dir():
+        return []
+    root = Path(worktree)
+    restored = []
+    for path in sorted(snap.rglob("*")):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(snap).as_posix()
+        dest = root / rel
+        data = path.read_bytes()
+        try:
+            same = dest.is_file() and dest.read_bytes() == data
+        except OSError:
+            same = False
+        if same:
+            continue
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(data)
+        restored.append(rel)
+    return restored
+
+
+def _review_reject_pending(cdir: Path, past: list) -> tuple:
+    """最近一次复查结论是不通过，且之后没有成功的开发员回复 → 必须带着意见重改。"""
+    last_reject = None
+    notes = ""
+    for e in reversed(past):
+        if e.get("kind") != "回复" or e.get("src") != "复查员":
+            continue
+        body = text_of(cdir, e)
+        kind = review_verdict(body) if body else review_verdict(e.get("summary") or "")
+        if kind == "reject":
+            last_reject = e
+            notes = body or (e.get("summary") or "")
+            break
+        if kind == "pass":
+            return False, ""
+    if last_reject is None:
+        return False, ""
+    reject_seq = int(last_reject.get("seq") or 0)
+    for e in past:
+        if int(e.get("seq") or 0) <= reject_seq:
+            continue
+        if e.get("kind") == "回复" and e.get("src") == "开发员" and e.get("ok") is True:
+            return False, ""
+    return True, notes
 
 
 def _save_report(cdir: Path, output: str) -> None:
@@ -203,51 +311,41 @@ def run_card(card: Card, collab_dir, worktree, test_command, dev_adapter, test_a
     test_done = any(e.get("kind") == "回复" and e.get("src") == "测试员" and e.get("ok") is True for e in past)
     plan_hint = _plan_hint(cdir)
 
-    # 复查不通过后接着跑：开发员必须带着意见重改，返工次数不增加
-    force_after_review_reject = False
-    review_notes = ""
-    last_human = None
-    for e in reversed(past):
-        if e.get("kind") == "转人工":
-            last_human = e
-            break
-    if last_human and "复查不通过" in str(last_human.get("summary") or ""):
-        force_after_review_reject = True
-        for e in reversed(past):
-            if e.get("kind") == "回复" and e.get("src") == "复查员":
-                review_notes = text_of(cdir, e)
-                break
+    # 复查不通过后接着跑：看复查结论，不看最新转人工原因；之后没有成功开发员回复才强制重改
+    force_after_review_reject, review_notes = _review_reject_pending(cdir, past)
 
     # 第一步：测试员按验收标准先写测试（测试先行；如果断点续跑前已经写完交活，直接跳过）
     if not test_done:
-        before_tester = set(_changed_list(worktree))
+        before_tester = set(_remember_before_tester(cdir, worktree))
         prep = _dispatch(ask_fn, cdir, "测试员", test_adapter, "写测试",
                          f"{_READ_RULES}按任务卡 {needs} 的验收标准编写自动化测试，放进项目的测试目录。"
                          f"只写测试，不改产品代码。{plan_hint}",
                          worktree, models, 1)
+        # 用真实改动列表记测试文件（不走注入的 changed_fn；中途失败也先快照，接着跑才不会当越界删掉）
+        added = _expand_to_files(worktree, [p for p in _changed_list(worktree) if p not in before_tester])
+        if added:
+            _save_test_files(cdir, added)
+            _snapshot_test_files(cdir, worktree, added)
         if not prep.ok:
             return _worker_failed(collab, cdir, card, "测试员", test_adapter, prep)
         _log_step(cdir, "写测试", test_adapter, worktree)
-        # 用真实改动列表记测试文件（不走注入的 changed_fn，避免打乱范围检查的假数据）
-        added = [p for p in _changed_list(worktree) if p not in before_tester]
-        _save_test_files(cdir, added)
 
     tester_files = _load_test_files(cdir)
     effective_allowed = list(allowed) + tester_files if allowed is not None else None
 
     # 第二步：开发员照着测试写代码，直到测试通过
     dev_prompt = (f"{_READ_RULES}按任务卡实现功能：{needs}。测试已经写好，请让它们全部通过。"
-                  f"{plan_hint}{_REPORT_ASK}")
+                  f"{_DEV_TEST_NOTE}{plan_hint}{_REPORT_ASK}")
     last_output = None  # 上一轮测试的报错，用来发现“原地打转”
     past_fails = [e for e in past if e.get("kind") in ("判定", "页面检查") and e.get("result") == FAIL]
     if past_fails and card.rework > 0:
         last_output = text_of(cdir, past_fails[-1])
         dev_prompt = (f"{_READ_RULES}上一版测试没过，测试输出如下，请修复后重新提交。\n\n{last_output}\n\n"
-                      f"任务卡：{needs}。{plan_hint}{_REPORT_ASK}")
+                      f"任务卡：{needs}。{_DEV_TEST_NOTE}{plan_hint}{_REPORT_ASK}")
     if force_after_review_reject:
         notes = review_notes.strip() or "（复查员没有写下详细意见）"
         dev_prompt = (f"{_READ_RULES}上一次复查不通过。请按复查意见修改后再提交，不算一次返工。\n\n"
-                      f"{notes}\n\n任务卡：{needs}。{plan_hint}{_REPORT_ASK}")
+                      f"{notes}\n\n任务卡：{needs}。{_DEV_TEST_NOTE}{plan_hint}{_REPORT_ASK}")
 
     first_iter = True
     while True:
@@ -304,6 +402,12 @@ def run_card(card: Card, collab_dir, worktree, test_command, dev_adapter, test_a
             else:
                 record(cdir, "范围", src="程序", ok=True,
                        summary=f"改动范围正常（{len(changed)} 个文件）", text="\n".join(changed))
+
+        restored = _restore_test_snapshot(cdir, worktree)
+        if restored:
+            record(cdir, "范围", src="程序", ok=True,
+                   summary=f"已恢复开发员改动的测试文件：{'、'.join(restored)}",
+                   text="\n".join(restored))
 
         card.transition("待测试")
         card.transition("测试中")
@@ -382,4 +486,4 @@ def run_card(card: Card, collab_dir, worktree, test_command, dev_adapter, test_a
                    summary=f"返工 {card.rework} 次后测试仍没过，需要调度员处理")
             return card, verdict
         dev_prompt = (f"{_READ_RULES}上一版测试没过，测试输出如下，请修复后重新提交。\n\n{verdict.output}\n\n"
-                      f"任务卡：{needs}。{plan_hint}{_REPORT_ASK}")
+                      f"任务卡：{needs}。{_DEV_TEST_NOTE}{plan_hint}{_REPORT_ASK}")

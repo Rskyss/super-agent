@@ -56,7 +56,7 @@ class AskRetryTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             result = ask("codex", "做事", tmp, runner=lambda c, d, t: (1, "err"))
             self.assertFalse(result.ok)
-            self.assertEqual(result.attempts, 2)
+            self.assertEqual(result.attempts, 1)
 
     def test_unknown_adapter_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
