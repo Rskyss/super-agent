@@ -86,5 +86,5 @@ class TeamTest(ServerCase):
 
     def test_page_and_rules(self):
         self.propose()
-        self.assertIn("团队没配好", self.client.calls[0][0][0]["content"])
+        self.assertNotIn("团队没配好", self.client.calls[0][0][0]["content"])  # 配了行政就不需要调度员
         self.assertIn("改团队设置？", (STATIC / "chat.js").read_text(encoding="utf-8"))

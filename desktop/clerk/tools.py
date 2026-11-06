@@ -18,11 +18,21 @@ _TOOL_NAMES = {"codex": "Codex", "cursor": "Cursor", "agy": "agy", "none": "不�
 _TEAM_ROLES = ("dispatcher", "tester", "developer", "reviewer")
 _TEAM_WORKER_TOOLS = ("codex", "cursor", "agy")
 _TEAM_REVIEWER_TOOLS = _TEAM_WORKER_TOOLS + ("none",)
+_DOC_NAMES = ("readme.md", "readme", "readme.txt", "claude.md", "agents.md")
+_DOC_LIMIT = 2200
+_TOP_LIMIT = 60
+_SECRET_LINE = re.compile(r"(api[_-]?key|secret|token|password|passwd|密钥|口令)\s*[:=：]", re.IGNORECASE)
+_SECRET_WORD = re.compile(r"\bsk-[A-Za-z0-9_-]{16,}")
 
 TOOLS = [
     {"type": "function", "function": {
         "name": "read_project_profile",
         "description": "读项目说明",
+        "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+    }},
+    {"type": "function", "function": {
+        "name": "read_project_docs",
+        "description": "读项目自带的 README、CLAUDE.md、AGENTS.md、package.json 说明和顶层文件名。不读代码和密钥。",
         "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
     }},
     {"type": "function", "function": {
@@ -63,6 +73,13 @@ TOOLS = [
         }, "required": ["role", "tool"], "additionalProperties": False},
     }},
     {"type": "function", "function": {
+        "name": "propose_profile",
+        "description": "向用户出示“保存项目说明？”确认框。用户点确认才写入文件。",
+        "parameters": {"type": "object", "properties": {
+            "profile": {"type": "string", "description": "完整的项目说明，含做什么、怎么启动、怎么测试、禁区、技术栈五项"},
+        }, "required": ["profile"], "additionalProperties": False},
+    }},
+    {"type": "function", "function": {
         "name": "propose_task",
         "description": "向用户出示“变成任务？”确认框。用户点确认才建卡。",
         "parameters": {"type": "object", "properties": {
@@ -76,6 +93,7 @@ TOOLS = [
 
 LABELS = {
     "read_project_profile": "读 项目说明",
+    "read_project_docs": "读 项目资料",
     "read_ledger": "读 台账",
     "list_cards": "读 卡片列表",
     "read_card": "读 卡片",
@@ -83,6 +101,7 @@ LABELS = {
     "list_installed_tools": "查 本机工具",
     "propose_team_change": "读 提议",
     "propose_task": "读 提议",
+    "propose_profile": "读 提议",
 }
 
 
@@ -92,6 +111,8 @@ def run_tool(project: str, name: str, arguments: dict) -> str:
         args = arguments if isinstance(arguments, dict) else {}
         if name == "read_project_profile":
             text = _read_profile(project)
+        elif name == "read_project_docs":
+            text = _read_project_docs(project)
         elif name == "read_ledger":
             text = _read_ledger(project, args)
         elif name == "list_cards":
@@ -124,6 +145,42 @@ def _read_profile(project: str) -> str:
         return "这个项目还没有项目说明。"
     text = _clip(path).strip()
     return text or "项目说明是空的。"
+
+
+def _hide_secrets(text: str) -> str:
+    lines = ["（这一行可能含密钥，已隐藏）" if _SECRET_LINE.search(line) else line for line in text.splitlines()]
+    return _SECRET_WORD.sub("（已隐藏）", "\n".join(lines))
+
+
+def _package_summary(path: Path) -> str:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+    except (OSError, ValueError):
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    words = [str(data.get(key) or "").strip() for key in ("name", "description")]
+    return _hide_secrets("\n".join(word for word in words if word))
+
+
+def _read_project_docs(project: str) -> str:
+    """只读固定的说明文件和顶层文件名。不跟随链接，不列隐藏文件，不读代码。"""
+    root = Path(project)
+    entries = sorted(root.iterdir(), key=lambda p: p.name.lower())
+    names = [p.name for p in entries if not p.name.startswith(".")][:_TOP_LIMIT]
+    parts = ["【顶层文件和文件夹】\n" + ("、".join(names) or "没有")]
+    for path in entries:
+        if path.is_symlink() or not path.is_file():
+            continue
+        if path.name.lower() in _DOC_NAMES:
+            text = _hide_secrets(path.read_text(encoding="utf-8", errors="replace")).strip()
+        elif path.name == "package.json":
+            text = _package_summary(path)
+        else:
+            continue
+        if text:
+            parts.append(f"【{path.name}】\n{text[:_DOC_LIMIT]}")
+    return "\n\n".join(parts)
 
 
 def _read_ledger(project: str, args: dict) -> str:
@@ -224,10 +281,10 @@ def team_incomplete_hint(project: str) -> str:
         team = load_team(project)
     except ConfigError:
         return "团队配置读不出来：请在设置里先修好配置，或一项一项说清要改谁。"
-    if not team.get("configured"):
-        return "团队没配好：先请用户去「设置」里选调度员；选好后如需再调别的角色，再一步一步来。"
     missing = []
     for role in _TEAM_ROLES:
+        if role == "dispatcher":  # 配了行政就不需要调度员
+            continue
         v = team.get(role)
         if v is None or (isinstance(v, str) and not v.strip()):
             missing.append(_ROLE_NAMES.get(role, role))

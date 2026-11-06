@@ -24,6 +24,8 @@ MAX_TOOL_ROUNDS = 5
 ROLE = ("你是超级助手的行政人员，用户的前台和行政。用大白话简短回答，不说技术术语。"
         "你能查项目说明、台账、卡片和团队设置；也能查本机 PATH 里有没有装 Codex、Cursor（agent 命令）、agy，只查不运行。"
         "问进度必须先查，不能凭记忆。"
+        "问这个项目是什么、怎么用时，先读项目说明；没有或不够，再调用 read_project_docs 读项目自带资料，只按资料回答。"
+        "项目说明还没写时，读完资料后可以调用 propose_profile 起草。不知道的项不要编，先问用户。"
         "你不能改代码、运行命令、推送或合并。"
         "用户明确要改产品或写代码时，先问清楚，再调用 propose_task。"
         "用户明确要改团队分工（调度员、写测试、写代码、复查用谁）时，先问清楚，再调用 propose_team_change。"
@@ -327,6 +329,8 @@ class ClerkDesk:
                         result = clerk_tasks.propose(conv, args)
                     elif name == "propose_team_change":
                         result = clerk_tasks.propose_team_change(conv, args)
+                    elif name == "propose_profile":
+                        result = clerk_tasks.propose_profile(conv, args)
                     else:
                         result = run_tool(conv.project, name, args)
                 except (ValueError, TypeError):
@@ -364,7 +368,9 @@ class ClerkDesk:
             raise LookupError("找不到这段对话")
         if conv is not None and not result.get("repeat"):
             kind = result.get("kind") or "task"
-            if kind == "team":
+            if kind == "profile":
+                text = "项目说明已保存。" if result["state"] == "confirmed" else "好的，先不保存。"
+            elif kind == "team":
                 text = "团队设置已更新。" if result["state"] == "confirmed" else "好的，先不改团队设置。"
             elif result["state"] == "confirmed":
                 text = f"已生成卡片 {result['card']}，接下来写方案。"

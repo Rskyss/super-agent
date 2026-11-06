@@ -124,6 +124,7 @@ var ChatCore = (function () {
           kind: "proposal", id: ev.id, proposalKind: ev.kind || "task",
           title: ev.title || "", do: ev.do || "", not_do: ev.not_do || "", done_when: ev.done_when || "",
           role: ev.role || "", tool: ev.tool || "", before: ev.before != null ? ev.before : "",
+          profile: ev.profile || "",
           state: ev.state || "open", card: ev.card || "",
         });
         break;
@@ -282,8 +283,12 @@ if (typeof document !== "undefined") (function () {
         if (String(tool).indexOf("custom:") === 0) return "自定义命令";
         return ({ codex: "Codex", cursor: "Cursor", agy: "agy", none: "不复查" })[tool] || tool;
       }
-      var isTeam = b.proposalKind === "team";
-      var result = isTeam ? {
+      var isTeam = b.proposalKind === "team", isProfile = b.proposalKind === "profile";
+      var result = isProfile ? {
+        confirmed: "项目说明已保存。",
+        cancelled: "好的，先不保存。",
+        replaced: "已换成新的提议",
+      } : isTeam ? {
         confirmed: "团队设置已更新。",
         cancelled: "好的，先不改团队设置。",
         replaced: "已换成新的提议",
@@ -298,7 +303,14 @@ if (typeof document !== "undefined") (function () {
         el.innerHTML = "<h3></h3><div class=\"rows\"></div>" +
           "<div class=\"btns\"><button class=\"btn primary\" data-prop=\"confirm\">确认</button>" +
           "<button class=\"btn\" data-prop=\"cancel\">先不做</button></div>";
-        if (isTeam) {
+        if (isProfile) {
+          el.querySelector("h3").textContent = "保存项目说明？";
+          var draft = document.createElement("div");
+          draft.innerHTML = "<span>内容</span><p></p>";
+          draft.querySelector("p").textContent = b.profile;
+          draft.querySelector("p").style.whiteSpace = "pre-wrap";
+          el.querySelector(".rows").appendChild(draft);
+        } else if (isTeam) {
           el.querySelector("h3").textContent = "改团队设置？";
           var row = document.createElement("div");
           var beforeT = b.before === "" || b.before == null ? "还没选" : propToolLabel(b.before);

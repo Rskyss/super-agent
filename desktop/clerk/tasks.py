@@ -18,6 +18,7 @@ from collab.config import ConfigError, load_team, save_team_member
 from collab.flow import record as flow_record
 from collab.phase import card_phase, process_is_alive, process_start
 from collab.tasks import TaskError, new_card
+from collab.workspace import PROFILE_TEMPLATE, has_blanks, profile_path
 
 COLLAB_PACKAGE = Path(__file__).resolve().parent.parent.parent / "collab"
 
@@ -27,6 +28,7 @@ _FIELD_NAMES = {"title": "标题", "do": "要做什么", "not_do": "不做什么
 _TEAM_ROLES = frozenset({"dispatcher", "tester", "developer", "reviewer"})
 _TEAM_TOOLS = frozenset({"codex", "cursor", "agy"})
 _TEAM_REVIEWER_TOOLS = _TEAM_TOOLS | {"none"}
+_PROFILE_LABELS = ("做什么", "怎么启动", "怎么测试", "禁区", "技术栈")
 _lock = threading.Lock()
 
 
@@ -148,6 +150,49 @@ def propose_team_change(conv, arguments: dict) -> str:
     return "已向用户出示确认框，等用户点确认或先不做。确认后才会写入团队配置。"
 
 
+def _profile_is_free(project: str) -> bool:
+    """只有没写过或还是空模板时才能保存，用户写过的内容不能盖掉。"""
+    path = profile_path(project)
+    if not path.exists():
+        return True
+    text = path.read_text(encoding="utf-8", errors="replace").strip()
+    return not text or text == PROFILE_TEMPLATE.strip()
+
+
+def propose_profile(conv, arguments: dict) -> str:
+    """模型调用 propose_profile：内容完整才给用户看。"""
+    text = str((arguments or {}).get("profile") or "").strip()
+    if not _profile_is_free(conv.project):
+        return "项目里已经有项目说明，不能覆盖。"
+    missing = [label for label in _PROFILE_LABELS if label not in text]
+    if missing:
+        return "还缺：" + "、".join(missing) + "。"
+    if has_blanks(text):
+        return "还有没填完的地方，不知道的就问用户。"
+    with _lock:
+        for old in _open_in_conversation(conv.project, conv.id):
+            old["state"] = "replaced"
+            _save(conv.project, old)
+            conv.emit({"type": "proposal_done", "id": old["id"], "state": "replaced", "card": old.get("card") or ""})
+        pid = uuid.uuid4().hex
+        data = {"id": pid, "conversation": conv.id, "kind": "profile", "profile": text + "\n",
+                "state": "open", "card": "", "time": time.time()}
+        _save(conv.project, data)
+        _append_proposal_line(conv, pid)
+        conv.emit(event_from_proposal(data))
+    return "已向用户出示确认框，等用户点确认或先不做。确认后才会保存。"
+
+
+def _save_profile(project: str, text: str) -> None:
+    if not _profile_is_free(project):
+        raise RuntimeError("项目里已经有项目说明了，这次没有覆盖。")
+    path = profile_path(project)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    spare = path.with_suffix(".tmp")
+    spare.write_text(text, encoding="utf-8")
+    spare.replace(path)
+
+
 def _append_proposal_line(conv, pid: str) -> None:
     folder = Path(conv.project) / ".collab" / "行政对话"
     folder.mkdir(parents=True, exist_ok=True)
@@ -166,8 +211,8 @@ def decide(project: str, conversation: str, pid: str, decision: str) -> dict:
             raise LookupError("没有这个提议")
         if data.get("state") != "open":
             if decision == "confirm" and data.get("state") == "confirmed":
-                if data.get("kind") == "team":
-                    return {"ok": True, "card": "", "state": "confirmed", "repeat": True, "kind": "team"}
+                if data.get("kind") in ("team", "profile"):
+                    return {"ok": True, "card": "", "state": "confirmed", "repeat": True, "kind": data["kind"]}
                 if data.get("card"):
                     return {"ok": True, "card": data["card"], "state": "confirmed", "repeat": True, "kind": "task"}
             raise RuntimeError("这个提议已经处理过了")
@@ -176,6 +221,11 @@ def decide(project: str, conversation: str, pid: str, decision: str) -> dict:
             _save(project, data)
             return {"ok": True, "card": "", "state": "cancelled", "repeat": False, "kind": data.get("kind") or "task"}
         kind = data.get("kind") or "task"
+        if kind == "profile":
+            _save_profile(project, str(data.get("profile") or ""))
+            data["state"] = "confirmed"
+            _save(project, data)
+            return {"ok": True, "card": "", "state": "confirmed", "repeat": False, "kind": "profile"}
         if kind == "team":
             role = str(data.get("role") or "").strip()
             tool = str(data.get("tool") or "").strip()
@@ -212,7 +262,9 @@ def event_from_proposal(data: dict) -> dict:
         "type": "proposal", "id": data["id"], "kind": kind,
         "state": data.get("state") or "open", "card": data.get("card") or "",
     }
-    if kind == "team":
+    if kind == "profile":
+        base["profile"] = data.get("profile") or ""
+    elif kind == "team":
         base["role"] = data.get("role") or ""
         base["tool"] = data.get("tool") or ""
         if "before" in data:
