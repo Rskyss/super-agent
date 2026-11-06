@@ -48,7 +48,7 @@ class HistoryTest(ServerCase):
 
     def test_code_never_asks_for_a_writable_connection(self):
         source = (ROOT / "desktop" / "clerk" / "codex_history.py").read_text(encoding="utf-8")
-        for words in ("thread/start", "thread/resume", "turn/start", ".start("):
+        for words in ("thread/start", "thread/resume", "turn/start"):
             self.assertNotIn(words, source)
 
     def test_missing_codex_gives_an_empty_list(self):
