@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -19,6 +20,22 @@ _PLAN_SCHEMA_KEYS = (
     "summary", "steps", "result", "not_do", "questions",
     "allowed", "test_command", "profile",
 )
+_TEXT_KEYS = ("summary", "result", "not_do", "test_command", "profile")
+_LIST_KEYS = ("steps", "questions", "allowed")
+
+
+def _plan_schema() -> dict:
+    props = {}
+    for key in _TEXT_KEYS:
+        props[key] = {"type": "string"}
+    for key in _LIST_KEYS:
+        props[key] = {"type": "array", "items": {"type": "string"}}
+    return {
+        "type": "object",
+        "properties": props,
+        "required": list(_PLAN_SCHEMA_KEYS),
+        "additionalProperties": False,
+    }
 
 
 def _norm_paths(items):
@@ -29,16 +46,33 @@ def _bad_scope_reason(path: str) -> Optional[str]:
     p = path.strip().replace("\\", "/")
     if not p:
         return "路径是空的"
+    if p in ("*", "**"):
+        return "不能匹配全部文件"
     if os.path.isabs(p):
         return "不能写绝对路径"
     parts = [x for x in p.split("/") if x]
     if ".." in parts:
         return "不能写带 .. 的路径"
     for part in parts:
-        low = part.lower()
-        if low in (".git", ".env", ".collab"):
-            return f"不能指向 {low}"
+        if part == ".collab" or part.startswith(".collab"):
+            return "不能指向 .collab"
+        if part.startswith(".env") or part.startswith(".git"):
+            return f"不能指向 {part}"
+        # 通配符不能用来摸到隐藏敏感文件（如 **/.env、*/.git/config）
+        if "*" in part and (".env" in p or ".git" in p):
+            return "不能用通配符匹配敏感文件"
     return None
+
+
+def _need_profile(project: Path) -> bool:
+    """只有文件不存在，或内容与模板完全相同，才让 Codex 写项目说明。"""
+    path = profile_path(project)
+    if not path.is_file():
+        return True
+    try:
+        return path.read_text(encoding="utf-8") == PROFILE_TEMPLATE
+    except OSError:
+        return True
 
 
 def _validate_answer(data: dict, need_profile: bool) -> Tuple[bool, str]:
@@ -47,12 +81,27 @@ def _validate_answer(data: dict, need_profile: bool) -> Tuple[bool, str]:
     for k in _PLAN_SCHEMA_KEYS:
         if k not in data:
             return False, f"缺少字段：{k}"
-    summary = str(data.get("summary") or "").strip()
+    for k in _TEXT_KEYS:
+        if not isinstance(data.get(k), str):
+            return False, f"字段类型不对：{k}"
+    for k in _LIST_KEYS:
+        value = data.get(k)
+        if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+            return False, f"字段类型不对：{k}"
+
+    summary = data["summary"].strip()
     if not summary:
         return False, "摘要不能为空"
-    test_cmd = str(data.get("test_command") or "").strip()
+    test_cmd = data["test_command"].strip()
     if not test_cmd:
         return False, "测试命令不能为空"
+    try:
+        parts = shlex.split(test_cmd)
+    except ValueError:
+        return False, "测试命令写得不对，解析不了"
+    if not parts:
+        return False, "测试命令不能为空"
+
     allowed = _norm_paths(data.get("allowed"))
     if not allowed:
         return False, "允许改动的文件列表不能为空"
@@ -60,8 +109,9 @@ def _validate_answer(data: dict, need_profile: bool) -> Tuple[bool, str]:
         why = _bad_scope_reason(one)
         if why:
             return False, f"允许改动的范围不合法：{one}（{why}）"
-    prof = str(data.get("profile") or "")
+
     if need_profile:
+        prof = data["profile"]
         if not prof.strip():
             return False, "这个项目还没有项目说明，需要先生成一份草稿"
         if "（待填）" in prof:
@@ -105,7 +155,7 @@ def _replace_allowed_section(requirement_text: str, allowed_paths: list) -> str:
 
 def _build_prompt(card_dir: Path, requirement_text: str, need_profile: bool) -> str:
     lines = [
-        "你只读项目，不要改文件、不要运行命令。",
+        "你可以用只读命令查看项目，但不要修改任何文件。",
         "根据下面的需求卡，用大白话写一份拆解方案。",
         "输出必须是 JSON，一个对象，键必须齐全："
         + ", ".join(_PLAN_SCHEMA_KEYS)
@@ -130,6 +180,11 @@ def _build_prompt(card_dir: Path, requirement_text: str, need_profile: bool) -> 
     return "\n".join(lines)
 
 
+def _fail(card_dir: Path, summary: str, text: Optional[str] = None) -> int:
+    flow_record(card_dir, "方案失败", src="程序", dst="你", summary=summary, text=text)
+    return 2
+
+
 def plan_card(project: str, card_id: str) -> int:
     """跑 Codex 写方案；成功写文件并记流转，失败记「方案失败」并返回 2。"""
     project = Path(project)
@@ -140,27 +195,27 @@ def plan_card(project: str, card_id: str) -> int:
     if not req_path.is_file() or not state_path.is_file():
         print("找不到这张卡片的需求或状态。", file=sys.stderr)
         return 1
-    card = Card.load(state_path)
+    try:
+        card = Card.load(state_path)
+    except Exception as exc:  # noqa: BLE001 — 任何意外都记失败，避免白烧额度空转
+        return _fail(card_dir, "写方案时出问题，可以重写", text=str(exc))
     if card.state != "待对齐":
         print(f"这张卡现在是「{card.state}」，只有「待对齐」才能写方案。", file=sys.stderr)
         return 1
 
-    requirement = req_path.read_text(encoding="utf-8")
-    prof_file = profile_path(project)
-    need_profile = True
-    if prof_file.is_file():
-        txt = prof_file.read_text(encoding="utf-8")
-        need_profile = has_blanks(txt)
-    prompt = _build_prompt(card_dir, requirement, need_profile)
-    models = load_models(project)
-    model = models.get("codex") or "gpt-6.1-sol"
-    effort = str(models.get("codex_effort") or "xhigh")
-
-    with tempfile.NamedTemporaryFile("w", suffix=".schema.json", delete=False, encoding="utf-8") as schema_fh:
-        schema_path = schema_fh.name
-        json.dump({"type": "object", "required": list(_PLAN_SCHEMA_KEYS)}, schema_fh, ensure_ascii=False)
+    schema_path = ""
     out_path = ""
     try:
+        requirement = req_path.read_text(encoding="utf-8")
+        need_profile = _need_profile(project)
+        prompt = _build_prompt(card_dir, requirement, need_profile)
+        models = load_models(project)
+        model = models.get("codex") or "gpt-6.1-sol"
+        effort = str(models.get("codex_effort") or "xhigh")
+
+        with tempfile.NamedTemporaryFile("w", suffix=".schema.json", delete=False, encoding="utf-8") as schema_fh:
+            schema_path = schema_fh.name
+            json.dump(_plan_schema(), schema_fh, ensure_ascii=False)
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as out_fh:
             out_path = out_fh.name
         argv = [
@@ -168,34 +223,40 @@ def plan_card(project: str, card_id: str) -> int:
             "-m", str(model), "-c", f'model_reasoning_effort="{effort}"',
             "--output-schema", schema_path, "-o", out_path, prompt,
         ]
-        proc = subprocess.run(
-            argv,
-            cwd=str(project),
-            stdin=subprocess.DEVNULL,
-            timeout=_PLAN_TIMEOUT,
-            capture_output=True,
-            text=True,
-        )
+        try:
+            proc = subprocess.run(
+                argv,
+                cwd=str(project),
+                stdin=subprocess.DEVNULL,
+                timeout=_PLAN_TIMEOUT,
+                capture_output=True,
+                text=True,
+            )
+        except FileNotFoundError:
+            return _fail(card_dir, "这台电脑上没有找到 Codex，先安装或登录")
+        except subprocess.TimeoutExpired:
+            return _fail(card_dir, "写方案等太久，先停在这里")
+
+        tool_text = ((proc.stderr or "") + "\n" + (proc.stdout or "")).strip()
         if proc.returncode != 0:
-            reason = (proc.stderr or proc.stdout or "").strip() or "工具没有返回可用的结果"
-            flow_record(card_dir, "方案失败", src="程序", dst="你", summary=reason[:200])
-            return 2
+            return _fail(
+                card_dir,
+                "Codex 没有写成方案，详细原因记在这张卡的记录里",
+                text=tool_text or "工具没有返回可用的结果",
+            )
         raw = Path(out_path).read_text(encoding="utf-8")
         try:
             data = json.loads(raw)
         except ValueError:
-            flow_record(card_dir, "方案失败", src="程序", dst="你", summary="看不懂写方案的回答")
-            return 2
+            return _fail(card_dir, "看不懂写方案的回答", text=raw)
         ok, why = _validate_answer(data, need_profile)
         if not ok:
-            flow_record(card_dir, "方案失败", src="程序", dst="你", summary=why)
-            return 2
+            return _fail(card_dir, why, text=raw)
 
         allowed = _norm_paths(data.get("allowed"))
         plan_md = _render_plan_md(data)
         if has_blanks(plan_md):
-            flow_record(card_dir, "方案失败", src="程序", dst="你", summary="方案里还有没填完的地方")
-            return 2
+            return _fail(card_dir, "方案里还有没填完的地方", text=raw)
 
         (card_dir / "方案.md").write_text(plan_md, encoding="utf-8")
         req_path.write_text(_replace_allowed_section(requirement, allowed), encoding="utf-8")
@@ -206,6 +267,7 @@ def plan_card(project: str, card_id: str) -> int:
 
         extra = {}
         if need_profile and str(data.get("profile") or "").strip():
+            prof_file = profile_path(project)
             prof_file.parent.mkdir(parents=True, exist_ok=True)
             prof_file.write_text(str(data["profile"]).strip() + "\n", encoding="utf-8")
             extra["new_profile"] = True
@@ -217,12 +279,8 @@ def plan_card(project: str, card_id: str) -> int:
         )
         render_board(collab)
         return 0
-    except subprocess.TimeoutExpired:
-        flow_record(card_dir, "方案失败", src="程序", dst="你", summary="写方案等太久，先停在这里")
-        return 2
-    except OSError as exc:
-        flow_record(card_dir, "方案失败", src="程序", dst="你", summary=f"写方案时出问题：{exc}")
-        return 2
+    except Exception as exc:  # noqa: BLE001 — 崩溃也要留下失败记录，巡视才不会空转重跑
+        return _fail(card_dir, "写方案时出问题，可以重写", text=str(exc))
     finally:
         for path in (schema_path, out_path):
             if path:

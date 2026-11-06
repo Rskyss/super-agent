@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from collab.config import ConfigError, load_team, _check_member  # noqa: SLF001
+from collab.flow import record as flow_record
 from collab.phase import card_phase, process_is_alive
 from collab.tasks import TaskError, new_card
 
@@ -358,6 +359,15 @@ def launch(project: str, kind: str, card_id: str, args: list) -> int:
             payload = json.dumps({"card": card_id, "pid": proc.pid, "time": time.time()}, ensure_ascii=False)
             tmp_path.write_text(payload + "\n", encoding="utf-8")
             os.replace(str(tmp_path), str(path))
+            if kind == "plan":
+                try:
+                    flow_record(
+                        _collab(project) / "cards" / card_id,
+                        "写方案", src="程序", dst="Codex",
+                        summary="开始写方案", pid=proc.pid,
+                    )
+                except OSError:
+                    pass
 
             def _wait():
                 proc.wait()
