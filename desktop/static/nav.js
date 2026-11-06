@@ -22,6 +22,12 @@ var NavCore = {
       return c.title.toLowerCase().indexOf(q) >= 0 || c.id.toLowerCase().indexOf(q) >= 0;
     });
   },
+  needsYou: function (cards) {
+    return (cards || []).filter(function (c) {
+      var ph = c && c.phase;
+      return ph && ph.needs_you === true;
+    });
+  },
   // 任务卡片一个列表：要你处理的排最前，然后进行中，最后已完成
   ordered: function (cards) {
     var rank = { wait: 0, ok: 0, bad: 0, run: 1, done: 2 };
@@ -72,8 +78,53 @@ if (typeof document !== "undefined") (function () {
   }
   function tell(address) { location.href = address; }
 
+  function drawNeedsYou() {
+    var box = $("needsYou");
+    if (!box) return;
+    var filtered = NavCore.filter(cards, $("q").value);
+    var ny = NavCore.needsYou(filtered);
+    if (!ny.length) {
+      box.hidden = true;
+      box.innerHTML = "";
+      return;
+    }
+    box.hidden = false;
+    box.innerHTML =
+      '<div class="gh"><span>等你处理</span><span>' + ny.length + "</span></div>" +
+      ny
+        .map(function (c) {
+          var dot = NavCore.dotFor(c);
+          var on = mode === "card" && c.id === selected;
+          var sub = dot.label + (c.rework ? " · 返工 " + c.rework + " 次" : "");
+          return (
+            '<button class="item' +
+            (on ? " on" : "") +
+            '" type="button" data-id="' +
+            esc(c.id) +
+            '" title="' +
+            esc(c.id) +
+            '">' +
+            '<span class="lead"><i class="dot ' +
+            dot.tone +
+            '"></i></span><span class="tt">' +
+            esc(c.title) +
+            '</span><span class="sub">' +
+            esc(sub) +
+            "</span></button>"
+          );
+        })
+        .join("");
+  }
   function drawList() {
-    var list = NavCore.filter(cards, $("q").value);
+    var filtered = NavCore.filter(cards, $("q").value);
+    var needIds = {};
+    NavCore.needsYou(filtered).forEach(function (c) {
+      needIds[c.id] = true;
+    });
+    var list = filtered.filter(function (c) {
+      return !needIds[c.id];
+    });
+    drawNeedsYou();
     var head = '<div class="gh"><span>任务卡片</span>' + (cards.length ? "<span>" + cards.length + "</span>" : "") + "</div>";
     if (!cards.length) { $("cards").innerHTML = head + '<div class="empty">还没有卡片</div>'; return; }
     if (!list.length) { $("cards").innerHTML = head + '<div class="empty">没有找到</div>'; return; }
@@ -125,6 +176,10 @@ if (typeof document !== "undefined") (function () {
   }
 
   $("cards").addEventListener("click", function (ev) {
+    var b = ev.target.closest("button[data-id]");
+    if (b) tell("superagent://card?id=" + encodeURIComponent(b.getAttribute("data-id")));
+  });
+  $("needsYou").addEventListener("click", function (ev) {
     var b = ev.target.closest("button[data-id]");
     if (b) tell("superagent://card?id=" + encodeURIComponent(b.getAttribute("data-id")));
   });

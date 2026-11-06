@@ -12,6 +12,8 @@ body { overflow: hidden; }
 .search input::-webkit-search-cancel-button { -webkit-appearance: none; }
 
 .scroll { overflow-y: auto; padding: 0 8px 12px; }
+.needs-you { padding-bottom: 4px; }
+.needs-you[hidden] { display: none !important; }
 .item { position: relative; display: grid; grid-template-columns: 16px minmax(0, 1fr); column-gap: 8px; align-items: center; width: 100%; padding: 7px 10px; font-size: var(--fs-base); text-align: left; background: none; border: 0; border-radius: var(--r-md); cursor: default; transition: background var(--t-fast) var(--ease); }
 .item:hover { background: rgba(255, 255, 255, .05); }
 .item.on { background: rgba(255, 255, 255, .1); }

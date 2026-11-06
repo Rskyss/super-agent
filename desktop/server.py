@@ -50,7 +50,7 @@ from desktop.chat import ChatHub  # noqa: E402
 from desktop.clerk.client import DEFAULT_BASE_URL, DEFAULT_MODEL, ModelClient, ModelError  # noqa: E402
 from desktop.clerk.codex_history import list_history, read_history  # noqa: E402
 from desktop.clerk.desk import ClerkDesk  # noqa: E402
-from desktop.clerk.tasks import TaskBusy, launch, running, stop_construction  # noqa: E402
+from desktop.clerk.tasks import TaskBusy, TaskWatcher, launch, running, stop_construction  # noqa: E402
 from collab.tasks import TaskError  # noqa: E402
 from desktop.shell_path import adopt_terminal_path  # noqa: E402
 from desktop.view import card_view, event_text, list_cards  # noqa: E402
@@ -387,6 +387,8 @@ class Handler(BaseHTTPRequestHandler):
     def _clerk_get(self, path: str, query: dict) -> None:
         desk, project = self.server.desk, query.get("project", "")
         if path == "/api/clerk/list":
+            if project and Path(project).is_dir():
+                self.server.watcher.ensure_watching(project)
             self._json(desk.list(project))
         elif path == "/api/clerk/events":
             wait = min(float(query.get("wait", "20") or 20), 25)
@@ -531,6 +533,7 @@ def make_server(port: int = 0, token=None, hub=None) -> ThreadingHTTPServer:
     server.hub = hub if hub is not None else ChatHub()
     server.clerk = None           # 行政人员的模型连接，密钥只在内存里
     server.desk = ClerkDesk(lambda: server.clerk)
+    server.watcher = TaskWatcher(server.desk)
     server.checks = {}            # (项目, 第几次检测) -> 这次检测连通的进度
     return server
 

@@ -14,6 +14,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from collab.phase import card_phase, process_is_alive
 from collab.tasks import TaskError, new_card
 
 COLLAB_PACKAGE = Path(__file__).resolve().parent.parent.parent / "collab"
@@ -288,3 +289,186 @@ def launch(project: str, kind: str, card_id: str, args: list) -> int:
                 except OSError:
                     pass
             raise
+
+_REPORT_CODES = frozenset({"plan_ready", "plan_failed", "review", "blocked", "interrupted"})
+
+
+def _card_title(cdir: Path, card_id: str) -> str:
+    req = cdir / "需求卡.md"
+    if req.is_file():
+        for line in req.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line.startswith("# "):
+                t = line[2:].strip()
+                if t:
+                    return t
+    return card_id
+
+
+def _conversation_from_source(cdir: Path) -> str:
+    path = cdir / "来源.json"
+    if not path.is_file():
+        return ""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    return str(data.get("conversation") or "").strip()
+
+
+def _load_reported_code(cdir: Path) -> Optional[str]:
+    path = cdir / "已汇报.json"
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    code = data.get("code")
+    return str(code) if isinstance(code, str) else None
+
+
+def _save_reported_code(cdir: Path, code: str) -> None:
+    path = cdir / "已汇报.json"
+    spare = path.with_suffix(".tmp")
+    spare.write_text(json.dumps({"code": code}, ensure_ascii=False), encoding="utf-8")
+    spare.replace(path)
+
+
+def _flow_events(cdir: Path) -> list:
+    from collab.flow import read_flow
+    return read_flow(cdir)
+
+
+def _user_stop_after_last_run(events: list) -> bool:
+    runs = [e for e in events if e.get("kind") == "开跑"]
+    if not runs:
+        return False
+    last = runs[-1]
+    try:
+        pid_i = int(last.get("pid"))
+    except (TypeError, ValueError):
+        return False
+    if process_is_alive(pid_i):
+        return False
+    last_seq = int(last.get("seq") or 0)
+    for e in events:
+        if e.get("kind") != "停下":
+            continue
+        if int(e.get("seq") or 0) <= last_seq:
+            continue
+        summary = str(e.get("summary") or "")
+        if "用户" in summary:
+            return True
+    return False
+
+
+def _report_text(code: str, title: str, phase: dict) -> str:
+    reason = str(phase.get("detail") or "").strip()
+    if code == "plan_ready":
+        return f"「{title}」的方案写好了，点左边的卡片看方案，批准后才开工。"
+    if code == "plan_failed":
+        base = f"「{title}」的方案没写成"
+        if reason:
+            base += f"：{reason}"
+        else:
+            base += "：原因不明"
+        return base + "。可以点卡片重写。"
+    if code == "review":
+        return f"「{title}」做完了，等你验收。"
+    if code == "blocked":
+        base = f"「{title}」卡住了"
+        if reason:
+            base += f"：{reason}"
+        else:
+            base += "：原因不明"
+        return base + "。"
+    if code == "interrupted":
+        return f"「{title}」中断了，可以点卡片接着跑。"
+    return ""
+
+
+class TaskWatcher:
+    """项目级巡视：单线程每 2 秒；业务集中在 tick。"""
+
+    def __init__(self, desk) -> None:
+        self._desk = desk
+        self._tick_lock = threading.Lock()
+        self._started = set()
+        self._projects_lock = threading.Lock()
+
+    def ensure_watching(self, project: str) -> None:
+        p = str(project)
+        if not p:
+            return
+        with self._projects_lock:
+            if p in self._started:
+                return
+            self._started.add(p)
+
+        def loop():
+            while True:
+                try:
+                    self.tick(p)
+                except Exception:
+                    pass
+                time.sleep(2)
+
+        threading.Thread(target=loop, daemon=True).start()
+
+    def tick(self, project: str) -> None:
+        with self._tick_lock:
+            self._tick_impl(project)
+
+    def _tick_impl(self, project: str) -> None:
+        root = Path(project) / ".collab" / "cards"
+        if not root.is_dir():
+            return
+        for cdir in sorted(root.iterdir(), key=lambda p: p.name):
+            if not cdir.is_dir():
+                continue
+            state_path = cdir / "状态.json"
+            if not state_path.is_file():
+                continue
+            card_id = cdir.name
+            has_source = (cdir / "来源.json").is_file()
+            phase = card_phase(project, card_id)
+            code = str(phase.get("code") or "")
+
+            if has_source and code == "plan_waiting" and running(project, "plan") is None:
+                try:
+                    launch(project, "plan", card_id, ["plan", project, card_id])
+                except TaskBusy:
+                    pass
+
+            prev = _load_reported_code(cdir)
+            if prev is None:
+                if has_source:
+                    _save_reported_code(cdir, code)
+                continue
+
+            if code == prev:
+                continue
+
+            if not has_source:
+                _save_reported_code(cdir, code)
+                continue
+
+            if code not in _REPORT_CODES:
+                _save_reported_code(cdir, code)
+                continue
+
+            if code == "interrupted" and _user_stop_after_last_run(_flow_events(cdir)):
+                _save_reported_code(cdir, code)
+                continue
+
+            conversation = _conversation_from_source(cdir)
+            title = _card_title(cdir, card_id)
+            text = _report_text(code, title, phase)
+            if text and conversation:
+                self._desk.notify(project, conversation, text)
+            _save_reported_code(cdir, code)

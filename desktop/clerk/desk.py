@@ -317,6 +317,18 @@ class ClerkDesk:
                 messages.append({"role": "tool", "tool_call_id": call_id, "content": result})
         return reply
 
+    def notify(self, project: str, conversation: str, text: str) -> bool:
+        """往来源对话写一条行政通知并发 message 事件。对话不存在则跳过（由调用方决定是否仍记已汇报）。"""
+        if not _ID_SHAPE.fullmatch(conversation or ""):
+            return False
+        conv = self._conversation(project, conversation, create=False)
+        if conv is None:
+            return False
+        item = uuid.uuid4().hex
+        conv.emit({"type": "message", "item": item, "text": text})
+        self._keep_reply(conv, text)
+        return True
+
     def decide_proposal(self, project: str, conversation: str, pid: str, decision: str) -> dict:
         """用户点确认或先不做。不经过模型。"""
         from collab.tasks import TaskError
