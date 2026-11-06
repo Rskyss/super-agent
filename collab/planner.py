@@ -53,16 +53,16 @@ def _bad_scope_reason(path: str) -> Optional[str]:
     parts = [x for x in p.split("/") if x]
     if ".." in parts:
         return "不能写带 .. 的路径"
+    if any(ch in p for ch in "*?[") and (".env" in p or ".git" in p):
+        return "不能用通配符匹配敏感文件"
     for part in parts:
         if part == ".collab" or part.startswith(".collab"):
             return "不能指向 .collab"
-        if part.startswith(".env") or part.startswith(".git"):
+        if part == ".env" or part.startswith(".env.") or part.startswith(".env"):
             return f"不能指向 {part}"
-        # 通配符不能用来摸到隐藏敏感文件（如 **/.env、*/.git/config）
-        if "*" in part and (".env" in p or ".git" in p):
-            return "不能用通配符匹配敏感文件"
+        if part.startswith(".git"):
+            return f"不能指向 {part}"
     return None
-
 
 def _need_profile(project: Path) -> bool:
     """只有文件不存在，或内容与模板完全相同，才让 Codex 写项目说明。"""

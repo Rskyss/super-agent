@@ -11,7 +11,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shlex
 import signal
 import sys
 from datetime import datetime
@@ -225,11 +224,12 @@ def cmd_run(args, ask_fn=None, judge_fn=None, **_):
                 text=f"判定命令：{args.test_command}\n页面检查：{args.page_check or '无'}\n独立副本：{worktree}")
     card, verdict = run_card(
         card, collab_dir=_collab(args.project), worktree=str(worktree),
-        test_command=shlex.split(args.test_command),
+        test_command=["/bin/sh", "-c", args.test_command],
         dev_adapter=tools["dev"], test_adapter=tools["test"],
         ask_fn=ask_fn or default_ask, judge_fn=judge_fn or default_judge,
         models=load_models(args.project),
-        allowed=allowed, page_command=shlex.split(args.page_check) if args.page_check else None,
+        allowed=allowed,
+        page_command=["/bin/sh", "-c", args.page_check] if args.page_check else None,
         reviewer_adapter=reviewer,
     )
     if session:

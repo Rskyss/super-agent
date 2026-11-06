@@ -81,6 +81,32 @@ def readable(output: str) -> str:
 
 
 _REPORT_ASK = "完成后，在回复的最后一行写“汇报：”加不超过100字的说明（改了什么、测试情况）。不要另建汇报文件。"
+_TEST_FILES = "测试文件.json"
+
+
+def _plan_hint(cdir: Path) -> str:
+    plan = cdir / "方案.md"
+    if plan.is_file():
+        return f"请严格按方案文件 {plan} 执行，尤其遵守其中「明确不做什么」。"
+    return "请严格按任务卡执行，尤其遵守其中「明确不做什么」。"
+
+
+def _load_test_files(cdir: Path) -> list:
+    path = cdir / _TEST_FILES
+    if not path.is_file():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(data, list):
+        return []
+    return [str(p) for p in data if str(p).strip()]
+
+
+def _save_test_files(cdir: Path, files: list) -> None:
+    path = cdir / _TEST_FILES
+    path.write_text(json.dumps(list(files), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
 def _save_report(cdir: Path, output: str) -> None:
@@ -175,25 +201,53 @@ def run_card(card: Card, collab_dir, worktree, test_command, dev_adapter, test_a
 
     past = read_flow(cdir)
     test_done = any(e.get("kind") == "回复" and e.get("src") == "测试员" and e.get("ok") is True for e in past)
+    plan_hint = _plan_hint(cdir)
+
+    # 复查不通过后接着跑：开发员必须带着意见重改，返工次数不增加
+    force_after_review_reject = False
+    review_notes = ""
+    last_human = None
+    for e in reversed(past):
+        if e.get("kind") == "转人工":
+            last_human = e
+            break
+    if last_human and "复查不通过" in str(last_human.get("summary") or ""):
+        force_after_review_reject = True
+        for e in reversed(past):
+            if e.get("kind") == "回复" and e.get("src") == "复查员":
+                review_notes = text_of(cdir, e)
+                break
 
     # 第一步：测试员按验收标准先写测试（测试先行；如果断点续跑前已经写完交活，直接跳过）
     if not test_done:
+        before_tester = set(_changed_list(worktree))
         prep = _dispatch(ask_fn, cdir, "测试员", test_adapter, "写测试",
-                         f"{_READ_RULES}按任务卡 {needs} 的验收标准编写自动化测试，放进项目的测试目录。只写测试，不改产品代码。",
+                         f"{_READ_RULES}按任务卡 {needs} 的验收标准编写自动化测试，放进项目的测试目录。"
+                         f"只写测试，不改产品代码。{plan_hint}",
                          worktree, models, 1)
         if not prep.ok:
             return _worker_failed(collab, cdir, card, "测试员", test_adapter, prep)
         _log_step(cdir, "写测试", test_adapter, worktree)
+        # 用真实改动列表记测试文件（不走注入的 changed_fn，避免打乱范围检查的假数据）
+        added = [p for p in _changed_list(worktree) if p not in before_tester]
+        _save_test_files(cdir, added)
+
+    tester_files = _load_test_files(cdir)
+    effective_allowed = list(allowed) + tester_files if allowed is not None else None
 
     # 第二步：开发员照着测试写代码，直到测试通过
     dev_prompt = (f"{_READ_RULES}按任务卡实现功能：{needs}。测试已经写好，请让它们全部通过。"
-                  f"{_REPORT_ASK}")
+                  f"{plan_hint}{_REPORT_ASK}")
     last_output = None  # 上一轮测试的报错，用来发现“原地打转”
     past_fails = [e for e in past if e.get("kind") in ("判定", "页面检查") and e.get("result") == FAIL]
     if past_fails and card.rework > 0:
         last_output = text_of(cdir, past_fails[-1])
         dev_prompt = (f"{_READ_RULES}上一版测试没过，测试输出如下，请修复后重新提交。\n\n{last_output}\n\n"
-                      f"任务卡：{needs}。{_REPORT_ASK}")
+                      f"任务卡：{needs}。{plan_hint}{_REPORT_ASK}")
+    if force_after_review_reject:
+        notes = review_notes.strip() or "（复查员没有写下详细意见）"
+        dev_prompt = (f"{_READ_RULES}上一次复查不通过。请按复查意见修改后再提交，不算一次返工。\n\n"
+                      f"{notes}\n\n任务卡：{needs}。{plan_hint}{_REPORT_ASK}")
 
     first_iter = True
     while True:
@@ -201,30 +255,41 @@ def run_card(card: Card, collab_dir, worktree, test_command, dev_adapter, test_a
         dev_already_done = False
         if first_iter:
             first_iter = False
-            dev_replies = [i for i, e in enumerate(past)
-                           if e.get("kind") == "回复" and e.get("src") == "开发员"
-                           and e.get("round") == rnd and e.get("ok") is True]
-            if dev_replies:
-                after = past[dev_replies[-1] + 1:]
-                has_fail_after = any(e.get("kind") in ("判定", "页面检查") and e.get("result") != PASS for e in after)
-                if not has_fail_after:
-                    dev_already_done = True
+            if force_after_review_reject:
+                force_after_review_reject = False
+                # 强制开发员带着复查意见重做；不走“已做过就跳过”
+            else:
+                dev_replies = [i for i, e in enumerate(past)
+                               if e.get("kind") == "回复" and e.get("src") == "开发员"
+                               and e.get("round") == rnd and e.get("ok") is True]
+                if dev_replies:
+                    after = past[dev_replies[-1] + 1:]
+                    has_fail_after = any(e.get("kind") in ("判定", "页面检查") and e.get("result") != PASS
+                                        for e in after)
+                    if not has_fail_after:
+                        # 复查没给结论时：跳过开发员，只重新复查
+                        dev_already_done = True
 
         if not dev_already_done:
-            dev = _dispatch(ask_fn, cdir, "开发员", dev_adapter, "开发" if card.rework == 0 else "返工修改",
+            # 复查打回重改：返工次数不增加，步骤记为“开发”
+            if "上一次复查不通过" in dev_prompt or card.rework == 0:
+                step_name = "开发"
+            else:
+                step_name = "返工修改"
+            dev = _dispatch(ask_fn, cdir, "开发员", dev_adapter, step_name,
                             dev_prompt, worktree, models, rnd)
             if not dev.ok:
                 return _worker_failed(collab, cdir, card, "开发员", dev_adapter, dev)
             _save_report(cdir, dev.output)
-            _log_step(cdir, "开发" if card.rework == 0 else "返工修改", dev_adapter, worktree)
+            _log_step(cdir, step_name, dev_adapter, worktree)
 
-        if allowed is not None:
+        if effective_allowed is not None:
             changed = changed_fn(worktree)
-            bad = out_of_scope(changed, allowed)
+            bad = out_of_scope(changed, effective_allowed)
             if bad:
                 # 越界改动由程序直接撤销（开发员在自动模式下不能执行命令，删不掉文件），不算返工
                 revert_fn(worktree, bad)
-                still = out_of_scope(changed_fn(worktree), allowed)
+                still = out_of_scope(changed_fn(worktree), effective_allowed)
                 stamp = f"{datetime.now():%Y-%m-%d %H:%M}"
                 if still:
                     _append(cdir / "返工记录.md",
@@ -267,6 +332,7 @@ def run_card(card: Card, collab_dir, worktree, test_command, dev_adapter, test_a
             # 独立复查：由另一个 AI 只读检查改动是否符合需求，写“结论：通过/不通过”
             review = _dispatch(ask_fn, cdir, "复查员", reviewer_adapter, "复查",
                                f"{_READ_RULES}只读复查：对照任务卡 {needs} 检查本次改动是否符合需求和验收标准。"
+                               f"{plan_hint}"
                                f"第一行写“结论：通过”或“结论：不通过”，之后列出问题。不要修改任何文件。",
                                worktree, models, card.rework + 1)
             review_text = readable(review.output)
@@ -315,5 +381,5 @@ def run_card(card: Card, collab_dir, worktree, test_command, dev_adapter, test_a
             record(cdir, "转人工", src="程序", dst="调度员",
                    summary=f"返工 {card.rework} 次后测试仍没过，需要调度员处理")
             return card, verdict
-        dev_prompt =(f"{_READ_RULES}上一版测试没过，测试输出如下，请修复后重新提交。\n\n{verdict.output}\n\n"
-                      f"任务卡：{needs}。{_REPORT_ASK}")
+        dev_prompt = (f"{_READ_RULES}上一版测试没过，测试输出如下，请修复后重新提交。\n\n{verdict.output}\n\n"
+                      f"任务卡：{needs}。{plan_hint}{_REPORT_ASK}")
