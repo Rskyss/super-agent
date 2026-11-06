@@ -14,6 +14,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from collab.config import ConfigError, load_team, _check_member  # noqa: SLF001
 from collab.phase import card_phase, process_is_alive
 from collab.tasks import TaskError, new_card
 
@@ -22,6 +23,9 @@ COLLAB_PACKAGE = Path(__file__).resolve().parent.parent.parent / "collab"
 FOLDER = Path(".collab") / "行政提议"
 _FIELDS = ("title", "do", "not_do", "done_when")
 _FIELD_NAMES = {"title": "标题", "do": "要做什么", "not_do": "不做什么", "done_when": "怎么算做完"}
+_TEAM_ROLES = frozenset({"dispatcher", "tester", "developer", "reviewer"})
+_TEAM_TOOLS = frozenset({"codex", "cursor", "agy"})
+_TEAM_REVIEWER_TOOLS = _TEAM_TOOLS | {"none"}
 _lock = threading.Lock()
 
 
@@ -31,6 +35,32 @@ class TaskBusy(Exception):
 
 def _folder(project: str) -> Path:
     return Path(project) / FOLDER
+
+
+def _config_path(project: str) -> Path:
+    return Path(project) / ".collab" / "配置.json"
+
+
+def _apply_team_change(project: str, role: str, tool: str) -> None:
+    """合并写入 .collab/配置.json 的 team；未选调度员时不能走 save_team（会拒绝 None）。"""
+    path = _config_path(project)
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+    except (OSError, ValueError):
+        raw = {}
+    if not isinstance(raw, dict):
+        raw = {}
+    team = raw.get("team")
+    if not isinstance(team, dict):
+        team = {}
+    _check_member(role, tool)
+    team[role] = tool
+    raw["team"] = team
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(raw, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    tmp.replace(path)
+    load_team(project)
 
 
 def _path(project: str, pid: str) -> Path:
@@ -99,6 +129,44 @@ def propose(conv, arguments: dict) -> str:
     return "已向用户出示确认框，等用户点确认或先不做。还没建卡。"
 
 
+def propose_team_change(conv, arguments: dict) -> str:
+    """模型调用 propose_team_change：角色与工具合法才生成团队设置提议。"""
+    args = arguments if isinstance(arguments, dict) else {}
+    role = str(args.get("role") or "").strip()
+    tool = str(args.get("tool") or "").strip()
+    if role not in _TEAM_ROLES:
+        return "角色必须是调度员、写测试、写代码、复查之一，先问用户要改哪一项。"
+    allowed = _TEAM_REVIEWER_TOOLS if role == "reviewer" else _TEAM_TOOLS
+    if tool not in allowed:
+        return "工具不对：复查可选 Codex、Cursor、agy 或 none；其他角色只能是 codex、cursor、agy。先问用户。"
+    try:
+        team = load_team(conv.project)
+    except ConfigError as exc:
+        return str(exc)
+    before = team.get(role)
+    before_s = before if isinstance(before, str) else ("" if before is None else str(before))
+    with _lock:
+        for old in _open_in_conversation(conv.project, conv.id):
+            old["state"] = "replaced"
+            _save(conv.project, old)
+            conv.emit({"type": "proposal_done", "id": old["id"], "state": "replaced", "card": old.get("card") or ""})
+        pid = uuid.uuid4().hex
+        data = {
+            "id": pid, "conversation": conv.id, "kind": "team",
+            "role": role, "tool": tool, "before": before_s,
+            "state": "open", "card": "", "time": time.time(),
+        }
+        _save(conv.project, data)
+        _append_proposal_line(conv, pid)
+        event = {
+            "type": "proposal", "id": data["id"], "kind": "team",
+            "role": data["role"], "tool": data["tool"], "before": data["before"],
+            "state": data["state"], "card": data["card"],
+        }
+        conv.emit(event)
+    return "已向用户出示确认框，等用户点确认或先不做。确认后才会写入团队配置。"
+
+
 def _append_proposal_line(conv, pid: str) -> None:
     folder = Path(conv.project) / ".collab" / "行政对话"
     folder.mkdir(parents=True, exist_ok=True)
@@ -116,13 +184,32 @@ def decide(project: str, conversation: str, pid: str, decision: str) -> dict:
         if data is None or data.get("conversation") != conversation:
             raise LookupError("没有这个提议")
         if data.get("state") != "open":
-            if decision == "confirm" and data.get("state") == "confirmed" and data.get("card"):
-                return {"ok": True, "card": data["card"], "state": "confirmed", "repeat": True}
+            if decision == "confirm" and data.get("state") == "confirmed":
+                if data.get("kind") == "team":
+                    return {"ok": True, "card": "", "state": "confirmed", "repeat": True, "kind": "team"}
+                if data.get("card"):
+                    return {"ok": True, "card": data["card"], "state": "confirmed", "repeat": True, "kind": "task"}
             raise RuntimeError("这个提议已经处理过了")
         if decision == "cancel":
             data["state"] = "cancelled"
             _save(project, data)
-            return {"ok": True, "card": "", "state": "cancelled", "repeat": False}
+            return {"ok": True, "card": "", "state": "cancelled", "repeat": False, "kind": data.get("kind") or "task"}
+        kind = data.get("kind") or "task"
+        if kind == "team":
+            role = str(data.get("role") or "").strip()
+            tool = str(data.get("tool") or "").strip()
+            if role not in _TEAM_ROLES:
+                raise RuntimeError("这个提议的角色不对")
+            allowed = _TEAM_REVIEWER_TOOLS if role == "reviewer" else _TEAM_TOOLS
+            if tool not in allowed:
+                raise RuntimeError("这个提议的工具不对")
+            try:
+                _apply_team_change(project, role, tool)
+            except ConfigError as exc:
+                raise RuntimeError(str(exc)) from exc
+            data["state"] = "confirmed"
+            _save(project, data)
+            return {"ok": True, "card": "", "state": "confirmed", "repeat": False, "kind": "team"}
         try:
             card = new_card(project, data["title"], data["do"], data["not_do"], data["done_when"],
                             conversation=conversation)
@@ -135,16 +222,26 @@ def decide(project: str, conversation: str, pid: str, decision: str) -> dict:
             launch(project, "plan", card, ["plan", project, card])
         except TaskBusy:
             pass
-        return {"ok": True, "card": card, "state": "confirmed", "repeat": False}
+        return {"ok": True, "card": card, "state": "confirmed", "repeat": False, "kind": "task"}
 
 
 def event_from_proposal(data: dict) -> dict:
-    return {
-        "type": "proposal", "id": data["id"], "kind": data.get("kind") or "task",
-        "title": data.get("title") or "", "do": data.get("do") or "",
-        "not_do": data.get("not_do") or "", "done_when": data.get("done_when") or "",
+    kind = data.get("kind") or "task"
+    base = {
+        "type": "proposal", "id": data["id"], "kind": kind,
         "state": data.get("state") or "open", "card": data.get("card") or "",
     }
+    if kind == "team":
+        base["role"] = data.get("role") or ""
+        base["tool"] = data.get("tool") or ""
+        if "before" in data:
+            base["before"] = data["before"]
+    else:
+        base["title"] = data.get("title") or ""
+        base["do"] = data.get("do") or ""
+        base["not_do"] = data.get("not_do") or ""
+        base["done_when"] = data.get("done_when") or ""
+    return base
 
 
 def _collab(project: str) -> Path:
@@ -289,6 +386,7 @@ def launch(project: str, kind: str, card_id: str, args: list) -> int:
                 except OSError:
                     pass
             raise
+
 
 _REPORT_CODES = frozenset({"plan_ready", "plan_failed", "review", "blocked", "interrupted"})
 

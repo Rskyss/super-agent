@@ -14,7 +14,7 @@ from pathlib import Path
 
 from desktop.clerk.client import ModelError
 from desktop.clerk import tasks as clerk_tasks
-from desktop.clerk.tools import LABELS, TOOLS, run_tool
+from desktop.clerk.tools import LABELS, TOOLS, run_tool, team_incomplete_hint
 
 FOLDER = Path(".collab") / "行政对话"
 INDEX = "索引.json"
@@ -22,11 +22,13 @@ HISTORY_LIMIT = 40  # 带给模型的最近几句话，够接上话，也不让�
 TITLE_LIMIT = 24
 MAX_TOOL_ROUNDS = 5
 ROLE = ("你是超级助手的行政人员，用户的前台和行政。用大白话简短回答，不说技术术语。"
-        "你能查项目说明、台账、卡片和团队设置。"
+        "你能查项目说明、台账、卡片和团队设置；也能查本机 PATH 里有没有装 Codex、Cursor（agent 命令）、agy，只查不运行。"
         "问进度必须先查，不能凭记忆。"
         "你不能改代码、运行命令、推送或合并。"
         "用户明确要改产品或写代码时，先问清楚，再调用 propose_task。"
-        "闲聊、问进度不调用。不能说“已经建好卡”，用户点确认才算。"
+        "用户明确要改团队分工（调度员、写测试、写代码、复查用谁）时，先问清楚，再调用 propose_team_change。"
+        "不要私自做工具连通检测；需要的话提醒用户去「设置」里点「检测」。"
+        "闲聊、问进度不调用 propose_task 或 propose_team_change。不能说“已经建好卡”或“已经改好团队”，用户点确认才算。"
         "不清楚时一次只问一个问题，给出推荐答案和一句话理由。"
         "不知道就直说，不编造。"
         "这个项目叫：{name}。")
@@ -236,6 +238,9 @@ class ClerkDesk:
 
     def _prompt(self, conv: _Conversation) -> list:
         role = ROLE.format(name=Path(conv.project).name)
+        hint = team_incomplete_hint(conv.project)
+        if hint:
+            role = f"{role} {hint}"
         return [{"role": "system", "content": role}] + conv.messages[-HISTORY_LIMIT:]
 
     def _alive(self, conv: _Conversation, turn: int) -> bool:
@@ -308,6 +313,8 @@ class ClerkDesk:
                         raise ValueError("not a dict")
                     if name == "propose_task":
                         result = clerk_tasks.propose(conv, args)
+                    elif name == "propose_team_change":
+                        result = clerk_tasks.propose_team_change(conv, args)
                     else:
                         result = run_tool(conv.project, name, args)
                 except (ValueError, TypeError):
@@ -344,7 +351,10 @@ class ClerkDesk:
         if conv is None and not result.get("repeat"):
             raise LookupError("找不到这段对话")
         if conv is not None and not result.get("repeat"):
-            if result["state"] == "confirmed":
+            kind = result.get("kind") or "task"
+            if kind == "team":
+                text = "团队设置已更新。" if result["state"] == "confirmed" else "好的，先不改团队设置。"
+            elif result["state"] == "confirmed":
                 text = f"已生成卡片 {result['card']}，接下来写方案。"
             else:
                 text = "好的，先不做。"

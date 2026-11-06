@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 from pathlib import Path
 
 from collab.config import ConfigError, load_team
@@ -13,6 +14,9 @@ _MAX_RESULT = 6000
 _CARD_ID = re.compile(r"^[A-Za-z0-9_-]+$")
 _ROLE_NAMES = {"dispatcher": "调度员", "tester": "写测试", "developer": "写代码", "reviewer": "复查"}
 _TOOL_NAMES = {"codex": "Codex", "cursor": "Cursor", "agy": "agy", "none": "不复查"}
+_TEAM_ROLES = ("dispatcher", "tester", "developer", "reviewer")
+_TEAM_WORKER_TOOLS = ("codex", "cursor", "agy")
+_TEAM_REVIEWER_TOOLS = _TEAM_WORKER_TOOLS + ("none",)
 
 TOOLS = [
     {"type": "function", "function": {
@@ -45,6 +49,19 @@ TOOLS = [
         "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
     }},
     {"type": "function", "function": {
+        "name": "list_installed_tools",
+        "description": "查看本机 PATH 里是否装了 codex、agent、agy（只检查，不运行）",
+        "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+    }},
+    {"type": "function", "function": {
+        "name": "propose_team_change",
+        "description": "向用户出示“改团队设置？”确认框。用户点确认后才写入配置。",
+        "parameters": {"type": "object", "properties": {
+            "role": {"type": "string", "description": "dispatcher / tester / developer / reviewer"},
+            "tool": {"type": "string", "description": "codex / cursor / agy；复查可选 none"},
+        }, "required": ["role", "tool"], "additionalProperties": False},
+    }},
+    {"type": "function", "function": {
         "name": "propose_task",
         "description": "向用户出示“变成任务？”确认框。用户点确认才建卡。",
         "parameters": {"type": "object", "properties": {
@@ -62,6 +79,8 @@ LABELS = {
     "list_cards": "读 卡片列表",
     "read_card": "读 卡片",
     "read_team": "读 团队设置",
+    "list_installed_tools": "查 本机工具",
+    "propose_team_change": "读 提议",
     "propose_task": "读 提议",
 }
 
@@ -80,6 +99,8 @@ def run_tool(project: str, name: str, arguments: dict) -> str:
             text = _read_card(project, args)
         elif name == "read_team":
             text = _read_team(project)
+        elif name == "list_installed_tools":
+            text = _list_installed_tools()
         else:
             text = "没有这个工具"
     except Exception:
@@ -178,6 +199,37 @@ def _read_card(project: str, args: dict) -> str:
                 lines.append(f"最近一次转人工原因：{reason}")
             break
     return "\n".join(lines)
+
+
+def _list_installed_tools() -> str:
+    """用 shutil.which 只检查是否存在可执行文件，不运行。"""
+    lines = []
+    for cmd, label in (("codex", "Codex"), ("agent", "Cursor（agent 命令）"), ("agy", "agy")):
+        path = shutil.which(cmd)
+        if path:
+            lines.append(f"{label}：已安装（{path}）")
+        else:
+            lines.append(f"{label}：未在 PATH 中找到")
+    return "\n".join(lines)
+
+
+def team_incomplete_hint(project: str) -> str:
+    """团队未配齐时给系统提示里加一句引导（一次一项）。"""
+    try:
+        team = load_team(project)
+    except ConfigError:
+        return "团队配置读不出来：请在设置里先修好配置，或一项一项说清要改谁。"
+    if not team.get("configured"):
+        return "团队没配好：先请用户去「设置」里选调度员；选好后如需再调别的角色，再一步一步来。"
+    missing = []
+    for role in _TEAM_ROLES:
+        v = team.get(role)
+        if v is None or (isinstance(v, str) and not v.strip()):
+            missing.append(_ROLE_NAMES.get(role, role))
+    if missing:
+        first = missing[0]
+        return f"团队没配好：现在先只帮用户配好「{first}」这一项，再问别的。"
+    return ""
 
 
 def _read_team(project: str) -> str:

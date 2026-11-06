@@ -123,6 +123,7 @@ var ChatCore = (function () {
         this._push({
           kind: "proposal", id: ev.id, proposalKind: ev.kind || "task",
           title: ev.title || "", do: ev.do || "", not_do: ev.not_do || "", done_when: ev.done_when || "",
+          role: ev.role || "", tool: ev.tool || "", before: ev.before != null ? ev.before : "",
           state: ev.state || "open", card: ev.card || "",
         });
         break;
@@ -273,27 +274,52 @@ if (typeof document !== "undefined") (function () {
       if (b.reason) el.querySelector("p").textContent = "理由：" + b.reason;
       el.setAttribute("data-ask", b.id);
     } else if (b.kind === "proposal") {
-      var result = {
+      function propRoleLabel(role) {
+        return ({ dispatcher: "调度员", tester: "写测试", developer: "写代码", reviewer: "复查" })[role] || role;
+      }
+      function propToolLabel(tool) {
+        if (!tool && tool !== "") return "";
+        if (String(tool).indexOf("custom:") === 0) return "自定义命令";
+        return ({ codex: "Codex", cursor: "Cursor", agy: "agy", none: "不复查" })[tool] || tool;
+      }
+      var isTeam = b.proposalKind === "team";
+      var result = isTeam ? {
+        confirmed: "团队设置已更新。",
+        cancelled: "好的，先不改团队设置。",
+        replaced: "已换成新的提议",
+      } : {
         confirmed: b.card ? ("已生成卡片 " + b.card) : "已确认",
         cancelled: "好的，先不做。",
         replaced: "已换成新的提议",
-      }[b.state];
+      };
+      result = result[b.state];
       el.className = "ask proposal" + (b.state === "open" ? "" : (b.state === "cancelled" ? " no" : " done"));
       if (b.state === "open") {
-        el.innerHTML = "<h3></h3><div class=\"rows\">" +
-          "<div><span>要做什么</span><p></p></div>" +
-          "<div><span>不做什么</span><p></p></div>" +
-          "<div><span>怎么算做完</span><p></p></div></div>" +
+        el.innerHTML = "<h3></h3><div class=\"rows\"></div>" +
           "<div class=\"btns\"><button class=\"btn primary\" data-prop=\"confirm\">确认</button>" +
           "<button class=\"btn\" data-prop=\"cancel\">先不做</button></div>";
-        el.querySelector("h3").textContent = "变成任务？";
-        var ps = el.querySelectorAll(".rows p");
-        ps[0].textContent = b.do; ps[1].textContent = b.not_do; ps[2].textContent = b.done_when;
-        if (b.title) {
-          var title = document.createElement("p");
-          title.className = "prop-title";
-          title.textContent = b.title;
-          el.querySelector("h3").after(title);
+        if (isTeam) {
+          el.querySelector("h3").textContent = "改团队设置？";
+          var row = document.createElement("div");
+          var beforeT = b.before === "" || b.before == null ? "还没选" : propToolLabel(b.before);
+          row.innerHTML = "<span></span><p></p>";
+          row.querySelector("span").textContent = propRoleLabel(b.role);
+          row.querySelector("p").textContent = beforeT + " → " + propToolLabel(b.tool);
+          el.querySelector(".rows").appendChild(row);
+        } else {
+          el.querySelector("h3").textContent = "变成任务？";
+          el.querySelector(".rows").innerHTML =
+            "<div><span>要做什么</span><p></p></div>" +
+            "<div><span>不做什么</span><p></p></div>" +
+            "<div><span>怎么算做完</span><p></p></div>";
+          var ps = el.querySelectorAll(".rows p");
+          ps[0].textContent = b.do; ps[1].textContent = b.not_do; ps[2].textContent = b.done_when;
+          if (b.title) {
+            var title = document.createElement("p");
+            title.className = "prop-title";
+            title.textContent = b.title;
+            el.querySelector("h3").after(title);
+          }
         }
       } else {
         el.innerHTML = "<h3></h3>";
