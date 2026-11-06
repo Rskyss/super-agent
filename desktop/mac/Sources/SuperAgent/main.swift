@@ -26,8 +26,10 @@
 //   --say <话>                  截图前在聊天里说这句话
 //   --walk <文件>               按顺序点左栏、切换、收起、改窗口大小，把每一步的结果写进文件，然后退出
 //   --walk-work                 只走“调度员干活时切终端、去设置再回来”这几步
+//   --clerk-try <文件> [--clerk-base 地址]  用文件里的密钥走一次第一屏的测试和保存，结果写到“文件.result”
 //   --interrupt-answer <stay|leave>  调度员干活时切终端，代替用户回答提示
 import AppKit
+import Security
 import SwiftTerm
 import WebKit
 
@@ -117,6 +119,35 @@ final class ViewSwitch: NSView {
             button.layer?.backgroundColor = on ? surface2Color.cgColor : NSColor.clear.cgColor
         }
     }
+}
+
+/// 行政人员的密钥：只放本机钥匙串，不写进任何文件
+enum ClerkKey {
+    static var service: String { "local.superagent.clerk" + (argValue("--clerk-try") == nil ? "" : ".selftest") }
+
+    static func query() -> [String: Any] {
+        [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
+         kSecAttrAccount as String: "api-key"]
+    }
+
+    static func read() -> String? {
+        var request = query()
+        request[kSecReturnData as String] = true
+        request[kSecMatchLimit as String] = kSecMatchLimitOne
+        var found: CFTypeRef?
+        guard SecItemCopyMatching(request as CFDictionary, &found) == errSecSuccess, let data = found as? Data else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    @discardableResult static func save(_ key: String) -> Bool {
+        SecItemDelete(query() as CFDictionary)
+        var item = query()
+        item[kSecValueData as String] = Data(key.utf8)
+        item[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlocked
+        return SecItemAdd(item as CFDictionary, nil) == errSecSuccess
+    }
+
+    static func delete() { SecItemDelete(query() as CFDictionary) }
 }
 
 enum ChatMode { case continueLast, fresh }
@@ -1037,6 +1068,108 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
         loadPanel()
         loadChat(opening: pendingOpening)
         loadConfig()
+        DispatchQueue.main.async { [weak self] in self?.setupClerk() }
+    }
+
+    // MARK: 行政人员的第一屏
+
+    var clerkBase: String { UserDefaults.standard.string(forKey: "clerkBaseURL") ?? "https://tokenhub.tencentmaas.com/v1" }
+    var clerkModel: String { UserDefaults.standard.string(forKey: "clerkModel") ?? "deepseek/deepseek-flash" }
+
+    func postLocal(_ path: String, _ body: [String: Any], done: @escaping @MainActor @Sendable ([String: Any]) -> Void) {
+        guard let port = port, let url = URL(string: "http://127.0.0.1:\(port)\(path)") else { return done([:]) }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(chatToken, forHTTPHeaderField: "X-Chat-Token")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        request.timeoutInterval = 40
+        URLSession.shared.dataTask(with: request) { data, _, _ in
+            let text = data.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+            DispatchQueue.main.async {
+                let parsed = text.data(using: .utf8).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+                done(parsed ?? [:])
+            }
+        }.resume()
+    }
+
+    func clerkForm(_ base: String, _ model: String, _ key: String) -> [String: Any] {
+        ["base_url": base, "model": model, "api_key": key]
+    }
+
+    /// 先测试，通过了才存进钥匙串并交给本机服务
+    func tryClerk(base: String, model: String, key: String, done: @escaping @MainActor @Sendable (String?) -> Void) {
+        postLocal("/api/clerk/test", clerkForm(base, model, key)) { [weak self] answer in
+            guard let self = self else { return }
+            guard answer["ok"] as? Bool == true else {
+                return done(answer["error"] as? String ?? "没有测试成功，请再试一次。")
+            }
+            guard ClerkKey.save(key) else { return done("密钥没能存进钥匙串，请再试一次。") }
+            UserDefaults.standard.set(base, forKey: "clerkBaseURL")
+            UserDefaults.standard.set(model, forKey: "clerkModel")
+            self.postLocal("/api/clerk/config", self.clerkForm(base, model, key)) { _ in done(nil) }
+        }
+    }
+
+    func setupClerk() {
+        if let file = argValue("--clerk-try") { return clerkSelfTest(file) }
+        if let key = ClerkKey.read() {
+            postLocal("/api/clerk/config", clerkForm(clerkBase, clerkModel, key)) { _ in }
+        } else if !selfTest {
+            askClerk()
+        }
+    }
+
+    /// 自测：走和第一屏一样的测试和保存，只用单独的钥匙串项，结束后删掉
+    func clerkSelfTest(_ file: String) {
+        let key = (try? String(contentsOfFile: file, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let base = argValue("--clerk-base") ?? clerkBase
+        tryClerk(base: base, model: clerkModel, key: key) { failure in
+            let saved = ClerkKey.read() == key
+            let report = "失败=\(failure ?? "无") 钥匙串一致=\(saved)\n"
+            try? report.write(toFile: file + ".result", atomically: true, encoding: .utf8)
+            ClerkKey.delete()
+        }
+    }
+
+    var clerkFields: (alert: NSAlert, base: NSTextField, model: NSTextField, key: NSSecureTextField)?
+
+    func askClerk() {
+        let alert = NSAlert()
+        alert.messageText = "请先配置行政人员"
+        alert.informativeText = "它负责接待你、查进度、帮你派活。密钥只存在这台电脑的钥匙串里。"
+        let base = NSTextField(string: clerkBase), model = NSTextField(string: clerkModel), key = NSSecureTextField()
+        key.placeholderString = "API 密钥"
+        let stack = NSStackView(views: [base, model, key])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.frame = NSRect(x: 0, y: 0, width: 340, height: 92)
+        for field in [base, model, key] { field.widthAnchor.constraint(equalToConstant: 340).isActive = true }
+        alert.accessoryView = stack
+        let save = alert.addButton(withTitle: "测试并保存")
+        alert.addButton(withTitle: "以后再说")
+        save.target = self
+        save.action = #selector(clerkSaveClicked(_:))
+        clerkFields = (alert, base, model, key)
+        alert.window.initialFirstResponder = key
+        alert.runModal()
+        clerkFields = nil
+    }
+
+    @objc func clerkSaveClicked(_ sender: NSButton) {
+        guard let form = clerkFields else { return }
+        sender.isEnabled = false
+        sender.title = "测试中…"
+        tryClerk(base: form.base.stringValue, model: form.model.stringValue, key: form.key.stringValue) { failure in
+            sender.isEnabled = true
+            sender.title = "测试并保存"
+            if let failure = failure {
+                form.alert.informativeText = failure
+            } else {
+                NSApp.stopModal()
+                form.alert.window.orderOut(nil)
+            }
+        }
     }
 
     func serverStopped(code: Int32) {

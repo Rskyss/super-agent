@@ -40,6 +40,7 @@ from collab.config import (  # noqa: E402
     save_team,
 )
 from desktop.chat import ChatHub  # noqa: E402
+from desktop.clerk.client import DEFAULT_BASE_URL, DEFAULT_MODEL, ModelClient, ModelError  # noqa: E402
 from desktop.shell_path import adopt_terminal_path  # noqa: E402
 from desktop.view import card_view, event_text, list_cards  # noqa: E402
 
@@ -222,9 +223,25 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._json({"error": "没有这个地址"}, 404)
 
+    def _clerk_post(self, path: str, body: dict) -> None:
+        """窗口把行政人员的密钥交给本机服务：只放内存，不写文件，也不回传。"""
+        client = ModelClient(str(body.get("base_url") or DEFAULT_BASE_URL), str(body.get("model") or DEFAULT_MODEL),
+                             str(body.get("api_key") or ""), timeout=30)
+        if path == "/api/clerk/test":
+            try:
+                client.chat([{"role": "user", "content": "只回答：好"}])
+                self._json({"ok": True})
+            except ModelError as exc:
+                self._json({"ok": False, "error": str(exc)})
+        elif path == "/api/clerk/config":
+            self.server.clerk = client
+            self._json({"ok": True})
+        else:
+            self._json({"error": "没有这个地址"}, 404)
+
     def do_POST(self):  # noqa: N802
         url = urlparse(self.path)
-        if not (url.path.startswith("/api/chat/") or url.path.startswith("/api/team/")):
+        if not url.path.startswith(("/api/chat/", "/api/team/", "/api/clerk/")):
             self._json({"error": "没有这个地址"}, 404)
             return
         if not self._chat_allowed():  # 没口令：已经回了 403
@@ -240,6 +257,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if url.path.startswith("/api/team/"):
             self._team_post(url.path, body)
+            return
+        if url.path.startswith("/api/clerk/"):
+            self._clerk_post(url.path, body)
             return
         hub, project = self.server.hub, body.get("project", "")
         try:
@@ -295,6 +315,7 @@ def make_server(port: int = 0, token=None, hub=None) -> ThreadingHTTPServer:
     server = LocalServer(("127.0.0.1", port), Handler)
     server.token = token          # 聊天口令；没有就不开放聊天
     server.hub = hub if hub is not None else ChatHub()
+    server.clerk = None           # 行政人员的模型连接，密钥只在内存里
     server.checks = {}            # (项目, 第几次检测) -> 这次检测连通的进度
     return server
 
