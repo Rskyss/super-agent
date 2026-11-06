@@ -13,13 +13,20 @@ import uuid
 from pathlib import Path
 
 from desktop.clerk.client import ModelError
+from desktop.clerk.tools import LABELS, TOOLS, run_tool
 
 FOLDER = Path(".collab") / "行政对话"
 INDEX = "索引.json"
 HISTORY_LIMIT = 40  # 带给模型的最近几句话，够接上话，也不让费用越滚越大
 TITLE_LIMIT = 24
+MAX_TOOL_ROUNDS = 5
 ROLE = ("你是超级助手的行政人员，用户的前台和行政。用大白话简短回答，不说技术术语。"
-        "你现在还看不到项目的进度和文件，不知道的就直说，不要编造。这个项目叫：{name}。")
+        "你能查项目说明、台账、卡片和团队设置。"
+        "问进度必须先查，不能凭记忆。"
+        "你不能改代码、运行命令、推送或合并。"
+        "不清楚时一次只问一个问题，给出推荐答案和一句话理由。"
+        "不知道就直说，不编造。"
+        "这个项目叫：{name}。")
 NAMING = "用不超过 12 个字概括这段对话的主题，只回答标题本身。\n用户：{user}\n回答：{reply}"
 _ID_SHAPE = re.compile(r"[0-9a-f]{32}")
 
@@ -217,6 +224,10 @@ class ClerkDesk:
         role = ROLE.format(name=Path(conv.project).name)
         return [{"role": "system", "content": role}] + conv.messages[-HISTORY_LIMIT:]
 
+    def _alive(self, conv: _Conversation, turn: int) -> bool:
+        with conv.cond:
+            return conv.turn == turn
+
     def _reply(self, conv: _Conversation, client, turn: int, first: bool) -> None:
         item = uuid.uuid4().hex
 
@@ -229,7 +240,7 @@ class ClerkDesk:
 
         failure, reply = None, ""
         try:
-            reply = client.chat(self._prompt(conv), on_text=on_text)["text"]
+            reply = self._tool_loop(conv, client, turn, on_text)
         except _Stopped:
             return
         except ModelError as exc:
@@ -248,6 +259,46 @@ class ClerkDesk:
         conv.emit({"type": "turn_done"})
         if first and reply and not failure:
             threading.Thread(target=self._name, args=(conv, client, reply), daemon=True).start()
+
+    def _tool_loop(self, conv: _Conversation, client, turn: int, on_text) -> str:
+        """带工具的多轮：有 tool_calls 就执行后继续问；到上限后再问一次，这次不带工具。"""
+        messages = self._prompt(conv)
+        reply = ""
+        for round_no in range(MAX_TOOL_ROUNDS + 1):
+            if not self._alive(conv, turn):
+                raise _Stopped
+            use_tools = round_no < MAX_TOOL_ROUNDS
+            answer = client.chat(messages, on_text=on_text, tools=TOOLS if use_tools else None)
+            reply = answer.get("text") or ""
+            calls = answer.get("tool_calls") or []
+            if not use_tools or not calls:
+                return reply
+            messages.append({
+                "role": "assistant",
+                "content": reply or None,
+                "tool_calls": [{
+                    "id": call.get("id") or f"call{round_no}_{i}",
+                    "type": "function",
+                    "function": {"name": call.get("name") or "", "arguments": call.get("arguments") or "{}"},
+                } for i, call in enumerate(calls)],
+            })
+            for i, call in enumerate(calls):
+                if not self._alive(conv, turn):
+                    raise _Stopped
+                call_id = call.get("id") or f"call{round_no}_{i}"
+                name = call.get("name") or ""
+                raw = call.get("arguments") or "{}"
+                try:
+                    args = json.loads(raw)
+                    if not isinstance(args, dict):
+                        raise ValueError("not a dict")
+                    result = run_tool(conv.project, name, args)
+                except (ValueError, TypeError):
+                    result = "参数看不懂"
+                label = LABELS.get(name, "读 资料")
+                conv.emit({"type": "activity", "item": call_id, "label": label, "status": "done"})
+                messages.append({"role": "tool", "tool_call_id": call_id, "content": result})
+        return reply
 
     def _name(self, conv: _Conversation, client, reply: str) -> None:
         """起名失败不要紧，标题先用用户的第一句话。"""
