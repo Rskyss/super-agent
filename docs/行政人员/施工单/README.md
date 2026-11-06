@@ -37,7 +37,7 @@ cd desktop/mac && swift build
 ## 红线
 
 - **不改测试：** `tests/test_acceptance_*.py` 和 `tests/acceptance_helpers.py` 是验收标准，不许修改、跳过或删除。旧测试也不许放宽。唯一例外见 06 号单。
-- **旧测试和施工单冲突时：** 停下，写进回执，告诉用户，不要自己决定。
+- **测试和施工单冲突，或你确信验收测试本身写错了：** 停下，写进回执，告诉用户，不要自己改。03 到 09 号单的验收测试还没有对真实实现跑过，出现这种情况是可能的。
 - **只改单上列出的文件。** 确实需要改别的文件，先停下说明。
 - **不新增依赖。** Python 只用标准库，并兼容 3.9。页面不引入框架。
 - **不花真实额度。** 用 `tests/fake_model_server.py`、`tests/fake_codex_app_server.py` 或假命令，不调用真实模型、Codex、Cursor、agy。

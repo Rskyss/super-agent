@@ -253,7 +253,7 @@ class CliTest(unittest.TestCase):
         def fake_ask(adapter, prompt, cwd, **kwargs):
             calls.append((adapter, Path(cwd).name))
             (Path(cwd) / "hello.txt").write_text("hi")  # 开发员在副本里改了文件
-            return AgentResult(ok=True, output="", attempts=1)
+            return AgentResult(ok=True, output="结论：通过", attempts=1)
 
         def fake_judge(command, cwd, timeout):
             return Verdict(PASS, 0, "全部通过")
