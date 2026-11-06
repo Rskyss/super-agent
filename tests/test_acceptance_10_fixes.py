@@ -597,7 +597,14 @@ class Window(unittest.TestCase):
         self.assertIn("runJavaScriptConfirmPanelWithMessage", source)
         self.assertIn("runJavaScriptAlertPanelWithMessage", source)
         self.assertIn("web.uiDelegate = self", source)
-        self.assertNotIn("runModal", source)
+        # 页面弹窗不能挡住窗口回调
+        start = source.index("runJavaScriptAlertPanelWithMessage")
+        self.assertNotIn("runModal", source[start:start + 1200])
+
+    def test_no_hand_made_wait_for_dialogs(self):
+        # 手工等待收不到鼠标和键盘，弹窗点不动，软件就卡死了（实测过）
+        source = SWIFT.read_text(encoding="utf-8")
+        self.assertNotIn("while done.wait(timeout", source)
 
 
 @needs_node()
