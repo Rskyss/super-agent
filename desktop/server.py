@@ -40,7 +40,7 @@ from collab.config import (  # noqa: E402
     save_models,
     save_team,
 )
-from collab.flow import read_flow  # noqa: E402
+from collab.flow import read_flow, record as flow_record  # noqa: E402
 from collab.ledger import ledger_add  # noqa: E402
 from collab.phase import card_phase  # noqa: E402
 from collab.scope import read_allowed  # noqa: E402
@@ -50,7 +50,7 @@ from desktop.chat import ChatHub  # noqa: E402
 from desktop.clerk.client import DEFAULT_BASE_URL, DEFAULT_MODEL, ModelClient, ModelError  # noqa: E402
 from desktop.clerk.codex_history import list_history, read_history  # noqa: E402
 from desktop.clerk.desk import ClerkDesk  # noqa: E402
-from desktop.clerk.tasks import TaskBusy, launch  # noqa: E402
+from desktop.clerk.tasks import TaskBusy, launch, running, stop_construction  # noqa: E402
 from collab.tasks import TaskError  # noqa: E402
 from desktop.shell_path import adopt_terminal_path  # noqa: E402
 from desktop.view import card_view, event_text, list_cards  # noqa: E402
@@ -83,6 +83,15 @@ class Handler(BaseHTTPRequestHandler):
 
     def _json(self, data, status: int = 200) -> None:
         self._send(status, json.dumps(data, ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8")
+
+    def _start_test_command(self, project: str, card_id: str) -> str:
+        start_path = Path(project) / ".collab" / "cards" / card_id / "开工.json"
+        if not start_path.is_file():
+            return ""
+        try:
+            return str(json.loads(start_path.read_text(encoding="utf-8")).get("test_command") or "")
+        except (OSError, ValueError, TypeError):
+            return ""
 
     def _plan_payload(self, project: str, card_id: str) -> dict:
         project_p = Path(project)
@@ -149,6 +158,10 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if action == "approve":
+            run_busy = running(project, "run")
+            if run_busy is not None and str(run_busy.get("card") or "") != card_id:
+                self._card_action_error("已有一张卡在施工，等它做完再开工")
+                return
             prof = profile_path(project)
             if not prof.is_file():
                 self._card_action_error("还没有项目说明：请先在文档里写好「项目说明」。")
@@ -176,11 +189,38 @@ class Handler(BaseHTTPRequestHandler):
             if code != 0:
                 self._card_action_error("方案里还有空白：请先在卡片里补全。")
                 return
+            test_cmd = self._start_test_command(project, card_id).strip()
+            if not test_cmd:
+                self._card_action_error("还没有施工用的测试命令：请先写好方案。")
+                return
+            try:
+                launch(project, "run", card_id, ["run", project, card_id, "--test-command", test_cmd])
+            except TaskBusy:
+                self._card_action_error("已有一张卡在施工，等它做完再开工")
+                return
             self._json({"ok": True})
             return
 
-        if action in ("resume", "stop"):
-            self._json({"error": "这一步要等下一版再做"}, 409)
+        if action == "resume":
+            test_cmd = self._start_test_command(project, card_id).strip()
+            if not test_cmd:
+                self._card_action_error("还没有施工用的测试命令：请先写好方案。")
+                return
+            run_args = ["run", project, card_id, "--test-command", test_cmd]
+            if phase.get("code") == "blocked":
+                run_args.append("--resume-blocked")
+            try:
+                launch(project, "run", card_id, run_args)
+            except TaskBusy:
+                self._card_action_error("已有一张卡在施工，等它做完再开工")
+                return
+            self._json({"ok": True})
+            return
+
+        if action == "stop":
+            stop_construction(project)
+            flow_record(cdir, "停下", src="你", dst="程序", summary="施工已停下")
+            self._json({"ok": True})
             return
 
         self._card_action_error("看不懂这个操作。")

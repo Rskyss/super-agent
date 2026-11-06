@@ -20,6 +20,19 @@ DEFAULT_TIMEOUT = 1800  # 开发环节 30 分钟（D5）
 QUIET_LIMIT = 15 * 60  # 看门人：副本里连续 15 分钟没有任何文件变化，判定为卡住
 POLL_SECONDS = 15  # 看门人每隔多久看一次
 
+_active_tool = None  # 当前派活里的工具进程，供 collab run 收到结束信号时一并停掉
+
+
+def kill_current_tool_process_group() -> None:
+    """对当前正在运行的工具进程组发 SIGTERM（与停下施工一致）。"""
+    proc = _active_tool
+    if proc is None or proc.poll() is not None:
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+
 
 def cursor_command(prompt: str, model: str = DEFAULT_MODELS["cursor"]):
     return ["agent", "-p", "--trust", "--model", model, "--output-format", "json", prompt]
@@ -75,11 +88,25 @@ def _newest_mtime(root) -> float:
 
 
 def _stop(proc) -> None:
-    """连同它拉起的子进程一起停掉（agent 会再启动 node 等子进程）。"""
+    """连同它拉起的子进程一起停掉；先温和结束，不行再强停。"""
+    if proc.poll() is not None:
+        proc.wait()
+        return
     try:
-        os.killpg(proc.pid, signal.SIGKILL)
+        os.killpg(proc.pid, signal.SIGTERM)
     except (ProcessLookupError, PermissionError, OSError):
-        proc.kill()
+        pass
+    deadline = time.time() + 5
+    while proc.poll() is None and time.time() < deadline:
+        try:
+            proc.wait(timeout=min(0.2, deadline - time.time()))
+        except subprocess.TimeoutExpired:
+            pass
+    if proc.poll() is None:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            proc.kill()
     proc.wait()
 
 
@@ -95,14 +122,19 @@ def watched_runner(cmd, cwd, timeout, quiet_limit=QUIET_LIMIT, poll=POLL_SECONDS
     """边跑边看：总时长超过 timeout 抛 TimeoutExpired；副本里连续 quiet_limit 秒
     没有任何文件变化抛 QuietTimeout。输出写文件，避免管道写满卡住；
     live_path 给了就写到那里并保留，供实时查看。"""
+    global _active_tool
     started = time.time()
     last_activity = started
     with _output_file(live_path) as out:
         proc = subprocess.Popen(cmd, cwd=cwd, stdout=out, stderr=subprocess.STDOUT,
                                 stdin=subprocess.DEVNULL, text=True, start_new_session=True)
+        _active_tool = proc
         try:
             while proc.poll() is None:
-                time.sleep(poll)
+                try:
+                    proc.wait(timeout=poll)
+                except subprocess.TimeoutExpired:
+                    pass
                 now = time.time()
                 last_activity = max(last_activity, _newest_mtime(cwd))
                 if now - started > timeout:
@@ -112,6 +144,9 @@ def watched_runner(cmd, cwd, timeout, quiet_limit=QUIET_LIMIT, poll=POLL_SECONDS
         except BaseException:
             _stop(proc)
             raise
+        finally:
+            if _active_tool is proc:
+                _active_tool = None
         out.seek(0)
         return proc.returncode, out.read()
 

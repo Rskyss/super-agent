@@ -5,6 +5,7 @@ import errno
 import fcntl
 import json
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -163,6 +164,41 @@ def _pid_alive(pid: int) -> bool:
         return False
     except (OSError, ValueError, TypeError):
         return True
+
+
+def stop_construction(project: str) -> None:
+    """对施工进程组先发 SIGTERM，5 秒后仍在则 SIGKILL。"""
+    rec = running(project, "run")
+    if not rec:
+        return
+    try:
+        pid = int(rec["pid"])
+    except (TypeError, ValueError):
+        return
+    try:
+        os.killpg(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    except OSError:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            return
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        if not _pid_alive(pid):
+            break
+        time.sleep(0.05)
+    if _pid_alive(pid):
+        try:
+            os.killpg(pid, signal.SIGKILL)
+        except OSError:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
+    while _pid_alive(pid):
+        time.sleep(0.05)
 
 
 def running(project: str, kind: str) -> Optional[Dict[str, Any]]:

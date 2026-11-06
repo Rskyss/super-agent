@@ -12,12 +12,14 @@ import argparse
 import json
 import os
 import shlex
+import signal
 import sys
 from datetime import datetime
 from pathlib import Path
 
 from collab import vcs
 from collab.agents import ask as default_ask
+from collab.agents import kill_current_tool_process_group
 from collab.archive import archive_card
 from collab.install import InstallError, find_old_package, install_into, migrate
 from collab.config import ConfigError, load_models, run_tools
@@ -160,6 +162,12 @@ def cmd_run(args, ask_fn=None, judge_fn=None, **_):
         return 1
     card = Card.load(state_path)
     resuming = card.state in ("开发中", "待测试", "测试中")
+    resume_blocked = getattr(args, "resume_blocked", False)
+    if card.state == "需Claude介入" and resume_blocked:
+        card.transition("开发中")
+        card.save(state_path)
+        render_board(_collab(args.project))
+        resuming = True
     if card.state != "待派发" and not resuming:
         print(f"{args.card_id} 当前状态是「{card.state}」，方案确认后（待派发）才能开工", file=sys.stderr)
         return 1
@@ -198,10 +206,22 @@ def cmd_run(args, ask_fn=None, judge_fn=None, **_):
     run_summary = (f"接着上次中断处继续施工：测试员 {tools['test']}，开发员 {tools['dev']}，复查员 {reviewer or '不复查'}"
                    if resuming else
                    f"开始施工：测试员 {tools['test']}，开发员 {tools['dev']}，复查员 {reviewer or '不复查'}")
+    main_pid = os.getpid()
+
+    def _on_signal(signum, frame):
+        kill_current_tool_process_group()
+        raise SystemExit(128 + signum)
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            signal.signal(sig, _on_signal)
+        except (OSError, ValueError):
+            pass
+
     flow_record(_collab(args.project) / "cards" / args.card_id, "开跑", src="调度员", dst="程序",
                 summary=run_summary,
                 tools={"测试员": tools["test"], "开发员": tools["dev"], "复查员": reviewer},
-                pid=os.getpid(),
+                pid=main_pid,
                 text=f"判定命令：{args.test_command}\n页面检查：{args.page_check or '无'}\n独立副本：{worktree}")
     card, verdict = run_card(
         card, collab_dir=_collab(args.project), worktree=str(worktree),
@@ -335,6 +355,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="测试员（写测试）；不写就用团队配置（默认 Codex）")
     p.add_argument("--review-tool", default=None, choices=["cursor", "codex", "agy", "none"],
                    help="独立复查（只读）；none 表示不复查；不写就用团队配置（默认 agy）")
+    p.add_argument("--resume-blocked", action="store_true",
+                   help="从「需Claude介入」转入「开发中」后继续（须与断点续跑一起用）")
     p.set_defaults(func=cmd_run)
 
     p = sub.add_parser("confirm-profile", help="确认项目说明（之后才能批准方案）")
