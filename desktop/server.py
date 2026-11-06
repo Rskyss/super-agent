@@ -253,6 +253,10 @@ class Handler(BaseHTTPRequestHandler):
             except RuntimeError as exc:
                 self._json({"error": str(exc)}, 409)
             return
+        if path == "/api/clerk/clear":
+            self.server.clerk = None
+            self._json({"ok": True})
+            return
         client = ModelClient(str(body.get("base_url") or DEFAULT_BASE_URL), str(body.get("model") or DEFAULT_MODEL),
                              str(body.get("api_key") or ""), timeout=30)
         if path == "/api/clerk/test":

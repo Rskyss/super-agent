@@ -58,6 +58,15 @@
   </section>
   <p class="note warn" id="noGit" hidden>这个文件夹还没有版本管理（git），不能派活；现在只能选一位调度员和它聊天。需要的话，让调度员帮你把版本管理建起来。</p>
 
+  <section class="clerk" aria-label="行政人员（可选）">
+    <div class="clerk-title">行政人员（可选）</div>
+    <p class="clerk-row">
+      <span id="clerkState">没有配置</span>
+      <button class="btn" type="button" id="clerkSetup">配置</button>
+      <button class="btn" type="button" id="clerkClear" hidden>停用</button>
+    </p>
+  </section>
+
   <div class="bar">
     <button class="btn primary" type="button" id="save" disabled>保存并开始</button>
     <span class="summary" id="summary"></span>

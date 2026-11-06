@@ -25,6 +25,7 @@ if (typeof document !== "undefined") (function () {
   var params = new URLSearchParams(location.search);
   var project = params.get("project") || "", token = params.get("token") || "";
   var savedDispatcher = params.get("dispatcher") || "";   // 没接入的文件夹，调度员存在窗口自己的设置里
+  var clerkReady = params.get("clerk") === "1";
   var ROLE = { dispatcher: "调度员", tester: "写测试", developer: "写代码", reviewer: "复查" };
   var ALL_ROLES = ["dispatcher", "tester", "developer", "reviewer"];
   var rows = {}, info = null, results = {}, installed = true;
@@ -306,6 +307,15 @@ if (typeof document !== "undefined") (function () {
     location.href = "superagent://saved" + (dispatcher ? "?dispatcher=" + encodeURIComponent(dispatcher) : "");
     setTimeout(function () { $("summary").className = "summary ok"; $("summary").textContent = "已保存。"; }, 300);
   }
+
+  function refreshClerk() {
+    $("clerkState").textContent = clerkReady ? "已配置" : "没有配置";
+    $("clerkSetup").textContent = clerkReady ? "更换" : "配置";
+    $("clerkClear").hidden = !clerkReady;
+  }
+  refreshClerk();
+  $("clerkSetup").addEventListener("click", function () { location.href = "superagent://clerk-setup"; });
+  $("clerkClear").addEventListener("click", function () { location.href = "superagent://clerk-clear"; });
 
   ALL_ROLES.forEach(function (r) {
     rows[r].querySelector(".check-one").addEventListener("click", function () { check(r); });

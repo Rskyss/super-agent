@@ -894,6 +894,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
         }
         let local = UserDefaults.standard.string(forKey: Dispatcher.key(for: project)) ?? ""
         let query = "project=\(urlEncode(project.path))&token=\(chatToken)&dispatcher=\(urlEncode(local))"
+            + "&clerk=\(clerkReady ? 1 : 0)"
         if let url = URL(string: "http://127.0.0.1:\(port)/static/team.html?\(query)") {
             configWeb.load(URLRequest(url: url))
         }
@@ -948,6 +949,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
             refreshNavThreads()
         case "settings":
             showLeft(.config, opening: false)
+        case "clerk-setup":
+            askClerk()
+        case "clerk-clear":
+            confirmClearClerk()
         default:
             break
         }
@@ -1138,7 +1143,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
     func setupClerk() {
         if let file = argValue("--clerk-try") { return clerkSelfTest(file) }
         if let file = argValue("--clerk-ui-test") { return clerkFormSelfTest(file) }
-        if !selfTest { askClerk() }
     }
 
     /// 自测：走和第一屏一样的测试和保存，只用单独的钥匙串项，结束后删掉
@@ -1177,8 +1181,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
 
     func askClerk() {
         let alert = NSAlert()
-        alert.messageText = "请先配置行政人员"
-        alert.informativeText = "它负责接待你、查进度、帮你派活。密钥只存在这台电脑的钥匙串里。"
+        alert.messageText = "配置行政人员"
+        alert.informativeText = "填了密钥后，聊天和查进度由行政负责。不填也能继续用 Codex 聊天。密钥只存在这台电脑的钥匙串里。"
         let base = NSTextField(string: clerkBase), model = NSTextField(string: clerkModel), key = NSSecureTextField()
         key.placeholderString = "API 密钥"
         let stack = NSStackView(views: [base, model, key])
@@ -1188,7 +1192,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
         for field in [base, model, key] { field.widthAnchor.constraint(equalToConstant: 340).isActive = true }
         alert.accessoryView = stack
         let save = alert.addButton(withTitle: "测试并保存")
-        alert.addButton(withTitle: "以后再说")
+        alert.addButton(withTitle: "取消")
         save.target = self
         save.action = #selector(clerkSaveClicked(_:))
         clerkFields = (alert, base, model, key)
@@ -1197,6 +1201,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
             MainActor.assumeIsolated { self?.clerkFields = nil }
         }
         alert.window.makeFirstResponder(key)
+    }
+
+    func confirmClearClerk() {
+        let alert = NSAlert()
+        alert.messageText = "停用行政人员？"
+        alert.informativeText = "之后聊天会改回用 Codex。密钥会从这台电脑的钥匙串里删掉。"
+        alert.addButton(withTitle: "停用")
+        alert.addButton(withTitle: "取消")
+        alert.beginSheetModal(for: window) { [weak self] response in
+            MainActor.assumeIsolated {
+                guard let self = self, response == .alertFirstButtonReturn else { return }
+                ClerkKey.delete()
+                self.clerkReady = false
+                self.postLocal("/api/clerk/clear", [:]) { [weak self] _ in
+                    guard let self = self else { return }
+                    self.closeChatOnServer(clearView: true) {
+                        self.loadPanel()
+                        self.loadChat(opening: false)
+                        if self.leftView == .config { self.loadConfig() }
+                    }
+                }
+            }
+        }
     }
 
     @objc func clerkSaveClicked(_ sender: NSButton) {
@@ -1214,7 +1241,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
                 self.closeChatOnServer(clearView: true) { [weak self] in
                     guard let self = self else { return }
                     self.loadPanel()
-                    self.showLeft(self.preferredLeft(), opening: false)
+                    if self.leftView == .config {
+                        self.loadConfig()  // 设置页立刻变成“已配置”
+                    } else {
+                        self.showLeft(self.preferredLeft(), opening: false)
+                    }
                 }
             }
         }
