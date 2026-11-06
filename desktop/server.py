@@ -143,6 +143,8 @@ class Handler(BaseHTTPRequestHandler):
             threads = session.list_threads() if session is not None else []
             current = getattr(getattr(session, "adapter", None), "thread_id", None) if session is not None else None
             self._json({"threads": threads, "current": current})
+        elif path == "/api/chat/thread":
+            self._json({"events": session.read_thread(query.get("id", "")) if session is not None else []})
         elif path == "/api/chat/image":
             target = query.get("path", "")
             suffix = Path(target).suffix.lower()

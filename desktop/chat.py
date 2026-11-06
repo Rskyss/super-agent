@@ -97,9 +97,13 @@ class ChatSession:
         with_opening=False：从终端视图切回来或切历史对话时用，不重复发开场交代。"""
         words = opening(self.project)
         name = _NAMES.get(self.dispatcher, self.dispatcher)
+        with self._cond:  # 和 close 互斥：要么这里看到已关，要么 close 能关到这条连接
+            if self.closed:
+                return
+            self.adapter = self._factory(self.project, self.emit, words["background"], words["marker"])
         self.emit({"type": "status", "text": f"正在连接 {name}…"})
-        self.adapter = self._factory(self.project, self.emit, words["background"], words["marker"])
-        task = "" if thread_id else ((words["first"] if words["first_time"] else words["every"]) if with_opening else "")
+        # 打开软件和新对话都不自动发话，等用户说第一句；第一次接入的项目例外，要先起草项目说明
+        task = words["first"] if with_opening and not thread_id and words["first_time"] else ""
 
         def run():
             try:
@@ -127,6 +131,16 @@ class ChatSession:
         except Exception:
             return []
 
+    def read_thread(self, thread_id: str) -> list:
+        """读取另一段历史对话的内容（不切过去），读不到就返回空。"""
+        if self.adapter is None or not hasattr(self.adapter, "read_thread"):
+            return []
+        try:
+            events = self.adapter.read_thread(thread_id)
+        except Exception:
+            return []
+        return [dict(event, seq=index) for index, event in enumerate(events, 1)]
+
     @property
     def usable(self) -> bool:
         """还能不能接着用：没关、没连败，且底层进程没掉线。"""
@@ -151,11 +165,12 @@ class ChatSession:
         self._need_adapter().interrupt()
 
     def close(self) -> None:
-        self.closed = True
-        if self.adapter is not None:
-            self.adapter.close()
         with self._cond:
+            self.closed = True
+            adapter = self.adapter
             self._cond.notify_all()
+        if adapter is not None:
+            adapter.close()
 
     def _need_adapter(self):
         if self.adapter is None or getattr(self.adapter, "thread_id", None) is None:
@@ -323,10 +338,11 @@ class ChatHub:
             if s is not None and s.project == key and s.dispatcher == dispatcher and s.usable \
                     and mode != "fresh" and same_thread:
                 return s
-            if s is not None:
-                s.close()
+            old = s
             s = ChatSession(key, dispatcher, self.factories[dispatcher])
             self._session = s
+        if old is not None:  # 关旧连接要几秒，不能占着锁，否则连续点击会排队、顺序还会乱
+            old.close()
         s.open(mode, with_opening=with_opening, thread_id=thread_id)
         return s
 

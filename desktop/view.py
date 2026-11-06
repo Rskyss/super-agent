@@ -320,12 +320,14 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
     base["cards"] = cards
     dirs = _card_dirs(project)
     explicit_card = card_id
+    if explicit_card in dirs:
+        chat = None   # 用户点开的是这张卡：只看它自己的记录，主对话正在聊什么和它无关
     if card_id is None and cards:
         card_id = cards[0]["id"]
     if card_id not in dirs:
         if chat:
             return _chat_view(base, chat, tools, team_reviewer_on, dispatcher)
-        base["now"] = {"text": "等你在左边提需求", "tone": "idle"}
+        base["now"] = {"text": "等你提需求", "tone": "idle"}
         return base
     if explicit_card is None and chat and cards and cards[0]["state"] == "已合并" \
             and (chat["busy"] or chat["asking"] or chat["updated"] > cards[0]["updated"]):

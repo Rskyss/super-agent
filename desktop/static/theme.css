@@ -1,0 +1,79 @@
+/* 超级助手统一设计变量和基础样式。规则见 docs/界面改版/设计规范.md，页面里不写死色值。 */
+:root {
+  /* 底色：从深到浅 */
+  --bg-side: #131417;
+  --bg: #17181b;
+  --bg-raised: #1c1d21;
+  --surface: #212327;
+  --surface-2: #2b2d33;
+  --surface-3: #3a3d44;
+  --me: #2f3238;
+  /* 线 */
+  --line: #2a2c31;
+  --line-2: #373a41;
+  --hair: rgba(255, 255, 255, .07);
+  --hair-2: rgba(255, 255, 255, .12);
+  /* 文字 */
+  --text: #ecedef;
+  --dim: #a0a4ad;
+  --faint: #858a94;
+  /* 状态 */
+  --accent: #f0a23b;
+  --on-accent: #1d1403;
+  --accent-soft: rgba(240, 162, 59, .13);
+  --wait: #7fb2f0;
+  --wait-soft: rgba(127, 178, 240, .13);
+  --ok: #62cc93;
+  --ok-bg: #1f3a2c;
+  --ok-soft: rgba(98, 204, 147, .12);
+  --bad: #f0776c;
+  --bad-soft: rgba(240, 119, 108, .13);
+  /* 文字尺寸 */
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs-base: 13px;
+  --fs-md: 14px;
+  --fs-xl: 18px;
+  --fs-2xl: 22px;
+  --font-body: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Noto Sans SC", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
+  --font-num: var(--font-mono);
+  /* 圆角 */
+  --r-sm: 6px;
+  --r-md: 8px;
+  --r-lg: 12px;
+  --r-xl: 14px;
+  /* 阴影：只给浮起的东西 */
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, .3);
+  --shadow-2: 0 8px 28px rgba(0, 0, 0, .38), 0 1px 2px rgba(0, 0, 0, .3);
+  /* 动效 */
+  --ease: cubic-bezier(.2, .8, .2, 1);
+  --t-fast: 120ms;
+  --t-base: 180ms;
+  --ring: 0 0 0 2px rgba(240, 162, 59, .5);
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font: var(--fs-md)/1.5 var(--font-body);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+::selection { background: rgba(240, 162, 59, .28); }
+button { font: inherit; color: inherit; }
+button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-visible { outline: none; box-shadow: var(--ring); }
+
+/* 细滚动条：不滚时几乎看不见 */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--hair-2); border-radius: 10px; border: 3px solid transparent; background-clip: content-box; }
+::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, .22); background-clip: content-box; border: 3px solid transparent; }
+
+@keyframes breathe { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}

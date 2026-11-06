@@ -145,7 +145,7 @@ if (typeof document !== "undefined") (function () {
         currentModels.codex_effort = effortOpts[effortOpts.length - 1].value;
       }
       var row2 = document.createElement("div");
-      row2.className = "model-row";
+      row2.className = "model-row effort";
       var lbl2 = document.createElement("span");
       lbl2.className = "model-lbl";
       lbl2.textContent = "思考强度";
@@ -167,6 +167,11 @@ if (typeof document !== "undefined") (function () {
       row2.appendChild(lbl2);
       row2.appendChild(sel2);
       box.appendChild(row2);
+    } else {
+      var none = document.createElement("span");
+      none.className = "na";
+      none.textContent = "—";
+      box.appendChild(none);
     }
   }
 
@@ -217,7 +222,7 @@ if (typeof document !== "undefined") (function () {
       var b = rows[r].querySelector(".check-one");
       b.hidden = !TeamCore.needsCheck(t, r);
       b.disabled = !!pending[r] || (r === "dispatcher" && !t.dispatcher);
-      b.textContent = pending[r] ? "检测中…" : "检测生效";
+      b.textContent = pending[r] ? "检测中…" : "检测";
       b.setAttribute("aria-label", ROLE[r] + (pending[r] ? "检测中" : "检测生效"));
     });
     $("save").textContent = configured ? "保存并返回对话" : "保存并开始";
@@ -227,17 +232,13 @@ if (typeof document !== "undefined") (function () {
     var bad = need.filter(function (r) { return results[r] && !results[r].ok; });
     var sum = $("summary");
     sum.className = "summary";
-    if (busy) sum.textContent = "正在检测，这一行出结果前先不能保存。";
-    else if (bad.length) { sum.className = "summary bad"; sum.textContent = bad.length + " 位没通，处理好后再点“检测生效”，或换一家 / 换个模型。"; }
-    else if (need.every(function (r) { return results[r] && results[r].ok; })) { sum.className = "summary ok"; sum.textContent = "全部通了，可以保存。"; }
-    else if (configured) sum.textContent = "改了谁就点谁后面的“检测生效”，也可以直接保存。";
-    else sum.textContent = "每个角色都测通才能保存。每次大约半分钟到一分钟，会用掉一点点额度。";
+    if (bad.length) { sum.className = "summary bad"; sum.textContent = bad.length + " 位没通，处理好后再点“检测”，或换一家 / 换个模型。"; }
+    else if (need.length && need.every(function (r) { return results[r] && results[r].ok; })) { sum.className = "summary ok"; sum.textContent = "全部通了"; }
+    else sum.textContent = "";
 
     $("sameWarn").hidden = !(installed && t.developer === t.reviewer);
-    var d = t.dispatcher;
-    $("dispNote").textContent = !d ? "调度员必须你亲手选。"
-      : d === "codex" ? "Codex 用聊天视图（一问一答、能看图）。"
-      : (d.indexOf("custom:") === 0 ? "自定义调度员用终端视图，检测只能查“装没装”。" : "先用终端视图（聊天视图目前只接了 Codex）。");
+    var d = t.dispatcher || "";
+    $("dispNote").textContent = d.indexOf("custom:") === 0 ? "自定义调度员检测只能查“装没装”。" : "";
   }
 
   // 改了选择：只清这几行的结果；还在路上的检测结果也不再要（它测的是改之前的选择）
@@ -318,7 +319,8 @@ if (typeof document !== "undefined") (function () {
   rows.dispatcher.querySelector(".custom").addEventListener("input", function () { invalidate(["dispatcher"]); });
 
   if (!project || !token) {
-    $("lead").textContent = "请从超级助手窗口打开团队配置。";
+    $("problem").hidden = false;
+    $("problem").textContent = "请从超级助手窗口打开团队配置。";
   } else {
     get("/api/team").then(function (d) {
       info = d;
@@ -334,6 +336,6 @@ if (typeof document !== "undefined") (function () {
       fill("reviewer", d.options.reviewer, d.team.reviewer);
       renderAllModelBoxes();
       reset();
-    }).catch(function (err) { $("lead").textContent = "读不到团队配置：" + err.message; });
+    }).catch(function (err) { $("problem").hidden = false; $("problem").textContent = "读不到团队配置：" + err.message; });
   }
 })();

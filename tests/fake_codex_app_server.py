@@ -177,7 +177,7 @@ def main():
         if method == "initialize":
             out({"id": rid, "result": {"userAgent": "fake-codex"}})
         elif method == "thread/list":
-            hits = [(tid, d) for tid, d in db["threads"].items() if d["cwd"] == params.get("cwd")]
+            hits = [(tid, d) for tid, d in db["threads"].items() if d["cwd"] == params.get("cwd") and d["turns"]]
             hits.sort(key=lambda x: x[1]["updated"], reverse=True)
             out({"id": rid, "result": {"data": [thread_obj(t, d, False) for t, d in hits[:params.get("limit") or 50]]}})
         elif method == "thread/start":
@@ -191,6 +191,9 @@ def main():
             out({"id": rid, "result": {"thread": thread_obj(tid, db["threads"][tid], True)}})
         elif method == "thread/resume":
             tid = params["threadId"]
+            if not (db["threads"].get(tid) or {}).get("turns"):  # 真实 Codex：第一句话之前不存档
+                out({"id": rid, "error": {"code": -32600, "message": f"no rollout found for thread id {tid}"}})
+                continue
             t = db["threads"][tid]
             if _pid_alive(t.get("writer_pid")):
                 out({"id": rid, "error": {"code": -32000, "message": f"thread {tid} already has an active writer"}})
@@ -199,6 +202,8 @@ def main():
                 held_threads.add(tid)
                 save(db)
                 out({"id": rid, "result": {"thread": thread_obj(tid, t, True)}})
+        elif method == "thread/read":
+            out({"id": rid, "result": {"thread": thread_obj(params["threadId"], db["threads"][params["threadId"]], True)}})
         elif method == "turn/start":
             turn_no += 1
             tid = params["threadId"]

@@ -163,7 +163,22 @@ var ChatCore = (function () {
     return "这次对话用量 " + (total >= 10000 ? (total / 10000).toFixed(1) + " 万" : total);
   }
 
-  return { esc: esc, md: md, Model: Model, actsSummary: actsSummary, usageText: usageText };
+  // 一段历史对话的记录直接变成画面（切换时先显示，不等连接）
+  Model.prototype.dropErrors = function () {
+    this.blocks = this.blocks.filter(function (b) { return !(b.kind === "note" && b.tone === "bad"); });
+  };
+
+  // 点左栏一段对话时要不要去连：换了对话，或这段上次没连上
+  function needsOpen(id, current, failed) { return id !== current || !!failed; }
+
+  function modelFrom(events) {
+    var m = new Model();
+    events.forEach(function (ev) { m.apply(ev); });
+    m.busy = false;
+    return m;
+  }
+
+  return { esc: esc, md: md, Model: Model, actsSummary: actsSummary, usageText: usageText, modelFrom: modelFrom, needsOpen: needsOpen };
 })();
 
 if (typeof module !== "undefined") module.exports = ChatCore;
@@ -178,7 +193,7 @@ if (typeof document !== "undefined") (function () {
   var $ = function (id) { return document.getElementById(id); };
   var list = $("msgs");
 
-  $("who").textContent = "调度员 " + (names[dispatcher] || dispatcher);
+  $("who").textContent = names[dispatcher] || dispatcher;
   $("whoFace").textContent = faces[dispatcher] || "调";
 
   function api(path, body) {
@@ -259,10 +274,15 @@ if (typeof document !== "undefined") (function () {
     while (drawn.length > model.blocks.length) {
       list.removeChild(drawn.pop());
     }
-    $("usage").textContent = ChatCore.usageText(model.usage);
-    $("status").textContent = model.status;
-    $("send").textContent = model.busy ? "停止" : "发送";
-    $("send").className = "btn " + (model.busy ? "stop" : "primary");
+    $("usage").textContent = ChatCore.usageText(model.usage).replace(/^这次对话用量\s*/, "");
+    var st = model.status || "";
+    var dot = $("connDot");
+    if (dot) {
+      dot.className = "conn-dot " + (st.indexOf("已连上") === 0 ? "ok" : (st.indexOf("未连上") === 0 ? "bad" : (st ? "wait" : "")));
+    }
+    $("status").textContent = st.indexOf("已连上") === 0 ? "" : st;
+    $("send").textContent = model.busy ? "停止" : "↑";
+    $("send").className = "btn send-btn " + (model.busy ? "stop" : "primary");
     if (nearBottom) list.scrollTop = list.scrollHeight;
   }
 
@@ -291,6 +311,7 @@ if (typeof document !== "undefined") (function () {
     if (model.busy) { api("/api/chat/stop").catch(function (err) { showError(err.message); }); return; }
     var box = $("input"), text = box.value.trim();
     if (!text) return;
+    if (pendingModel) { $("status").textContent = "正在同步，稍等一下再发送"; return; }  // 话留在输入框里
     box.value = ""; resize();
     api("/api/chat/send", { text: text }).catch(function (err) { box.value = text; showError(err.message); });
   });
@@ -301,6 +322,9 @@ if (typeof document !== "undefined") (function () {
   $("input").addEventListener("input", resize);
 
   var failures = 0, stopped = false, pendingModel = null, pollCtrl = null, pollTimer = null, gen = 0;
+  var threadCache = {}, currentThread = null;   // 读好的历史对话：点的时候直接显示
+  var connectFailed = false;                    // 当前这段没连上，再点一次要重连
+  var blankChat = false;                        // 新对话还没说话：Codex 还没存档，接不回来
 
   function pause() {
     stopped = true;
@@ -310,110 +334,66 @@ if (typeof document !== "undefined") (function () {
     $("offline").hidden = true;
   }
 
+  // 从终端或设置回来：和切换对话走同一条路，接着当前这段
   function resume() {
-    pause();
-    stopped = false;
-    failures = 0;
-    var myGen = ++gen;
-    if (model.blocks.length > 0) {
-      pendingModel = new ChatCore.Model();
-      model.status = "正在同步对话…";
-      $("status").textContent = model.status;
-    } else {
-      pendingModel = null;
-      model.status = "正在连接 " + (names[dispatcher] || dispatcher) + "…";
-      $("status").textContent = model.status;
-    }
-    api("/api/chat/open", { dispatcher: dispatcher, mode: "continue", opening: false })
-      .catch(function (err) { if (myGen === gen) { pendingModel = null; showError(err.message); } })
-      .then(function () { if (myGen === gen && !stopped) poll(myGen); });
-  }
-
-  function closeHistoryMenu() {
-    var menu = $("historyMenu"), btn = $("historyBtn");
-    if (menu) menu.hidden = true;
-    if (btn) btn.setAttribute("aria-expanded", "false");
+    if (blankChat) switchSession("fresh", false, null);
+    else switchSession("continue", false, currentThread);
   }
 
   function switchSession(mode, withOpening, threadId) {
     pause();
-    closeHistoryMenu();
     stopped = false;
     failures = 0;
-    pendingModel = null;
-    model = new ChatCore.Model();
+    if (connectFailed) model.dropErrors();
+    connectFailed = false;
+    blankChat = false;
+    if (currentThread && !pendingModel && model.blocks.length) threadCache[currentThread] = model;
+    var cached = threadId ? threadCache[threadId] : null;
+    currentThread = threadId || null;
     drawn = [];
     list.innerHTML = "";
-    model.status = "正在连接 " + (names[dispatcher] || dispatcher) + "…";
+    if (cached) {
+      // 先显示读好的内容，连接在后台进行，连上后静默换成最新的
+      model = cached;
+      model.busy = false;
+      model.status = "已连上 " + (names[dispatcher] || dispatcher);
+      pendingModel = new ChatCore.Model();
+    } else {
+      model = new ChatCore.Model();
+      model.status = "正在连接 " + (names[dispatcher] || dispatcher) + "…";
+      pendingModel = null;
+    }
     render();
+    list.scrollTop = list.scrollHeight;
     var myGen = ++gen;
     api("/api/chat/open", { dispatcher: dispatcher, mode: mode, opening: withOpening, thread_id: threadId || "" })
       .catch(function (err) { if (myGen === gen) showError(err.message); })
       .then(function () { if (myGen === gen && !stopped) poll(myGen); });
   }
 
-  function formatTime(sec) {
-    if (!sec) return "";
-    var d = new Date(sec * 1000), now = new Date();
-    var pad = function (n) { return n < 10 ? "0" + n : "" + n; };
-    var hm = pad(d.getHours()) + ":" + pad(d.getMinutes());
-    if (d.toDateString() === now.toDateString()) return "今天 " + hm;
-    return pad(d.getMonth() + 1) + "-" + pad(d.getDate()) + " " + hm;
-  }
-
-  if ($("newChatBtn")) {
-    $("newChatBtn").addEventListener("click", function () {
-      switchSession("fresh", true, null);
-    });
-  }
-
-  if ($("historyBtn")) {
-    $("historyBtn").addEventListener("click", function (e) {
-      e.stopPropagation();
-      var menu = $("historyMenu"), btn = $("historyBtn");
-      if (!menu.hidden) { closeHistoryMenu(); return; }
-      menu.hidden = false;
-      btn.setAttribute("aria-expanded", "true");
-      menu.innerHTML = "<div class=\"history-empty\">正在读取历史对话…</div>";
-      fetch("/api/chat/threads?" + new URLSearchParams({ project: project, token: token }).toString())
-        .then(function (r) { return r.json(); })
-        .then(function (d) {
-          var items = (d && d.threads) || [];
-          if (!items.length) {
-            menu.innerHTML = "<div class=\"history-empty\">还没有其他历史对话</div>";
-            return;
-          }
-          menu.innerHTML = items.map(function (it) {
-            var cur = it.current ? " current" : "";
-            var mark = it.current ? "✓ " : "";
-            return "<button type=\"button\" class=\"history-item" + cur + "\" data-thread=\"" + ChatCore.esc(it.id) +
-              "\" data-current=\"" + (it.current ? "1" : "0") + "\"><span class=\"h-title\">" + mark +
-              ChatCore.esc(it.title || "对话") + "</span><span class=\"h-time\">" +
-              ChatCore.esc(formatTime(it.updated)) + "</span></button>";
-          }).join("");
-        })
-        .catch(function () {
-          menu.innerHTML = "<div class=\"history-empty\">读取历史对话失败</div>";
-        });
-    });
-  }
-
-  if ($("historyMenu")) {
-    $("historyMenu").addEventListener("click", function (e) {
-      e.stopPropagation();
-      var item = e.target.closest("[data-thread]");
-      if (!item) return;
-      var tid = item.getAttribute("data-thread");
-      if (item.getAttribute("data-current") === "1") { closeHistoryMenu(); return; }
-      switchSession("continue", false, tid);
-    });
-  }
-
-  document.addEventListener("click", closeHistoryMenu);
-
-  window.SuperAgentChat = { pause: pause, resume: resume, startFresh: function () { switchSession("fresh", true, null); } };
+  window.SuperAgentChat = {
+    pause: pause, resume: resume,
+    isWorking: function () { return !stopped && !!(model.busy || (pendingModel && pendingModel.busy)); },
+    startFresh: function () { switchSession("fresh", true, null); },
+    openThread: function (id) { if (ChatCore.needsOpen(id, currentThread, connectFailed)) switchSession("continue", false, id); },
+  };
   window.addEventListener("pagehide", pause);
   window.addEventListener("beforeunload", pause);
+
+  // 连上之后，把最近几段对话的内容先读好
+  function prefetchThreads() {
+    var query = function (extra) { return new URLSearchParams(Object.assign({ project: project, token: token }, extra)).toString(); };
+    fetch("/api/chat/threads?" + query({})).then(function (r) { return r.json(); }).then(function (d) {
+      var wanted = (d.threads || []).filter(function (t) { return !t.current && !threadCache[t.id]; }).slice(0, 10);
+      return wanted.reduce(function (done, t) {
+        return done.then(function () {
+          return fetch("/api/chat/thread?" + query({ id: t.id })).then(function (r) { return r.json(); }).then(function (x) {
+            if (x.events && x.events.length && !threadCache[t.id]) threadCache[t.id] = ChatCore.modelFrom(x.events);
+          });
+        });
+      }, Promise.resolve());
+    }).catch(function () { /* 读不到就等点的时候再连 */ });
+  }
 
   function poll(myGen) {
     if (stopped || myGen !== gen) return;
@@ -427,6 +407,13 @@ if (typeof document !== "undefined") (function () {
         failures = 0; $("offline").hidden = true;
         if (d.error) throw new Error(d.error);
         d.events.forEach(function (ev) {
+          if (ev.type === "status" && ev.thread_id) {
+            currentThread = ev.thread_id;
+            blankChat = !(pendingModel || model).blocks.length;
+            setTimeout(prefetchThreads, 300);
+          }
+          if (ev.type === "user" || ev.type === "opening") blankChat = false;
+          if (ev.type === "status" && ev.text && ev.text.indexOf("未连上") === 0) connectFailed = true;
           if (!pendingModel) { model.apply(ev); return; }
           pendingModel.apply(ev);
           if (ev.type === "status" && ev.text && ev.text.indexOf("正在等") === 0) {
@@ -437,11 +424,13 @@ if (typeof document !== "undefined") (function () {
               drawn.forEach(function (el) { if (el) el.v = 0; });
             } else {
               model.status = pendingModel.status;
+              model.seq = pendingModel.seq;   // 接着新连接的编号取，不然旧事件会再来一遍
             }
             pendingModel = null;
           } else if (ev.type === "error") {
             model.status = pendingModel.status || ("未连上 " + (names[dispatcher] || dispatcher));
             model.apply({ type: "error", text: ev.text });
+            model.seq = pendingModel.seq;
             pendingModel = null;
           }
         });

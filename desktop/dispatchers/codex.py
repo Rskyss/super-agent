@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import threading
 import time
@@ -63,11 +64,15 @@ def _clean_title(text: str, limit: int = 42) -> str:
     return ""
 
 
+# Codex 自己附带的内容。下划线标签网页代码不用；带短横线的按真实记录逐个列，用户贴的 <el-button> 不能算进来
+_SYSTEM_TAG = re.compile(r"<[a-z]+(_[a-z]+)+[\s>]|<in-app-browser-context\b|<heartbeat\b|<image name=\[")
+
+
 def _is_real_user_text(txt: str, marker: str) -> bool:
     txt = (txt or "").strip()
-    if not txt or txt.startswith("<") or txt.startswith(marker):
+    if not txt or txt.startswith(marker) or _SYSTEM_TAG.match(txt):
         return False
-    if txt.startswith("# AGENTS.md") or "<INSTRUCTIONS>" in txt or txt.startswith("# Files pasted"):
+    if txt.startswith("# AGENTS.md instructions") or "<INSTRUCTIONS>" in txt or txt.startswith("# Files pasted"):
         return False
     return True
 
@@ -92,8 +97,15 @@ def _is_super_agent_thread(item: dict, marker: str, current_id: str = None) -> b
     return False
 
 
+NO_USER_WORDS = "新对话（刚接手项目）"  # 这段对话里用户一句话都没说过
+
+
 def _thread_title(item: dict, marker: str) -> str:
-    """给历史对话起一个用户一眼认得出的标题：优先取这段对话里用户最近说的一句话。"""
+    return _user_words(item, marker) or NO_USER_WORDS
+
+
+def _user_words(item: dict, marker: str) -> str:
+    """给历史对话起一个用户一眼认得出的标题：优先取这段对话里用户最近说的一句话。用户没说过话就返回空。"""
     rollout = item.get("path")
     if rollout and Path(rollout).is_file():
         last_user = ""
@@ -110,7 +122,7 @@ def _thread_title(item: dict, marker: str) -> str:
                     if pl.get("type") == "message" and pl.get("role") == "user":
                         txt = "\n".join(c.get("text", "") for c in (pl.get("content") or [])
                                         if isinstance(c, dict)).strip()
-                        if _is_real_user_text(txt, marker):
+                        if _is_real_user_text(txt, marker) and _clean_title(txt):
                             last_user = txt
         except OSError:
             pass
@@ -121,7 +133,7 @@ def _thread_title(item: dict, marker: str) -> str:
         for it in reversed(turn.get("items") or []):
             if it.get("type") == "userMessage":
                 txt = _user_text(it).strip()
-                if _is_real_user_text(txt, marker):
+                if _is_real_user_text(txt, marker) and _clean_title(txt):
                     return _clean_title(txt)
 
     preview = (item.get("preview") or "").strip()
@@ -130,7 +142,7 @@ def _thread_title(item: dict, marker: str) -> str:
     name = (item.get("name") or "").strip()
     if name and not name.startswith("AGENTS.md"):
         return _clean_title(name)
-    return "新对话（刚接手项目）"
+    return ""
 
 
 def item_events(item: dict, marker: str) -> list:
@@ -273,7 +285,7 @@ class CodexDispatcher:
                 if "already has an active writer" not in str(exc):
                     raise
                 if time.time() >= deadline:
-                    raise RuntimeError("这段对话正在别处打开（如终端或其他窗口），请先关掉那边再试") from exc
+                    raise RuntimeError("这段对话正在别处打开（如终端或其他窗口），请先关掉那边，再点一下左边这段对话重连") from exc
                 if not notified:
                     notified = True
                     self.emit({"type": "status", "text": "正在等对话让出来…"})
@@ -289,6 +301,8 @@ class CodexDispatcher:
                                      stderr=subprocess.DEVNULL, text=True, bufsize=1)
         threading.Thread(target=self._read_loop, daemon=True).start()
         try:
+            if self._closing:  # 启动途中就被取消了：close 当时还看不到这个进程，这里自己收掉
+                raise RuntimeError("连接已取消")
             self._request("initialize", {"clientInfo": {"name": "super-agent", "title": "超级助手", "version": "0.2"}})
             self._write({"method": "initialized"})
 
@@ -298,9 +312,12 @@ class CodexDispatcher:
             target_id = thread_id
             last_input = None
             if not target_id and resume:
-                found = self._request("thread/list", {"cwd": self.project, "limit": 1,
+                found = self._request("thread/list", {"cwd": self.project, "limit": 30,
                                                       "sortKey": "updated_at", "sortDirection": "desc"})
-                latest = (found.get("data") or [None])[0]
+                items = found.get("data") or []
+                # 接着用户真正聊过的那段；一段都没有才退回超级助手自己最新的，别的工具的对话不碰
+                ours = [item for item in items if _is_super_agent_thread(item, self.marker)]
+                latest = next((item for item in ours if _user_words(item, self.marker)), ours[0] if ours else None)
                 if latest:
                     target_id = latest["id"]
             if target_id:
@@ -323,6 +340,9 @@ class CodexDispatcher:
             self.close()
             raise
 
+    def _talked_in(self, item: dict) -> bool:
+        return _is_super_agent_thread(item, self.marker) and bool(_user_words(item, self.marker))
+
     def list_threads(self, limit: int = 30) -> list:
         """列出当前项目在超级助手里的历史对话（最近聊过的排最前，按 id 去重）。"""
         if self.proc is None or self.proc.poll() is not None:
@@ -338,14 +358,25 @@ class CodexDispatcher:
             seen.add(tid)
             if not _is_super_agent_thread(item, self.marker, self.thread_id):
                 continue
+            title = _user_words(item, self.marker)
+            if not title:
+                continue  # 用户没说过话的对话不进列表
             updated = item.get("updatedAt") or item.get("recencyAt") or item.get("createdAt") or 0
             result.append({
                 "id": tid,
-                "title": _thread_title(item, self.marker),
+                "title": title,
                 "updated": int(updated) if updated else 0,
                 "current": (tid == self.thread_id),
             })
         return result
+
+    def read_thread(self, thread_id: str) -> list:
+        """只读取一段历史对话的内容，不切过去。切换前先备好，点的时候就不用等连接。"""
+        if self.proc is None or self.proc.poll() is not None:
+            return []
+        thread = self._request("thread/read", {"threadId": thread_id, "includeTurns": True})["thread"]
+        return [dict(event, history=True) for turn in thread.get("turns") or [] for item in turn.get("items") or []
+                for event in item_events(item, self.marker)]
 
     def send(self, text: str, opening: bool = False) -> None:
         if self.busy:
