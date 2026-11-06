@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import time
 from datetime import datetime
@@ -104,6 +105,18 @@ _STEP_SUMMARY = {
     "返工修改": "测试没过，带着测试输出退回修改",
     "复查": "只读复查：对照需求检查改动",
 }
+
+_REVIEW_VERDICT = re.compile(r"结论[:：]\s*(不通过|通过)")
+
+
+def review_verdict(text: str) -> str:
+    """从复查员回复里读结论：pass / reject / unclear。"""
+    found = _REVIEW_VERDICT.findall(text or "")
+    if "不通过" in found:
+        return "reject"
+    if "通过" in found:
+        return "pass"
+    return "unclear"
 
 
 def _dispatch(ask_fn, cdir: Path, role: str, adapter: str, step: str, prompt: str,
@@ -258,8 +271,14 @@ def run_card(card: Card, collab_dir, worktree, test_command, dev_adapter, test_a
                                worktree, models, card.rework + 1)
             review_text = readable(review.output)
             _append(cdir / "复查结果.md", f"\n## 复查（{reviewer_adapter}）\n{review_text}\n")
-            if "结论：不通过" in review_text:
-                _escalate(collab, cdir, card, f"复查员（{reviewer_adapter}）复查不通过，需要调度员看原因")
+            verdict_kind = review_verdict(review_text)
+            if not review.ok or verdict_kind == "unclear":
+                _escalate(collab, cdir, card,
+                          f"复查员（{reviewer_adapter}）没有给出结论，不能算通过")
+                return card, verdict
+            if verdict_kind == "reject":
+                _escalate(collab, cdir, card,
+                          f"复查员（{reviewer_adapter}）复查不通过，需要调度员看原因")
                 return card, verdict
 
         if verdict.result == PASS:
