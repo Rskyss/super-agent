@@ -109,7 +109,10 @@ def render_board(collab_dir) -> None:
     collab = Path(collab_dir)
     rows = []
     for state_file in sorted((collab / "cards").glob("*/状态.json")):
-        card = Card.load(state_file)
+        try:
+            card = Card.load(state_file)
+        except (OSError, ValueError, TypeError, KeyError):
+            continue
         rework = f"返工 {card.rework}" if card.rework else "—"
         rows.append(f"| {card.card_id} | {card.state} | {rework} |")
     body = ["# 任务板", "", "| 卡片 | 状态 | 返工 |", "|---|---|---|"]

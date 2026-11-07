@@ -11,24 +11,28 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shlex
+import signal
 import sys
 from datetime import datetime
 from pathlib import Path
 
 from collab import vcs
 from collab.agents import ask as default_ask
+from collab.agents import kill_current_tool_process_group
 from collab.archive import archive_card
 from collab.install import InstallError, find_old_package, install_into, migrate
 from collab.config import ConfigError, load_models, run_tools
 from collab.dispatch import run_card
+from collab.merge import merge_card
+from collab.planner import plan_card
+from collab.flow import read_flow as flow_read
 from collab.flow import record as flow_record
 from collab.judge import judge as default_judge
 from collab.scope import read_allowed
 from collab.ledger import ledger_add
 from collab.state import Card
 from collab.usage import count_lines, find_latest_session, record_card_usage, usage_since
-from collab.watch import snapshot
+from collab.watch import TERMINAL_STATES, snapshot
 from collab.workspace import PLAN_TEMPLATE, has_blanks, init_collab, profile_path, render_board
 
 _DEV_ADAPTER = "cursor"
@@ -131,6 +135,10 @@ def cmd_approve(args, **_):
     return 0
 
 
+def cmd_plan(args, **_):
+    return plan_card(args.project, args.card_id)
+
+
 def cmd_status(args, **_):
     collab = _collab(args.project)
     render_board(collab)
@@ -155,6 +163,12 @@ def cmd_run(args, ask_fn=None, judge_fn=None, **_):
         return 1
     card = Card.load(state_path)
     resuming = card.state in ("开发中", "待测试", "测试中")
+    resume_blocked = getattr(args, "resume_blocked", False)
+    if card.state == "需Claude介入" and resume_blocked:
+        card.transition("开发中")
+        card.save(state_path)
+        render_board(_collab(args.project))
+        resuming = True
     if card.state != "待派发" and not resuming:
         print(f"{args.card_id} 当前状态是「{card.state}」，方案确认后（待派发）才能开工", file=sys.stderr)
         return 1
@@ -190,22 +204,47 @@ def cmd_run(args, ask_fn=None, judge_fn=None, **_):
     offset = count_lines(session) if session else 0
 
     reviewer = tools["review"]
-    run_summary = (f"接着上次中断处继续施工：测试员 {tools['test']}，开发员 {tools['dev']}，复查员 {reviewer or '不复查'}"
+    past_events = flow_read(_collab(args.project) / "cards" / args.card_id)
+    for_new_words = bool(past_events) and any(e.get("kind") == "追加要求" for e in past_events) and next(
+        e.get("kind") for e in reversed(past_events) if e.get("kind") in ("追加要求", "开跑")) == "追加要求"
+    resume_words = "按新要求继续施工" if for_new_words else "接着上次中断处继续施工"
+    run_summary = (f"{resume_words}：测试员 {tools['test']}，开发员 {tools['dev']}，复查员 {reviewer or '不复查'}"
                    if resuming else
                    f"开始施工：测试员 {tools['test']}，开发员 {tools['dev']}，复查员 {reviewer or '不复查'}")
+    main_pid = os.getpid()
+    from collab.phase import process_start
+    started_at = process_start(main_pid)
+    _stopping = {"done": False}
+
+    def _on_signal(signum, frame):
+        # 第一次收到结束信号后忽略后续，确保能走完收尾
+        if _stopping["done"]:
+            return
+        _stopping["done"] = True
+        kill_current_tool_process_group()
+        raise SystemExit(128 + signum)
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            signal.signal(sig, _on_signal)
+        except (OSError, ValueError):
+            pass
+
     flow_record(_collab(args.project) / "cards" / args.card_id, "开跑", src="调度员", dst="程序",
                 summary=run_summary,
                 tools={"测试员": tools["test"], "开发员": tools["dev"], "复查员": reviewer},
-                pid=os.getpid(),
+                pid=main_pid, started=started_at,
                 text=f"判定命令：{args.test_command}\n页面检查：{args.page_check or '无'}\n独立副本：{worktree}")
     card, verdict = run_card(
         card, collab_dir=_collab(args.project), worktree=str(worktree),
-        test_command=shlex.split(args.test_command),
+        test_command=["/bin/bash", "-o", "pipefail", "-c", args.test_command],
         dev_adapter=tools["dev"], test_adapter=tools["test"],
         ask_fn=ask_fn or default_ask, judge_fn=judge_fn or default_judge,
         models=load_models(args.project),
-        allowed=allowed, page_command=shlex.split(args.page_check) if args.page_check else None,
-        reviewer_adapter=reviewer,
+        allowed=allowed,
+        page_command=(["/bin/bash", "-o", "pipefail", "-c", args.page_check]
+                      if args.page_check else None),
+        reviewer_adapter=reviewer, require_tests=True,
     )
     if session:
         record_card_usage(_collab(args.project), args.card_id, usage_since(session, offset))
@@ -215,6 +254,15 @@ def cmd_run(args, ask_fn=None, judge_fn=None, **_):
     return 0 if card.state == "待验收" else 2
 
 
+def cmd_merge(args, **_):
+    result = merge_card(args.project, args.card_id)
+    if result.get("ok"):
+        print(f"{args.card_id} 已合并")
+        return 0
+    print(result.get("reason") or "合并没能完成", file=sys.stderr)
+    return 2
+
+
 def cmd_watch(args, **_):
     import time
     from datetime import datetime as _dt
@@ -222,7 +270,7 @@ def cmd_watch(args, **_):
         text = snapshot(args.project, args.card_id)
         print(f"--- {_dt.now():%H:%M:%S} ---\n{text}\n", flush=True)
         state = Card.load(_card_state_path(args.project, args.card_id)).state
-        if args.once or state in ("待验收", "已合并", "需Claude介入"):
+        if args.once or state in TERMINAL_STATES:
             return 0
         time.sleep(args.interval)
 
@@ -330,6 +378,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="测试员（写测试）；不写就用团队配置（默认 Codex）")
     p.add_argument("--review-tool", default=None, choices=["cursor", "codex", "agy", "none"],
                    help="独立复查（只读）；none 表示不复查；不写就用团队配置（默认 agy）")
+    p.add_argument("--resume-blocked", action="store_true",
+                   help="从「需Claude介入」转入「开发中」后继续（须与断点续跑一起用）")
     p.set_defaults(func=cmd_run)
 
     p = sub.add_parser("confirm-profile", help="确认项目说明（之后才能批准方案）")
@@ -340,6 +390,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("project")
     p.add_argument("card_id")
     p.set_defaults(func=cmd_approve)
+
+    p = sub.add_parser("plan", help="按需求卡写拆解方案（只读）")
+    p.add_argument("project")
+    p.add_argument("card_id")
+    p.set_defaults(func=cmd_plan)
+
+    p = sub.add_parser("merge", help="把待验收的卡片合并进当前分支")
+    p.add_argument("project")
+    p.add_argument("card_id")
+    p.set_defaults(func=cmd_merge)
 
     p = sub.add_parser("watch", help="实时查看某张卡的进度（每隔几秒刷新）")
     p.add_argument("project")

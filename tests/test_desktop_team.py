@@ -1,6 +1,7 @@
 """团队配置的本机地址与面板：读/存配置、后台检测逐个报结果、面板显示配置里的人。用假工具，不启动真的 AI。"""
 import json
 import os
+import shutil
 import stat
 import subprocess
 import tempfile
@@ -66,9 +67,17 @@ class TeamServerTest(unittest.TestCase):
         self.assertIsNone(data["team"]["dispatcher"])
         self.assertTrue(data["git"])
         self.assertEqual([o["value"] for o in data["options"]["dispatcher"]], ["codex", "cursor", "agy"])
+        self.assertIn("models", data)
+        self.assertIn("model_options", data)
         team = {"dispatcher": "agy", "tester": "codex", "developer": "cursor", "reviewer": "none"}
-        self.assertTrue(self._post("/api/team/save", {"project": str(self.project), "team": team})["ok"])
-        self.assertEqual(self._get("/api/team", project=str(self.project))["team"]["dispatcher"], "agy")
+        models = {"codex": "gpt-5.6-sol", "codex_effort": "high", "cursor": "gpt-5.6-sol-xhigh", "agy": "claude-opus-5-5-high"}
+        self.assertTrue(self._post("/api/team/save", {"project": str(self.project), "team": team, "models": models})["ok"])
+        after = self._get("/api/team", project=str(self.project))
+        self.assertEqual(after["team"]["dispatcher"], "agy")
+        self.assertEqual(after["models"]["codex"], "gpt-5.6-sol")
+        self.assertEqual(after["models"]["codex_effort"], "high")
+        self.assertEqual(after["models"]["cursor"], "gpt-5.6-sol-xhigh")
+        self.assertEqual(after["models"]["agy"], "claude-opus-5-5-high")
 
     def test_bad_choice_is_refused_in_plain_words(self):
         team = {"dispatcher": "claude", "tester": "codex", "developer": "cursor", "reviewer": "agy"}
@@ -77,20 +86,73 @@ class TeamServerTest(unittest.TestCase):
         self.assertEqual(ctx.exception.code, 400)
         self.assertIn("调度员", json.loads(ctx.exception.read())["error"])
 
-    def test_check_runs_in_background_and_reports_each_member(self):
-        team = {"dispatcher": "codex", "tester": "codex", "developer": "cursor", "reviewer": "agy"}
-        self.assertTrue(self._post("/api/team/check", {"project": str(self.project), "team": team})["ok"])
+    def _wait(self, run):
         end = time.time() + 20
         data = {}
         while time.time() < end:
-            data = self._get("/api/team/check", project=str(self.project))
+            data = self._get("/api/team/check", project=str(self.project), run=run)
             if data["done"]:
                 break
             time.sleep(0.2)
         self.assertTrue(data["done"])
-        roles = {r["role"]: r for r in data["results"]}
+        return {r["role"]: r for r in data["results"]}
+
+    def test_check_runs_in_background_and_reports_each_member(self):
+        team = {"dispatcher": "codex", "tester": "codex", "developer": "cursor", "reviewer": "agy"}
+        run = self._post("/api/team/check", {"project": str(self.project), "team": team})["run"]
+        roles = self._wait(run)
         self.assertEqual(set(roles), {"dispatcher", "tester", "developer", "reviewer"})
         self.assertTrue(all(r["ok"] for r in roles.values()))
+
+    def test_checking_one_member_leaves_the_others_alone(self):
+        team = {"dispatcher": "codex", "tester": "cursor", "developer": "agy", "reviewer": "none"}
+        run = self._post("/api/team/check", {"project": str(self.project), "team": team, "roles": ["tester"]})["run"]
+        self.assertEqual(set(self._wait(run)), {"tester"})
+
+    def test_a_member_can_be_checked_before_a_dispatcher_is_chosen(self):
+        team = {"dispatcher": "", "tester": "cursor", "developer": "agy", "reviewer": "agy"}
+        run = self._post("/api/team/check", {"project": str(self.project), "team": team, "roles": ["tester"]})["run"]
+        self.assertTrue(self._wait(run)["tester"]["ok"])
+
+    def test_same_tool_rows_share_one_check(self):
+        team = {"dispatcher": "codex", "tester": "codex", "developer": "agy", "reviewer": "agy"}
+        run = self._post("/api/team/check", {"project": str(self.project), "team": team,
+                                             "roles": ["developer", "reviewer"]})["run"]
+        roles = self._wait(run)
+        self.assertEqual(set(roles), {"developer", "reviewer"})
+        self.assertEqual(roles["reviewer"]["shared_with"], "developer")
+
+    def test_two_checks_at_once_keep_their_own_results(self):
+        slow = self.bin / "agy"
+        slow.write_text("#!/bin/sh\nsleep 1\nprintf OK > 连通检测.txt\n", encoding="utf-8")
+        team = {"dispatcher": "codex", "tester": "cursor", "developer": "agy", "reviewer": "none"}
+        first = self._post("/api/team/check", {"project": str(self.project), "team": team, "roles": ["developer"]})["run"]
+        second = self._post("/api/team/check", {"project": str(self.project), "team": team, "roles": ["tester"]})["run"]
+        self.assertNotEqual(first, second)
+        self.assertEqual(set(self._wait(second)), {"tester"})
+        self.assertEqual(set(self._wait(first)), {"developer"})
+
+    def test_unknown_check_reports_not_started(self):
+        data = self._get("/api/team/check", project=str(self.project), run="没有这一次")
+        self.assertFalse(data["started"])
+        self.assertTrue(data["done"])
+
+
+class TeamPageTest(unittest.TestCase):
+    static = Path(__file__).resolve().parent.parent / "desktop" / "static"
+
+    @unittest.skipUnless(shutil.which("node"), "这台电脑没有 node，跳过页面规则层检查")
+    def test_save_and_same_tool_rules(self):
+        script = Path(__file__).resolve().parent / "team_page_check.js"
+        proc = subprocess.run(["node", str(script)], capture_output=True, text=True, timeout=60)
+        self.assertEqual(proc.returncode, 0, proc.stderr or proc.stdout)
+        self.assertIn("OK", proc.stdout)
+
+    def test_every_role_has_its_own_button_and_the_shared_one_is_gone(self):
+        html = (self.static / "team.html").read_text(encoding="utf-8")
+        self.assertNotIn('id="check"', html)
+        self.assertEqual(html.count('class="check-one"'), 4)
+        self.assertEqual(html.count('class="member"'), 4)
 
 
 class PanelShowsTeamTest(unittest.TestCase):

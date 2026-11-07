@@ -4,32 +4,31 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>超级助手 · 对话</title>
+<link rel="stylesheet" href="/static/theme.css">
 <link rel="stylesheet" href="/static/chat.css">
 </head>
 <body>
 <main class="chat" aria-label="和调度员的对话">
   <header class="chat-head">
-    <span class="who"><span class="av" id="whoFace">调</span><span id="who">调度员</span></span>
-    <span class="status" id="status">正在连接…</span>
+    <div id="cardHead" hidden></div>
+    <div id="cardInfo" hidden></div>
+    <span class="who"><span class="av" id="whoFace">Cx</span><span id="who">Codex</span><span class="conn-dot" id="connDot"></span></span>
+    <span class="status" id="status"></span>
     <span class="grow"></span>
     <span class="usage" id="usage"></span>
-    <div class="head-actions">
-      <div class="history-wrap" id="historyWrap">
-        <button type="button" class="head-btn" id="historyBtn" aria-expanded="false" title="查看或切换之前的对话">历史对话 ▾</button>
-        <div class="history-menu" id="historyMenu" hidden></div>
-      </div>
-      <button type="button" class="head-btn new-btn" id="newChatBtn" title="开启一段新的对话">+ 新对话</button>
-    </div>
   </header>
 
   <div class="msgs" id="msgs" role="log" aria-live="polite"></div>
 
+  <div class="working" id="working" hidden><i></i>正在处理…</div>
+
   <div class="offline" id="offline" hidden>和数据服务断开了，正在重连…</div>
 
   <form class="composer" id="composer">
-    <textarea id="input" rows="1" placeholder="跟调度员说……" aria-label="给调度员的消息"></textarea>
-    <button class="btn primary" type="submit" id="send">发送</button>
-    <div class="hint">Enter 发送，Shift + Enter 换行 · 调度员干活时按钮变成“停止”</div>
+    <div class="composer-box">
+      <textarea id="input" rows="1" placeholder="跟调度员说…" aria-label="给调度员的消息"></textarea>
+      <button class="btn primary send-btn" type="submit" id="send" aria-label="发送">↑</button>
+    </div>
   </form>
 </main>
 <script src="/static/chat.js"></script>

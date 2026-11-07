@@ -44,13 +44,13 @@ def explain(output: str, tool: str):
     text = raw.lower()
     cmd = _command_of(tool)
     if raw.startswith("超时"):
-        return "超时：规定时间内没做完", "网络或工具可能卡住了，稍后点重试"
+        return "超时：规定时间内没做完", "网络或工具可能卡住了，稍后再检测一次"
     if raw.startswith("看门人"):
-        return "长时间没有任何动静，被停下了", "稍后点重试"
+        return "长时间没有任何动静，被停下了", "稍后再检测一次"
     if any(k in text for k in ("not logged", "log in", "login", "unauthorized", "authenticat", "sign in", "401")):
-        return "没登录", f"在终端里运行一次 {cmd}，按提示登录后点重试"
+        return "没登录", f"在终端里运行一次 {cmd}，按提示登录后再检测一次"
     if any(k in text for k in ("quota", "rate limit", "usage limit", "429", "insufficient", "out of credit")):
-        return "额度用完或被限流", "等额度恢复后点重试，或这个岗位换一家"
+        return "额度用完或被限流", "等额度恢复后再检测一次，或这个岗位换一家"
     if "model" in text and any(k in text for k in ("not found", "invalid", "unknown", "does not exist", "not supported")):
         return "模型名不对", "在项目的 .collab/配置.json 里改成这家支持的模型名"
     lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
@@ -82,11 +82,15 @@ def check_tool(tool: str, models: dict, timeout: float = DEFAULT_TIMEOUT) -> dic
     return {"ok": False, "status": "fail", "reason": reason, "how": how, "seconds": seconds}
 
 
-def check_team(project_dir, team=None, timeout: float = DEFAULT_TIMEOUT, on_result=None, roles=None) -> list:
+def check_team(project_dir, team=None, timeout: float = DEFAULT_TIMEOUT, on_result=None,
+               roles=None, models=None) -> list:
     """检测整个团队，按 调度员、写测试、写代码、复查 的顺序返回；每出一个结果就回调一次 on_result。
-    roles：只测这几个岗位（“重试”某一个人时用）。"""
+    roles：只测这几个岗位（点某一行的“检测生效”时用）。"""
     team = team or load_team(project_dir)
-    models = load_models(project_dir)
+    effective_models = load_models(project_dir)
+    if isinstance(models, dict):
+        effective_models.update({k: str(v).strip() for k, v in models.items() if k in effective_models and str(v).strip()})
+    models = effective_models
     lock = threading.Lock()
     results = {}
 

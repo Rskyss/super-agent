@@ -102,6 +102,8 @@ class RunUsesTeamTest(unittest.TestCase):
 
             def fake_ask(adapter, prompt, cwd, **kw):
                 calls.append(adapter)
+                if len(calls) == 1:  # 测试员要真的交出测试
+                    (Path(cwd) / "test_a.py").write_text("# 测试\n", encoding="utf-8")
                 return AgentResult(ok=True, output="结论：通过", attempts=1)
 
             code = cli("run", str(project), "CARD-001", "--test-command", "true",

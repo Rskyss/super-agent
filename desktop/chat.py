@@ -6,20 +6,31 @@
 """
 from __future__ import annotations
 
+import json
 import threading
 from datetime import datetime
 from pathlib import Path
 
+from collab.config import DEFAULT_MODELS, ConfigError, load_models
 from collab.flow import summarize
 from desktop.dispatchers.codex import CodexDispatcher
 from desktop.opening import opening
 
+THREAD_LIST_FILE = Path(".collab") / "对话列表.json"  # 打开软件先显示它，不等连接；只留在本机
 _NAMES = {"codex": "Codex", "claude": "Claude", "cursor": "Cursor", "agy": "agy"}
 
 
+def _codex_factory(project, emit, background, marker):
+    try:
+        models = load_models(project)
+    except ConfigError:
+        models = DEFAULT_MODELS
+    return CodexDispatcher(project, emit, background=background, marker=marker,
+                           model=models.get("codex"), effort=models.get("codex_effort"))
+
+
 def default_factories() -> dict:
-    return {"codex": lambda project, emit, background, marker: CodexDispatcher(
-        project, emit, background=background, marker=marker)}
+    return {"codex": _codex_factory}
 
 
 class ChatSession:
@@ -88,9 +99,13 @@ class ChatSession:
         with_opening=False：从终端视图切回来或切历史对话时用，不重复发开场交代。"""
         words = opening(self.project)
         name = _NAMES.get(self.dispatcher, self.dispatcher)
+        with self._cond:  # 和 close 互斥：要么这里看到已关，要么 close 能关到这条连接
+            if self.closed:
+                return
+            self.adapter = self._factory(self.project, self.emit, words["background"], words["marker"])
         self.emit({"type": "status", "text": f"正在连接 {name}…"})
-        self.adapter = self._factory(self.project, self.emit, words["background"], words["marker"])
-        task = "" if thread_id else ((words["first"] if words["first_time"] else words["every"]) if with_opening else "")
+        # 打开软件和新对话都不自动发话，等用户说第一句；第一次接入的项目例外，要先起草项目说明
+        task = words["first"] if with_opening and not thread_id and words["first_time"] else ""
 
         def run():
             try:
@@ -118,6 +133,16 @@ class ChatSession:
         except Exception:
             return []
 
+    def read_thread(self, thread_id: str) -> list:
+        """读取另一段历史对话的内容（不切过去），读不到就返回空。"""
+        if self.adapter is None or not hasattr(self.adapter, "read_thread"):
+            return []
+        try:
+            events = self.adapter.read_thread(thread_id)
+        except Exception:
+            return []
+        return [dict(event, seq=index) for index, event in enumerate(events, 1)]
+
     @property
     def usable(self) -> bool:
         """还能不能接着用：没关、没连败，且底层进程没掉线。"""
@@ -142,11 +167,12 @@ class ChatSession:
         self._need_adapter().interrupt()
 
     def close(self) -> None:
-        self.closed = True
-        if self.adapter is not None:
-            self.adapter.close()
         with self._cond:
+            self.closed = True
+            adapter = self.adapter
             self._cond.notify_all()
+        if adapter is not None:
+            adapter.close()
 
     def _need_adapter(self):
         if self.adapter is None or getattr(self.adapter, "thread_id", None) is None:
@@ -295,6 +321,29 @@ class ChatSession:
         }
 
 
+def _load_thread_list(path: Path) -> dict:
+    try:
+        saved = json.loads(path.read_text(encoding="utf-8"))
+        threads = saved["threads"]
+        if isinstance(threads, list) and all(isinstance(t, dict) for t in threads):
+            return {"threads": threads, "current": saved.get("current")}
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    return {"threads": [], "current": None}
+
+
+def _save_thread_list(path: Path, data: dict) -> None:
+    """项目还没有协作区就不存；内容没变也不写。存不了不影响使用。"""
+    text = json.dumps(data, ensure_ascii=False).encode("utf-8")
+    try:
+        if path.parent.is_dir() and (not path.exists() or path.read_bytes() != text):
+            spare = path.with_suffix(".tmp")
+            spare.write_bytes(text)
+            spare.replace(path)
+    except OSError:
+        pass
+
+
 class ChatHub:
     """管着当前的会话。一次只连一个项目。"""
 
@@ -314,12 +363,25 @@ class ChatHub:
             if s is not None and s.project == key and s.dispatcher == dispatcher and s.usable \
                     and mode != "fresh" and same_thread:
                 return s
-            if s is not None:
-                s.close()
+            old = s
             s = ChatSession(key, dispatcher, self.factories[dispatcher])
             self._session = s
+        if old is not None:  # 关旧连接要几秒，不能占着锁，否则连续点击会排队、顺序还会乱
+            old.close()
         s.open(mode, with_opening=with_opening, thread_id=thread_id)
         return s
+
+    def thread_list(self, project) -> dict:
+        """左栏的历史对话：连着调度员就取最新的并存一份；没连上就先给上次存的。"""
+        session = self.get(project)
+        current = getattr(getattr(session, "adapter", None), "thread_id", None)
+        path = Path(project) / THREAD_LIST_FILE
+        if current is not None:
+            threads = session.list_threads()
+            if threads:
+                _save_thread_list(path, {"threads": threads, "current": current})
+            return {"threads": threads, "current": current, "cached": False}
+        return dict(_load_thread_list(path), cached=True)
 
     def get(self, project):
         s = self._session

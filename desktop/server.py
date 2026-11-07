@@ -15,10 +15,12 @@ import argparse
 import hmac
 import json
 import os
+import re
 import socketserver
 import sys
 import threading
 import time
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
@@ -28,8 +30,34 @@ if str(ROOT) not in sys.path:  # 直接用 python3 desktop/server.py 启动时�
     sys.path.insert(0, str(ROOT))
 
 from collab.check import check_team  # noqa: E402
-from collab.config import DEFAULT_TEAM, ConfigError, load_team, save_team  # noqa: E402
+from collab.cli import cmd_approve, cmd_confirm_profile  # noqa: E402
+from collab.config import (  # noqa: E402
+    DEFAULT_MODELS,
+    DEFAULT_TEAM,
+    ConfigError,
+    load_clerk,
+    load_model_options,
+    load_models,
+    load_team,
+    save_clerk,
+    save_models,
+    save_team,
+)
+from collab.flow import read_flow, record as flow_record  # noqa: E402
+from collab.ledger import ledger_add  # noqa: E402
+from collab.merge import merge_unfinished, undo_interrupted  # noqa: E402
+from collab.phase import card_phase  # noqa: E402
+from collab.scope import read_allowed  # noqa: E402
+from collab.state import Card, InvalidTransition  # noqa: E402
+from collab.workspace import has_blanks, profile_path, render_board  # noqa: E402
 from desktop.chat import ChatHub  # noqa: E402
+from desktop.clerk.client import DEFAULT_BASE_URL, DEFAULT_MODEL, ModelClient, ModelError  # noqa: E402
+from desktop.clerk.desk import ClerkDesk  # noqa: E402
+from desktop.clerk.providers import PROVIDERS, find as find_provider  # noqa: E402
+from desktop.clerk.tasks import (  # noqa: E402
+    StopWrongCard, TaskBusy, TaskWatcher, apply_revise, launch, running, stop_construction,
+)
+from collab.tasks import TaskError  # noqa: E402
 from desktop.shell_path import adopt_terminal_path  # noqa: E402
 from desktop.view import card_view, event_text, list_cards  # noqa: E402
 
@@ -43,6 +71,7 @@ _TYPES = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8"
 _IMAGE_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif",
                 ".webp": "image/webp"}
 _MAX_BODY = 1024 * 1024  # 聊天消息最多 1MB，够用了
+_CARD_ID = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -61,6 +90,201 @@ class Handler(BaseHTTPRequestHandler):
 
     def _json(self, data, status: int = 200) -> None:
         self._send(status, json.dumps(data, ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8")
+
+    def _start_test_command(self, project: str, card_id: str) -> str:
+        start_path = Path(project) / ".collab" / "cards" / card_id / "开工.json"
+        if not start_path.is_file():
+            return ""
+        try:
+            return str(json.loads(start_path.read_text(encoding="utf-8")).get("test_command") or "")
+        except (OSError, ValueError, TypeError):
+            return ""
+
+    def _plan_payload(self, project: str, card_id: str) -> dict:
+        project_p = Path(project)
+        cdir = project_p / ".collab" / "cards" / card_id
+        plan_path = cdir / "方案.md"
+        plan_text = plan_path.read_text(encoding="utf-8") if plan_path.is_file() else ""
+        need = (cdir / "需求卡.md").read_text(encoding="utf-8") if (cdir / "需求卡.md").is_file() else ""
+        allowed = read_allowed(need) or []
+        start_path = cdir / "开工.json"
+        test_cmd = ""
+        if start_path.is_file():
+            try:
+                test_cmd = str(json.loads(start_path.read_text(encoding="utf-8")).get("test_command") or "")
+            except (OSError, ValueError, TypeError):
+                test_cmd = ""
+        new_profile = False
+        for ev in reversed(read_flow(cdir)):
+            if ev.get("kind") == "方案":
+                new_profile = bool(ev.get("new_profile"))
+                break
+        prof_file = profile_path(project)
+        profile_text = ""
+        if new_profile and prof_file.is_file():
+            profile_text = prof_file.read_text(encoding="utf-8")
+        return {
+            "plan": plan_text, "allowed": allowed, "test_command": test_cmd,
+            "new_profile": new_profile, "profile_text": profile_text,
+        }
+
+    def _card_action_error(self, text: str) -> None:
+        self._json({"error": text}, 409)
+
+    def _do_card_action(self, project: str, card_id: str, action: str, text: str = "") -> None:
+        phase = card_phase(project, card_id)
+        actions = phase.get("actions") or []
+        cdir = Path(project) / ".collab" / "cards" / card_id
+        state_path = cdir / "状态.json"
+        if not state_path.is_file():
+            self._card_action_error("找不到这张卡片。")
+            return
+        card = Card.load(state_path)
+
+        if action == "accept":
+            if running(project, "merge") is not None:
+                self._card_action_error("另一张卡正在合并，等它结束再试")
+                return
+            if action not in actions:
+                self._card_action_error("现在不能做这个操作，请先看我说的阶段。")
+                return
+            try:
+                launch(project, "merge", card_id, ["merge", project, card_id])
+            except (TaskBusy, OSError):
+                self._card_action_error("另一张卡正在合并，等它结束再试")
+                return
+            self._json({"ok": True})
+            return
+
+        if action == "revise":
+            try:
+                apply_revise(project, card_id, text)
+            except RuntimeError as exc:
+                self._card_action_error(str(exc))
+                return
+            self._json({"ok": True})
+            return
+
+        if action not in actions:
+            self._card_action_error("现在不能做这个操作，请先看我说的阶段。")
+            return
+
+        if action == "discard":
+            try:
+                told = undo_interrupted(project, card_id)
+                card.transition("已放弃")
+            except InvalidTransition:
+                self._card_action_error("这张卡现在不能标记为先不做。")
+                return
+            except RuntimeError as exc:
+                self._card_action_error(str(exc))
+                return
+            card.save(state_path)
+            flow_record(cdir, "放弃", src="你", dst="程序", summary=("先不做。" + told) if told else "先不做")
+            render_board(Path(project) / ".collab")
+            ledger_add(project, f"{card_id}：标记为先不做")
+            self._json({"ok": True})
+            return
+
+        if action == "replan":
+            busy = running(project, "plan")
+            if busy is not None and str(busy.get("card") or "") != card_id:
+                self._card_action_error("另一张卡的方案正在写，等它写完再重写")
+                return
+            try:
+                launch(project, "plan", card_id, ["plan", project, card_id])
+            except TaskBusy:
+                self._card_action_error("另一张卡的方案正在写，等它写完再重写")
+                return
+            self._json({"ok": True})
+            return
+
+        if action == "approve":
+            if running(project, "merge") is not None or merge_unfinished(project):
+                self._card_action_error("另一张卡的合并还没结束，等它结束再开工")
+                return
+            run_busy = running(project, "run")
+            if run_busy is not None and str(run_busy.get("card") or "") != card_id:
+                self._card_action_error("已有一张卡在施工，等它做完再开工")
+                return
+            prof = profile_path(project)
+            if not prof.is_file():
+                self._card_action_error("还没有项目说明：请先在文档里写好「项目说明」。")
+                return
+            settings_path = Path(project) / ".collab" / "配置.json"
+            settings = {}
+            if settings_path.is_file():
+                try:
+                    settings = json.loads(settings_path.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    settings = {}
+            phase_data = self._plan_payload(project, card_id)
+            need_confirm = bool(phase_data["new_profile"] or not settings.get("project_profile_confirmed"))
+            if need_confirm:
+                body = prof.read_text(encoding="utf-8")
+                if has_blanks(body):
+                    self._card_action_error("项目说明里还有空白：请先补全再在协作区里确认。")
+                    return
+                ns = argparse.Namespace(project=project)
+                if cmd_confirm_profile(ns) != 0:
+                    self._card_action_error("项目说明还不能确认：请先按提示补全。")
+                    return
+            test_cmd = self._start_test_command(project, card_id).strip()
+            if not test_cmd:
+                self._card_action_error("还没有施工用的测试命令：请先写好方案。")
+                return
+            ns2 = argparse.Namespace(project=project, card_id=card_id)
+            code = cmd_approve(ns2)
+            if code != 0:
+                self._card_action_error("方案里还有空白：请先在卡片里补全。")
+                return
+            try:
+                launch(project, "run", card_id, ["run", project, card_id, "--test-command", test_cmd])
+            except TaskBusy:
+                flow_record(cdir, "开工失败", src="程序", dst="你", summary="已有一张卡在施工，等它做完再开工")
+                self._card_action_error("已有一张卡在施工，等它做完再开工")
+                return
+            except OSError as exc:
+                flow_record(cdir, "开工失败", src="程序", dst="你",
+                            summary="开工没能启动起来", text=str(exc))
+                self._card_action_error("开工没能启动起来，可以点接着跑再试，或者先不做了")
+                return
+            self._json({"ok": True})
+            return
+
+        if action == "resume":
+            test_cmd = self._start_test_command(project, card_id).strip()
+            if not test_cmd:
+                self._card_action_error("还没有施工用的测试命令：请先写好方案。")
+                return
+            run_args = ["run", project, card_id, "--test-command", test_cmd]
+            if phase.get("code") == "blocked":
+                run_args.append("--resume-blocked")
+            try:
+                launch(project, "run", card_id, run_args)
+            except TaskBusy:
+                flow_record(cdir, "开工失败", src="程序", dst="你", summary="已有一张卡在施工，等它做完再开工")
+                self._card_action_error("已有一张卡在施工，等它做完再开工")
+                return
+            except OSError as exc:
+                flow_record(cdir, "开工失败", src="程序", dst="你",
+                            summary="开工没能启动起来", text=str(exc))
+                self._card_action_error("开工没能启动起来，可以点接着跑再试，或者先不做了")
+                return
+            self._json({"ok": True})
+            return
+
+        if action == "stop":
+            try:
+                stop_construction(project, card_id)
+            except StopWrongCard as exc:
+                self._card_action_error(str(exc))
+                return
+            flow_record(cdir, "停下", src="你", dst="程序", summary="施工已停下")
+            self._json({"ok": True})
+            return
+
+        self._card_action_error("看不懂这个操作。")
 
     def _static(self, rel: str) -> None:
         target = (STATIC / rel).resolve()
@@ -85,6 +309,15 @@ class Handler(BaseHTTPRequestHandler):
                                      chat_session=session))
             elif url.path == "/api/cards":
                 self._json(list_cards(project) if project and Path(project).is_dir() else [])
+            elif url.path == "/api/plan":
+                card_id = query.get("card", "")
+                if not project or not Path(project).is_dir() or not card_id:
+                    self._json({"error": "需要项目和卡片"}, 400)
+                    return
+                if not _CARD_ID.fullmatch(card_id):
+                    self._json({"error": "卡片编号不对"}, 400)
+                    return
+                self._json(self._plan_payload(project, card_id))
             elif url.path == "/api/text":
                 session = getattr(self.server, "hub", None) and self.server.hub.get(project)
                 text = event_text(project, query.get("card", ""), int(query.get("seq", "0") or 0),
@@ -100,6 +333,9 @@ class Handler(BaseHTTPRequestHandler):
             elif url.path.startswith("/api/chat/"):
                 if self._chat_allowed(query):
                     self._chat_get(url.path, query)
+            elif url.path.startswith("/api/clerk/"):
+                if self._chat_allowed(query):
+                    self._clerk_get(url.path, query)
             elif url.path.startswith("/api/team"):
                 if self._chat_allowed(query):
                     self._team_get(url.path, query)
@@ -130,9 +366,9 @@ class Handler(BaseHTTPRequestHandler):
             events = session.events_since(int(query.get("since", "0") or 0), timeout=wait)
             self._json({"events": events, "open": True, "busy": session.busy})
         elif path == "/api/chat/threads":
-            threads = session.list_threads() if session is not None else []
-            current = getattr(getattr(session, "adapter", None), "thread_id", None) if session is not None else None
-            self._json({"threads": threads, "current": current})
+            self._json(hub.thread_list(query.get("project", "")))
+        elif path == "/api/chat/thread":
+            self._json({"events": session.read_thread(query.get("id", "")) if session is not None else []})
         elif path == "/api/chat/image":
             target = query.get("path", "")
             suffix = Path(target).suffix.lower()
@@ -154,14 +390,16 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/team":
             try:
                 team = load_team(project)
+                models = load_models(project)
             except ConfigError as exc:
-                team, problem = dict(DEFAULT_TEAM, dispatcher=None, configured=False), str(exc)
+                team, models, problem = dict(DEFAULT_TEAM, dispatcher=None, configured=False), dict(DEFAULT_MODELS), str(exc)
             else:
                 problem = ""
-            self._json({"team": team, "problem": problem, "git": (Path(project) / ".git").exists(),
-                        "installed": (Path(project) / ".collab").is_dir(), "options": _TEAM_OPTIONS})
+            self._json({"team": team, "models": models, "problem": problem, "git": (Path(project) / ".git").exists(),
+                        "installed": (Path(project) / ".collab" / "cards").is_dir(), "options": _TEAM_OPTIONS,
+                        "model_options": load_model_options()})
         elif path == "/api/team/check":
-            state = self.server.checks.get(str(Path(project).resolve()))
+            state = self.server.checks.get((str(Path(project).resolve()), query.get("run", "")))
             if state is None:
                 self._json({"results": [], "done": True, "started": False})
                 return
@@ -176,20 +414,23 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"error": "项目文件夹不存在"}, 400)
             return
         if path == "/api/team/save":
-            if not (Path(project) / ".collab").is_dir():
+            if not (Path(project) / ".collab" / "cards").is_dir():
                 self._json({"error": "这个文件夹还没接入超级助手（不是 git 项目），不能保存执行员"}, 409)
                 return
             try:
                 save_team(project, body.get("team") or {})
+                if body.get("models") is not None:
+                    save_models(project, body.get("models") or {})
             except ConfigError as exc:
                 self._json({"error": str(exc)}, 400)
                 return
             self._json({"ok": True})
         elif path == "/api/team/check":
             team = body.get("team") or {}
-            key = str(Path(project).resolve())
+            models = body.get("models")
+            run_id = uuid.uuid4().hex  # 每次检测各记各的：几个岗位同时测，互不覆盖
             state = {"results": [], "done": False, "lock": threading.Lock()}
-            self.server.checks[key] = state
+            self.server.checks[(str(Path(project).resolve()), run_id)] = state
 
             def collect(item):
                 with state["lock"]:
@@ -197,19 +438,151 @@ class Handler(BaseHTTPRequestHandler):
 
             def run():
                 try:
-                    check_team(project, team=team, on_result=collect, roles=body.get("roles"))
+                    check_team(project, team=team, on_result=collect, roles=body.get("roles"), models=models)
                 finally:
                     with state["lock"]:
                         state["done"] = True
 
             threading.Thread(target=run, daemon=True).start()
+            self._json({"ok": True, "run": run_id})
+        else:
+            self._json({"error": "没有这个地址"}, 404)
+
+    def _clerk_get(self, path: str, query: dict) -> None:
+        desk, project = self.server.desk, query.get("project", "")
+        if path == "/api/clerk/list":
+            if project and Path(project).is_dir():
+                self.server.watcher.ensure_watching(project)
+            self._json(desk.list(project))
+        elif path == "/api/clerk/events":
+            wait = min(float(query.get("wait", "20") or 20), 25)
+            self._json(desk.events(project, query.get("conversation", ""), int(query.get("since", "0") or 0), wait))
+        elif path == "/api/clerk/providers":
+            self._json({"providers": PROVIDERS})
+        elif path == "/api/clerk/setting":
+            project = query.get("project", "")
+            if not project:
+                self._json({"error": "需要项目"}, 400)
+                return
+            try:
+                self._json({"setting": load_clerk(project)})
+            except ConfigError as exc:
+                self._json({"error": str(exc)}, 400)
+        else:
+            self._json({"error": "没有这个地址"}, 404)
+
+    def _pin_clerk_setting(self, project: str) -> None:
+        """第一次说话时固定这个项目用的服务商：之后别的项目换了，它也不跟着变。"""
+        pending = getattr(self.server, "clerk_setting", None)
+        try:
+            if pending and self.server.clerk is not None and load_clerk(project) is None:
+                save_clerk(project, pending)
+        except (ConfigError, OSError):
+            pass  # 固定不了也不耽误说话
+
+    def _clerk_post(self, path: str, body: dict) -> None:
+        """窗口把行政人员的密钥交给本机服务：只放内存，不写文件，也不回传。"""
+        desk, project, conversation = self.server.desk, str(body.get("project") or ""), str(body.get("conversation") or "")
+        if path in ("/api/clerk/send", "/api/clerk/stop", "/api/clerk/focus"):
+            if not project or not Path(project).is_dir():
+                self._json({"error": "项目文件夹不存在"}, 400)
+                return
+            bound = getattr(self.server, "clerk_project", "") or ""
+            if path == "/api/clerk/send" and bound and bound != project:
+                self._json({"error": "这句话属于另一个项目，不能发给当前项目的行政。请先回到那个项目，或到设置里重新配置。"}, 409)
+                return
+            try:
+                if path == "/api/clerk/send":
+                    self._pin_clerk_setting(project)
+                    self._json({"ok": True, "conversation": desk.send(project, conversation, str(body.get("text") or ""))})
+                    return
+                (desk.stop if path == "/api/clerk/stop" else desk.focus)(project, conversation)
+                self._json({"ok": True})
+            except RuntimeError as exc:
+                self._json({"error": str(exc)}, 409)
+            return
+        if path == "/api/clerk/proposal":
+            if not project or not Path(project).is_dir():
+                self._json({"error": "项目文件夹不存在"}, 400)
+                return
+            try:
+                answer = desk.decide_proposal(project, conversation, str(body.get("id") or ""),
+                                             str(body.get("decision") or ""))
+                self._json({"ok": True, "card": answer.get("card") or "", "state": answer.get("state")})
+            except LookupError as exc:
+                self._json({"error": str(exc)}, 404)
+            except (RuntimeError, TaskError) as exc:
+                self._json({"error": str(exc)}, 409)
+            return
+        if path == "/api/clerk/card/open":
+            card_id = str(body.get("card") or "").strip()
+            if not project or not Path(project).is_dir() or not card_id:
+                self._json({"error": "需要项目和卡片"}, 400)
+                return
+            if not _CARD_ID.fullmatch(card_id):
+                self._json({"error": "卡片编号不对"}, 400)
+                return
+            try:
+                self._json(self.server.desk.open_card(project, card_id))
+            except LookupError as exc:
+                self._json({"error": str(exc)}, 404)
+            return
+        if path == "/api/clerk/card":
+            card_id = str(body.get("card") or "").strip()
+            action = str(body.get("action") or "").strip()
+            if not project or not Path(project).is_dir() or not card_id or not action:
+                self._json({"error": "需要项目、卡片和操作"}, 400)
+                return
+            if not _CARD_ID.fullmatch(card_id):
+                self._json({"error": "卡片编号不对"}, 400)
+                return
+            extra = str(body.get("text") or "")
+            if action == "revise" and not extra.strip():
+                self._json({"error": "请写上要改什么"}, 400)
+                return
+            self._do_card_action(project, card_id, action, extra)
+            return
+        if path == "/api/clerk/setting":
+            if not project or not Path(project).is_dir():
+                self._json({"error": "项目文件夹不存在"}, 400)
+                return
+            try:
+                save_clerk(project, body)
+                self._json({"ok": True, "setting": load_clerk(project)})
+            except ConfigError as exc:
+                self._json({"error": str(exc)}, 400)
+            return
+        if path == "/api/clerk/clear":
+            self.server.clerk = None
+            self.server.clerk_project = ""
+            self.server.clerk_setting = None
+            self._json({"ok": True})
+            return
+        provider = str(body.get("provider") or "").strip()
+        if provider == "other" and not str(body.get("base_url") or "").strip():
+            self._json({"error": "地址不对，要以 http:// 或 https:// 开头"}, 400)  # 不能落到默认地址：密钥会发给别家
+            return
+        item = find_provider(provider) if provider else None
+        thinking_off = True if item is None else bool(item.get("thinking_off", True))
+        client = ModelClient(str(body.get("base_url") or DEFAULT_BASE_URL), str(body.get("model") or DEFAULT_MODEL),
+                             str(body.get("api_key") or ""), timeout=30, thinking_off=thinking_off)
+        if path == "/api/clerk/test":
+            try:
+                client.chat([{"role": "user", "content": "只回答：好"}])
+                self._json({"ok": True})
+            except ModelError as exc:
+                self._json({"ok": False, "error": str(exc)})
+        elif path == "/api/clerk/config":
+            self.server.clerk = client
+            self.server.clerk_project = project
+            self.server.clerk_setting = {"provider": provider, "base_url": str(body.get("base_url") or ""), "model": str(body.get("model") or "")} if provider else None
             self._json({"ok": True})
         else:
             self._json({"error": "没有这个地址"}, 404)
 
     def do_POST(self):  # noqa: N802
         url = urlparse(self.path)
-        if not (url.path.startswith("/api/chat/") or url.path.startswith("/api/team/")):
+        if not url.path.startswith(("/api/chat/", "/api/team/", "/api/clerk/")):
             self._json({"error": "没有这个地址"}, 404)
             return
         if not self._chat_allowed():  # 没口令：已经回了 403
@@ -225,6 +598,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if url.path.startswith("/api/team/"):
             self._team_post(url.path, body)
+            return
+        if url.path.startswith("/api/clerk/"):
+            self._clerk_post(url.path, body)
             return
         hub, project = self.server.hub, body.get("project", "")
         try:
@@ -280,7 +656,12 @@ def make_server(port: int = 0, token=None, hub=None) -> ThreadingHTTPServer:
     server = LocalServer(("127.0.0.1", port), Handler)
     server.token = token          # 聊天口令；没有就不开放聊天
     server.hub = hub if hub is not None else ChatHub()
-    server.checks = {}            # 项目 -> 这次检测连通的进度
+    server.clerk = None           # 行政人员的模型连接，密钥只在内存里
+    server.clerk_project = ""     # 这份连接属于哪个项目；空表示不拦（旧测试直接设 clerk）
+    server.clerk_setting = None   # 这份连接用的服务商和模型，不含密钥
+    server.desk = ClerkDesk(lambda: server.clerk)
+    server.watcher = TaskWatcher(server.desk)
+    server.checks = {}            # (项目, 第几次检测) -> 这次检测连通的进度
     return server
 
 

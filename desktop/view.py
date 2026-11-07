@@ -13,11 +13,12 @@ from pathlib import Path
 
 from collab.config import ConfigError, load_team
 from collab.flow import read_flow, summarize, text_of, working_now
+from collab.phase import card_phase, process_is_alive
 from collab.judge import PASS
 from collab.state import Card
 
 QUIET_WARN_SECONDS = 10 * 60  # 超过 10 分钟没有任何动静，提示可能卡住
-TERMINAL_STATES = {"待验收", "已合并", "需Claude介入"}
+TERMINAL_STATES = {"待验收", "已合并", "需Claude介入", "已放弃"}
 
 TOOL_NAMES = {"claude": "Claude", "codex": "Codex", "cursor": "Cursor", "agy": "agy"}
 TOOL_FACES = {"claude": "Cl", "codex": "Cx", "cursor": "Cu", "agy": "ag"}
@@ -50,18 +51,6 @@ def _when(event):
 
 
 _INTERNAL_HEADINGS = ("务必先看", "执行员", "不要调用", "注意事项", "重要提示")
-
-
-def _pid_alive(pid) -> bool:
-    if not pid:
-        return True
-    try:
-        os.kill(int(pid), 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except (PermissionError, ValueError, TypeError):
-        return True
 
 
 def _title(cdir: Path, card_id: str) -> str:
@@ -98,13 +87,17 @@ def _updated(cdir: Path) -> float:
 
 
 def list_cards(project_dir) -> list:
-    """项目里所有卡片，最近有动静的排在最前。"""
+    """项目里所有卡片，最近有动静的排在最前。读不出来的卡直接跳过。"""
     project = Path(project_dir)
     cards = []
     for card_id, cdir in _card_dirs(project).items():
-        card = Card.load(cdir / "状态.json")
+        try:
+            card = Card.load(cdir / "状态.json")
+            phase = card_phase(str(project), card_id)
+        except (OSError, ValueError, TypeError, KeyError):
+            continue
         cards.append({"id": card_id, "title": _title(cdir, card_id), "state": card.state,
-                      "rework": card.rework, "updated": _updated(cdir)})
+                      "rework": card.rework, "updated": _updated(cdir), "phase": phase})
     cards.sort(key=lambda c: (c["updated"], c["id"]), reverse=True)
     return cards
 
@@ -320,12 +313,14 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
     base["cards"] = cards
     dirs = _card_dirs(project)
     explicit_card = card_id
+    if explicit_card in dirs:
+        chat = None   # 用户点开的是这张卡：只看它自己的记录，主对话正在聊什么和它无关
     if card_id is None and cards:
         card_id = cards[0]["id"]
     if card_id not in dirs:
         if chat:
             return _chat_view(base, chat, tools, team_reviewer_on, dispatcher)
-        base["now"] = {"text": "等你在左边提需求", "tone": "idle"}
+        base["now"] = {"text": "等你提需求", "tone": "idle"}
         return base
     if explicit_card is None and chat and cards and cards[0]["state"] == "已合并" \
             and (chat["busy"] or chat["asking"] or chat["updated"] > cards[0]["updated"]):
@@ -344,8 +339,9 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
         if e.get("kind") == "派活" and e.get("dst") in tools and e.get("tool"):
             tools[e["dst"]] = e["tool"]
     stations = _stations(tools, reviewer_on, dispatcher)
+    phase = card_phase(str(project), card_id)
     view = dict(base, card={"id": card_id, "title": _title(cdir, card_id), "state": state,
-                            "rework": card.rework, "round": rnd},
+                            "rework": card.rework, "round": rnd, "phase": phase},
                 stations=stations, handoffs=_handoffs(events))
 
     if not events:
@@ -365,11 +361,13 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
     requirement = next((e for e in events if e.get("kind") == "需求"), None)
 
     runs = [e for e in events if e.get("kind") == "开跑"]
-    last_run_pid = runs[-1].get("pid") if runs else None
+    last_run = runs[-1] if runs else None
+    last_run_pid = last_run.get("pid") if last_run else None
+    last_run_started = last_run.get("started") if last_run else None
     interrupted_run = bool(
         state in ("开发中", "待测试", "测试中")
         and last_run_pid is not None
-        and not _pid_alive(last_run_pid)
+        and not process_is_alive(last_run_pid, last_run_started)
     )
     disp_busy_after = bool(chat and (chat["busy"] or chat["asking"]) and state == "待验收")
 
@@ -381,6 +379,8 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
     if chat and (chat["busy"] or chat["asking"]) and state in ("待对齐", "待派发", "待验收"):
         _set(stations, "disp", "wait" if chat["asking"] else "active", chat["step_text"],
              live=bool(chat["busy"]), elapsed=chat["elapsed"], quiet=chat["quiet"])
+    elif phase.get("code") == "plan_ready":
+        _set(stations, "disp", "wait", "方案写好了，等你批准")
     else:
         _set(stations, "disp", *disp.get(state, ("done", "派活后盯进度，有人卡住会叫你")))
 
@@ -477,5 +477,16 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
     if open_ev and quiet is not None and quiet > QUIET_WARN_SECONDS and state not in TERMINAL_STATES:
         view["stale"] = True
         now_text, tone = now_text + "（超过 10 分钟没动静，可能卡住）", "warn"
+    # 这些阶段顶部一句话跟阶段标签一致；放弃/中断不论还有没有未完成的派活都跟阶段走
+    code = phase.get("code")
+    chat_live = bool(chat and (chat.get("busy") or chat.get("asking")))
+    tone_map = {"wait": "wait", "run": "run", "bad": "bad", "ok": "ok", "done": "idle"}
+    if code in ("dropped", "interrupted", "merging", "merge_failed"):
+        now_text = phase.get("label") or now_text
+        tone = tone_map.get(phase.get("tone"), tone)
+    elif (code in ("plan_failed", "plan_waiting", "planning", "start_failed")
+            and not chat_live and not open_ev and not testing):
+        now_text = phase.get("label") or now_text
+        tone = tone_map.get(phase.get("tone"), tone)
     view["now"] = {"text": now_text, "tone": tone}
     return view

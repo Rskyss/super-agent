@@ -10,14 +10,15 @@ from pathlib import Path
 MAX_REWORK = 3
 
 _TRANSITIONS = {
-    "待对齐": {"待派发"},
-    "待派发": {"开发中"},
-    "开发中": {"待测试", "需Claude介入"},
-    "待测试": {"测试中"},
-    "测试中": {"待验收", "开发中", "需Claude介入"},
-    "待验收": {"已合并", "需Claude介入"},
-    "需Claude介入": {"开发中", "已合并"},
+    "待对齐": {"待派发", "已放弃"},
+    "待派发": {"开发中", "已放弃"},
+    "开发中": {"待测试", "需Claude介入", "已放弃"},
+    "待测试": {"测试中", "已放弃"},
+    "测试中": {"待验收", "开发中", "需Claude介入", "已放弃"},
+    "待验收": {"已合并", "开发中", "需Claude介入", "已放弃"},
+    "需Claude介入": {"开发中", "已合并", "已放弃"},
     "已合并": set(),
+    "已放弃": set(),
 }
 
 
@@ -48,9 +49,12 @@ class Card:
     def save(self, path: Path) -> None:
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(
+        payload = json.dumps(
             {"card_id": self.card_id, "state": self.state, "rework": self.rework},
-            ensure_ascii=False, indent=2), encoding="utf-8")
+            ensure_ascii=False, indent=2)
+        spare = path.with_suffix(path.suffix + ".tmp")
+        spare.write_text(payload, encoding="utf-8")
+        spare.replace(path)
 
     @classmethod
     def load(cls, path: Path) -> "Card":

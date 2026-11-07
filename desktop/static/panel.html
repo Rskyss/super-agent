@@ -4,28 +4,32 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>超级助手 · 流转</title>
+<link rel="stylesheet" href="/static/theme.css">
 <link rel="stylesheet" href="/static/panel.css">
 </head>
 <body>
-<main class="side" aria-label="流转面板">
-  <header class="side-head">
-    <div class="project" id="project">—</div>
-    <h1 id="title">正在读取…</h1>
-    <div class="clock"><div class="big" id="elapsed">0:00</div><div class="small" id="round"></div></div>
-    <div class="now" id="now" role="status" aria-live="polite"></div>
-  </header>
-
-  <nav class="tabs" role="tablist" aria-label="面板">
+<main class="side" id="side" aria-label="卡片详情">
+  <div class="actions" id="actions" hidden>
+    <div class="phase-hint" id="phaseHint"></div>
+    <div class="action-btns" id="actionBtns"></div>
+    <div id="reviseBox" hidden>
+      <textarea id="reviseText" rows="3" placeholder="还要改什么"></textarea>
+      <button type="button" id="reviseSend">提交修改</button>
+    </div>
+  </div>
+  <section class="plan-preview" id="planSection" hidden>
+    <div class="plan-block"><h2 class="plan-h">方案</h2><pre id="planText"></pre></div>
+    <div class="plan-block"><h2 class="plan-h">允许改动的文件</h2><pre id="planAllowed"></pre></div>
+    <div class="plan-block"><h2 class="plan-h">测试命令</h2><pre id="planTest"></pre></div>
+    <div class="plan-block" id="profileBlock" hidden><h2 class="plan-h">项目说明（草稿）</h2><pre id="planProfile"></pre></div>
+  </section>
+  <nav class="seg" role="tablist" aria-label="卡片内容">
     <button class="tab" role="tab" id="tab-flow" aria-selected="true" aria-controls="pane-flow" type="button">流程</button>
     <button class="tab" role="tab" id="tab-log" aria-selected="false" aria-controls="pane-log" type="button">交接<span class="n" id="count">0</span></button>
-    <button class="tab" role="tab" id="tab-cards" aria-selected="false" aria-controls="pane-cards" type="button">卡片<span class="n" id="cardCount">0</span></button>
   </nav>
 
   <section class="pane" id="pane-flow" role="tabpanel" aria-labelledby="tab-flow">
-    <div class="vflow" id="vflow">
-      <div class="vline"></div><div class="vlit" id="vlit"></div><div class="vback" id="vback"></div><div class="vtoken" id="vtoken"></div>
-    </div>
-    <p class="foot" id="flowFoot">点头像，看这个人的全部交接。</p>
+    <ol class="steps" id="steps"></ol>
   </section>
 
   <section class="pane" id="pane-log" role="tabpanel" aria-labelledby="tab-log" hidden>
@@ -33,10 +37,7 @@
     <ol class="list" id="list"></ol>
   </section>
 
-  <section class="pane" id="pane-cards" role="tabpanel" aria-labelledby="tab-cards" hidden>
-    <div class="cards" id="cards"></div>
-  </section>
-
+  <div class="blank" id="blank" hidden></div>
   <div class="offline" id="offline" hidden>和数据服务断开了，正在重连…</div>
 </main>
 <script src="/static/panel.js"></script>

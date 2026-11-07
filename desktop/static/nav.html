@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>超级助手 · 左栏</title>
+<link rel="stylesheet" href="/static/theme.css">
+<link rel="stylesheet" href="/static/nav.css">
+</head>
+<body>
+<aside class="nav" aria-label="主对话和卡片">
+  <div class="tabs" role="tablist" aria-label="左栏内容">
+    <button class="tabbtn" id="tabMain" type="button" role="tab" aria-selected="true" aria-controls="paneMain">
+      <span>主对话</span><i class="dot run" id="busy" hidden></i>
+    </button>
+    <button class="tabbtn" id="tabCards" type="button" role="tab" aria-selected="false" aria-controls="paneCards" tabindex="-1">
+      <span>等待处理</span><span class="count" id="needCount" hidden></span>
+    </button>
+  </div>
+  <div class="search">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="M20 20l-3.5-3.5"></path></svg>
+    <input id="q" type="search" placeholder="搜索对话" aria-label="搜索对话" autocomplete="off">
+  </div>
+  <div class="scroll" id="scroll">
+    <div id="paneMain" role="tabpanel" aria-labelledby="tabMain">
+      <button class="newchat" id="newChat" type="button">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg>
+        <span>新对话</span>
+      </button>
+      <div id="threads"></div>
+    </div>
+    <div id="paneCards" role="tabpanel" aria-labelledby="tabCards" hidden><div id="cards"></div></div>
+  </div>
+  <footer class="foot">
+    <span class="proj" id="proj"></span>
+    <button class="gear" id="gear" type="button" aria-label="设置">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.9 2.9l-.1-.1a1.7 1.7 0 0 0-2.8 1.2V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-2.9-1.2l-.1.1a2 2 0 1 1-2.8-2.9l.1-.1a1.7 1.7 0 0 0-1.2-2.8H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.2-2.9l-.1-.1a2 2 0 1 1 2.9-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 2.9 1.2l.1-.1a2 2 0 1 1 2.8 2.9l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"></path></svg>
+    </button>
+  </footer>
+</aside>
+<script src="/static/nav.js"></script>
+</body>
+</html>

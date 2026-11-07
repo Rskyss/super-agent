@@ -42,7 +42,7 @@ class ViewTest(unittest.TestCase):
     def _start(self, cdir):
         record(cdir, "需求", src="你", dst="调度员", summary="粘贴链接后显示处理进度")
         record(cdir, "批准", src="你", dst="调度员", summary="批准方案，可以开工")
-        record(cdir, "开跑", src="调度员", dst="程序", summary="开始施工",
+        record(cdir, "开跑", src="调度员", dst="程序", summary="开始施工", pid=os.getpid(),
                tools={"测试员": "codex", "开发员": "cursor", "复查员": "agy"})
 
     def test_tester_at_work(self):
@@ -168,7 +168,7 @@ class ViewTest(unittest.TestCase):
         view = card_view(self.project)
         self.assertIsNone(view["card"])
         # 标题已经写着“还没有需求卡”，这一行说下一步该做什么
-        self.assertEqual(view["now"]["text"], "等你在左边提需求")
+        self.assertEqual(view["now"]["text"], "等你提需求")
 
     def test_project_without_super_agent(self):
         bare = Path(self.tmp.name) / "没装的项目"
@@ -203,6 +203,34 @@ class ViewTest(unittest.TestCase):
         list_cards(self.project)
         after = {p: p.stat().st_mtime for p in self.project.rglob("*") if p.is_file()}
         self.assertEqual(before, after)
+
+    def test_a_chosen_card_ignores_what_the_dispatcher_is_doing_now(self):
+        """主对话正在聊别的事，不能把调度员的动作画到一张选中的旧卡上。"""
+        from desktop.chat import ChatSession
+
+        class DummyDispatcher:
+            name = "Codex"
+            thread_id = "t1"
+            busy = True
+            def start(self, opening, resume=False): pass
+            def send(self, text): pass
+            def answer(self, ask_id, decision): pass
+            def interrupt(self): pass
+            def close(self): pass
+
+        cdir = self.project / ".collab" / "cards" / "CARD-009"
+        cdir.mkdir(parents=True)
+        (cdir / "状态.json").write_text('{"card_id": "CARD-009", "state": "待验收", "rework": 0}', encoding="utf-8")
+        (cdir / "需求卡.md").write_text("# 旧卡\n", encoding="utf-8")
+        session = ChatSession(self.project, "codex", lambda p, emit, bg, m: DummyDispatcher())
+        session.adapter = DummyDispatcher()
+        session.emit({"type": "user", "text": "随便聊聊"})
+        session.emit({"type": "activity", "kind": "command", "label": "运行 ls", "status": "started", "detail": "ls"})
+
+        view = card_view(self.project, "CARD-009", dispatcher="codex", chat_session=session)
+        self.assertEqual(view["card"]["id"], "CARD-009")
+        self.assertEqual(_station(view, "disp")["state"], "done")
+        self.assertNotIn("调度员", view["now"]["text"])
 
     def test_live_dispatcher_session_drives_panel_without_cards(self):
         from desktop.chat import ChatSession
@@ -328,8 +356,7 @@ class ViewTest(unittest.TestCase):
         self.assertEqual(_station(view, "dev")["state"], "wait")
         self.assertFalse(_station(view, "dev")["live"])
         self.assertIn("中断", _station(view, "dev")["detail"])
-        self.assertEqual(view["now"]["tone"], "warn")
-        self.assertIn("上次施工已中断", view["now"]["text"])
+        self.assertEqual(view["now"], {"text": "中断了", "tone": "bad"})
 
 
 class ServerTest(unittest.TestCase):

@@ -31,5 +31,11 @@ def judge(command, cwd, timeout) -> Verdict:
         out = (exc.stdout or "") if isinstance(exc.stdout, str) else ""
         return Verdict(TIMEOUT, None, out[-_OUTPUT_LIMIT:])
     output = (proc.stdout or "") + (proc.stderr or "")
-    result = PASS if proc.returncode == 0 else FAIL
+    if proc.returncode == 0:
+        result = PASS
+    elif proc.returncode in (126, 127):
+        # 126 不能执行、127 找不到命令：都算环境错误，不是开发员的错
+        result = ENV_ERROR
+    else:
+        result = FAIL
     return Verdict(result, proc.returncode, output[-_OUTPUT_LIMIT:])

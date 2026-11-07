@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 from collab.agents import codex_command, cursor_command, agy_command, ask
-from collab.config import DEFAULT_MODELS, ConfigError, load_models
+from collab.config import DEFAULT_MODELS, MODEL_OPTIONS, ConfigError, load_model_options, load_models, save_models
 
 
 class LoadModelsTest(unittest.TestCase):
@@ -20,6 +20,41 @@ class LoadModelsTest(unittest.TestCase):
             models = load_models(tmp)
             self.assertEqual(models["codex"], "gpt-x")
             self.assertEqual(models["cursor"], DEFAULT_MODELS["cursor"])  # 其余保持默认
+
+    def test_save_models_writes_and_validates(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            collab = Path(tmp) / ".collab"
+            collab.mkdir()
+            save_models(tmp, {"codex": "gpt-6-astra", "codex_effort": "ultra",
+                              "cursor": "claude-opus-5-thinking-high", "agy": "claude-opus-5-5-high"})
+            models = load_models(tmp)
+            self.assertEqual(models["codex"], "gpt-6-astra")
+            self.assertEqual(models["codex_effort"], "ultra")
+            self.assertEqual(models["cursor"], "claude-opus-5-thinking-high")
+            self.assertEqual(models["agy"], "claude-opus-5-5-high")
+            self.assertTrue(all(k in MODEL_OPTIONS for k in ("codex", "codex_effort", "cursor", "agy")))
+            with self.assertRaises(ConfigError):
+                save_models(tmp, {"codex_effort": "not-an-effort"})
+            with self.assertRaises(ConfigError):
+                save_models(tmp, {"cursor": "   "})
+
+    def test_load_model_options_reads_local_codex_cache(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            (home / ".codex").mkdir()
+            cache = {
+                "models": [
+                    {"slug": "gpt-7-pro", "display_name": "GPT-7 Pro", "visibility": "list",
+                     "supported_reasoning_levels": [{"effort": "medium"}, {"effort": "ultra"}]},
+                    {"slug": "hidden-model", "display_name": "Hidden", "visibility": "hide",
+                     "supported_reasoning_levels": [{"effort": "low"}]},
+                ]
+            }
+            (home / ".codex" / "models_cache.json").write_text(json.dumps(cache), encoding="utf-8")
+            opts = load_model_options(home)
+            self.assertEqual([m["value"] for m in opts["codex"]], ["gpt-7-pro"])
+            self.assertEqual(opts["codex"][0]["efforts"], ["medium", "ultra"])
+            self.assertEqual([e["value"] for e in opts["codex_effort"]], ["medium", "ultra"])
 
     def test_invalid_json_gives_clear_error(self):
         with tempfile.TemporaryDirectory() as tmp:

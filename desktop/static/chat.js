@@ -119,6 +119,23 @@ var ChatCore = (function () {
           if (b.kind === "ask" && b.id === ev.id) { b.state = ev.decision; this._touch(b); break; }
         }
         break;
+      case "proposal":
+        this._push({
+          kind: "proposal", id: ev.id, proposalKind: ev.kind || "task",
+          title: ev.title || "", do: ev.do || "", not_do: ev.not_do || "", done_when: ev.done_when || "",
+          role: ev.role || "", tool: ev.tool || "", before: ev.before != null ? ev.before : "",
+          profile: ev.profile || "", text: ev.text || "",
+          state: ev.state || "open", card: ev.card || "",
+        });
+        break;
+      case "proposal_done":
+        for (i = this.blocks.length - 1; i >= 0; i--) {
+          var pb = this.blocks[i];
+          if (pb.kind === "proposal" && pb.id === ev.id) {
+            pb.state = ev.state; pb.card = ev.card || ""; this._touch(pb); break;
+          }
+        }
+        break;
       case "turn_started": this.busy = true; break;
       case "turn_done":
         this.busy = false;
@@ -163,7 +180,40 @@ var ChatCore = (function () {
     return "这次对话用量 " + (total >= 10000 ? (total / 10000).toFixed(1) + " 万" : total);
   }
 
-  return { esc: esc, md: md, Model: Model, actsSummary: actsSummary, usageText: usageText };
+  // 一段历史对话的记录直接变成画面（切换时先显示，不等连接）
+  // 在干活但还没有文字往外出时显示“正在处理”；等用户确认时不显示
+  Model.prototype.showWorking = function () {
+    if (!this.busy) return false;
+    var last = this.blocks[this.blocks.length - 1];
+    if (last && last.kind === "ask" && last.state === "open") return false;
+    var part = last && last.kind === "ai" ? last.parts[last.parts.length - 1] : null;
+    return !(part && part.type === "text" && !part.done);
+  };
+
+  Model.prototype.dropErrors = function () {
+    this.blocks = this.blocks.filter(function (b) { return !(b.kind === "note" && b.tone === "bad"); });
+  };
+
+  // 点左栏一段对话时要不要去连：换了对话，或这段上次没连上
+  function needsOpen(id, current, failed) { return id !== current || !!failed; }
+
+  function cardInfoRows(info) {
+    var rows = [];
+    if (!info) return rows;
+    if (info.do) rows.push({ label: "要做什么", text: info.do });
+    if (info.not_do) rows.push({ label: "不做什么", text: info.not_do });
+    if (info.done_when) rows.push({ label: "怎么算做完", text: info.done_when });
+    return rows;
+  }
+
+  function modelFrom(events) {
+    var m = new Model();
+    events.forEach(function (ev) { m.apply(ev); });
+    m.busy = false;
+    return m;
+  }
+
+  return { esc: esc, md: md, Model: Model, actsSummary: actsSummary, usageText: usageText, modelFrom: modelFrom, needsOpen: needsOpen, cardInfoRows: cardInfoRows };
 })();
 
 if (typeof module !== "undefined") module.exports = ChatCore;
@@ -174,11 +224,12 @@ if (typeof document !== "undefined") (function () {
   var params = new URLSearchParams(location.search);
   var project = params.get("project") || "", dispatcher = params.get("dispatcher") || "", token = params.get("token") || "";
   var names = { codex: "Codex", claude: "Claude" }, faces = { codex: "Cx", claude: "Cl" };
+  var clerkMode = params.get("clerk") === "1";   // 聊天找行政人员：走 API，不连 Codex
   var model = new ChatCore.Model(), drawn = [];
   var $ = function (id) { return document.getElementById(id); };
   var list = $("msgs");
 
-  $("who").textContent = "调度员 " + (names[dispatcher] || dispatcher);
+  $("who").textContent = names[dispatcher] || dispatcher;
   $("whoFace").textContent = faces[dispatcher] || "调";
 
   function api(path, body) {
@@ -232,6 +283,81 @@ if (typeof document !== "undefined") (function () {
       if (b.command) el.querySelector("code").textContent = b.command;
       if (b.reason) el.querySelector("p").textContent = "理由：" + b.reason;
       el.setAttribute("data-ask", b.id);
+    } else if (b.kind === "proposal") {
+      function propRoleLabel(role) {
+        return ({ dispatcher: "调度员", tester: "写测试", developer: "写代码", reviewer: "复查" })[role] || role;
+      }
+      function propToolLabel(tool) {
+        if (!tool && tool !== "") return "";
+        if (String(tool).indexOf("custom:") === 0) return "自定义命令";
+        return ({ codex: "Codex", cursor: "Cursor", agy: "agy", none: "不复查" })[tool] || tool;
+      }
+      var isTeam = b.proposalKind === "team", isProfile = b.proposalKind === "profile";
+      var isRevise = b.proposalKind === "revise";
+      var isRevise = b.proposalKind === "revise";
+      var result = isRevise ? {
+        confirmed: "已确认，开始修改。",
+        cancelled: "好的，先不改。",
+        replaced: "已换成新的说法",
+      } : isProfile ? {
+        confirmed: "项目说明已保存。",
+        cancelled: "好的，先不保存。",
+        replaced: "已换成新的提议",
+      } : isTeam ? {
+        confirmed: "团队设置已更新。",
+        cancelled: "好的，先不改团队设置。",
+        replaced: "已换成新的提议",
+      } : {
+        confirmed: b.card ? ("已生成卡片 " + b.card) : "已确认",
+        cancelled: "好的，先不做。",
+        replaced: "已换成新的提议",
+      };
+      result = result[b.state];
+      el.className = "ask proposal" + (b.state === "open" ? "" : (b.state === "cancelled" ? " no" : " done"));
+      if (b.state === "open") {
+        el.innerHTML = "<h3></h3><div class=\"rows\"></div>" +
+          "<div class=\"btns\"><button class=\"btn primary\" data-prop=\"confirm\">确认</button>" +
+          "<button class=\"btn\" data-prop=\"cancel\">先不做</button></div>";
+        if (isRevise) {
+          el.querySelector("h3").textContent = "还要修改？";
+          var note = document.createElement("p");
+          note.textContent = b.text || "";
+          el.querySelector(".rows").appendChild(note);
+        } else if (isProfile) {
+          el.querySelector("h3").textContent = "保存项目说明？";
+          var draft = document.createElement("div");
+          draft.innerHTML = "<span>内容</span><p></p>";
+          draft.querySelector("p").textContent = b.profile;
+          draft.querySelector("p").style.whiteSpace = "pre-wrap";
+          el.querySelector(".rows").appendChild(draft);
+        } else if (isTeam) {
+          el.querySelector("h3").textContent = "改团队设置？";
+          var row = document.createElement("div");
+          var beforeT = b.before === "" || b.before == null ? "还没选" : propToolLabel(b.before);
+          row.innerHTML = "<span></span><p></p>";
+          row.querySelector("span").textContent = propRoleLabel(b.role);
+          row.querySelector("p").textContent = beforeT + " → " + propToolLabel(b.tool);
+          el.querySelector(".rows").appendChild(row);
+        } else {
+          el.querySelector("h3").textContent = "变成任务？";
+          el.querySelector(".rows").innerHTML =
+            "<div><span>要做什么</span><p></p></div>" +
+            "<div><span>不做什么</span><p></p></div>" +
+            "<div><span>怎么算做完</span><p></p></div>";
+          var ps = el.querySelectorAll(".rows p");
+          ps[0].textContent = b.do; ps[1].textContent = b.not_do; ps[2].textContent = b.done_when;
+          if (b.title) {
+            var title = document.createElement("p");
+            title.className = "prop-title";
+            title.textContent = b.title;
+            el.querySelector("h3").after(title);
+          }
+        }
+      } else {
+        el.innerHTML = "<h3></h3>";
+        el.querySelector("h3").textContent = result || b.state;
+      }
+      el.setAttribute("data-proposal", b.id);
     } else if (b.kind === "note") {
       el.className = "note " + (b.tone || "");
       el.textContent = b.text;
@@ -259,10 +385,16 @@ if (typeof document !== "undefined") (function () {
     while (drawn.length > model.blocks.length) {
       list.removeChild(drawn.pop());
     }
-    $("usage").textContent = ChatCore.usageText(model.usage);
-    $("status").textContent = model.status;
-    $("send").textContent = model.busy ? "停止" : "发送";
-    $("send").className = "btn " + (model.busy ? "stop" : "primary");
+    $("usage").textContent = ChatCore.usageText(model.usage).replace(/^这次对话用量\s*/, "");
+    var st = model.status || "";
+    var dot = $("connDot");
+    if (dot) {
+      dot.className = "conn-dot " + (st.indexOf("已连上") === 0 ? "ok" : (st.indexOf("未连上") === 0 ? "bad" : (st ? "wait" : "")));
+    }
+    $("status").textContent = st.indexOf("已连上") === 0 ? "" : st;
+    $("working").hidden = !model.showWorking();
+    $("send").textContent = model.busy ? "停止" : "↑";
+    $("send").className = "btn send-btn " + (model.busy ? "stop" : "primary");
     if (nearBottom) list.scrollTop = list.scrollHeight;
   }
 
@@ -281,6 +413,19 @@ if (typeof document !== "undefined") (function () {
       card.querySelectorAll("button").forEach(function (b) { b.disabled = true; });
       api("/api/chat/answer", { id: card.getAttribute("data-ask"), decision: ans.getAttribute("data-ans") })
         .catch(function (err) { showError(err.message); card.querySelectorAll("button").forEach(function (b) { b.disabled = false; }); });
+      return;
+    }
+    var prop = t.closest("[data-prop]");
+    if (prop) {
+      var box = prop.closest("[data-proposal]");
+      box.querySelectorAll("button").forEach(function (b) { b.disabled = true; });
+      api("/api/clerk/proposal", {
+        conversation: currentThread || "", id: box.getAttribute("data-proposal"),
+        decision: prop.getAttribute("data-prop"),
+      }).catch(function (err) {
+        showError(err.message);
+        box.querySelectorAll("button").forEach(function (b) { b.disabled = false; });
+      });
     }
   });
 
@@ -288,10 +433,15 @@ if (typeof document !== "undefined") (function () {
 
   $("composer").addEventListener("submit", function (e) {
     e.preventDefault();
-    if (model.busy) { api("/api/chat/stop").catch(function (err) { showError(err.message); }); return; }
+    if (model.busy) {
+      api(clerkMode ? "/api/clerk/stop" : "/api/chat/stop", { conversation: currentThread }).catch(function (err) { showError(err.message); });
+      return;
+    }
     var box = $("input"), text = box.value.trim();
     if (!text) return;
+    if (pendingModel) { $("status").textContent = "正在同步，稍等一下再发送"; return; }  // 话留在输入框里
     box.value = ""; resize();
+    if (clerkMode) { clerkSend(text); return; }
     api("/api/chat/send", { text: text }).catch(function (err) { box.value = text; showError(err.message); });
   });
   $("input").addEventListener("keydown", function (e) {
@@ -301,6 +451,11 @@ if (typeof document !== "undefined") (function () {
   $("input").addEventListener("input", resize);
 
   var failures = 0, stopped = false, pendingModel = null, pollCtrl = null, pollTimer = null, gen = 0;
+  var threadCache = {}, currentThread = null;   // 读好的历史对话：点的时候直接显示
+  var connectFailed = false;                    // 当前这段没连上，再点一次要重连
+  var blankChat = false;                        // 新对话还没说话：Codex 还没存档，接不回来
+  var viewingCard = false, mainThread = null;   // 正在看任务对话；回去时接着这段主对话
+  var clerkPlaceholder = "跟行政说…";
 
   function pause() {
     stopped = true;
@@ -310,116 +465,158 @@ if (typeof document !== "undefined") (function () {
     $("offline").hidden = true;
   }
 
-  function resume() {
+  // 行政对话：内容都在本机，切换马上显示，不用连接
+  function clerkOpen(id) {
     pause();
     stopped = false;
     failures = 0;
-    var myGen = ++gen;
-    if (model.blocks.length > 0) {
-      pendingModel = new ChatCore.Model();
-      model.status = "正在同步对话…";
-      $("status").textContent = model.status;
-    } else {
-      pendingModel = null;
-      model.status = "正在连接 " + (names[dispatcher] || dispatcher) + "…";
-      $("status").textContent = model.status;
-    }
-    api("/api/chat/open", { dispatcher: dispatcher, mode: "continue", opening: false })
-      .catch(function (err) { if (myGen === gen) { pendingModel = null; showError(err.message); } })
-      .then(function () { if (myGen === gen && !stopped) poll(myGen); });
-  }
-
-  function closeHistoryMenu() {
-    var menu = $("historyMenu"), btn = $("historyBtn");
-    if (menu) menu.hidden = true;
-    if (btn) btn.setAttribute("aria-expanded", "false");
-  }
-
-  function switchSession(mode, withOpening, threadId) {
-    pause();
-    closeHistoryMenu();
-    stopped = false;
-    failures = 0;
+    if ((id || null) !== currentThread) $("input").value = "";   // 草稿不带到别的对话
+    currentThread = id || null;
+    if (!viewingCard) mainThread = currentThread;
     pendingModel = null;
     model = new ChatCore.Model();
     drawn = [];
     list.innerHTML = "";
-    model.status = "正在连接 " + (names[dispatcher] || dispatcher) + "…";
     render();
+    api("/api/clerk/focus", { conversation: id || "" }).catch(function () { /* 只影响左栏选中 */ });
+    if (id) { var myGen = ++gen; poll(myGen); }
+  }
+
+  function clerkSend(text) {
+    var fromBlank = !currentThread, mine = gen;   // 回应到之前用户可能已经切走了
+    api("/api/clerk/send", { conversation: currentThread || "", text: text }).then(function (d) {
+      if (!fromBlank || gen !== mine) return;
+      currentThread = d.conversation;
+      if (!viewingCard) mainThread = currentThread;
+      api("/api/clerk/focus", { conversation: currentThread }).catch(function () {});
+      var myGen = ++gen;
+      poll(myGen);
+    }).catch(function (err) {
+      if (gen === mine) $("input").value = text;   // 已经切走就不放回去，免得发到别的对话
+      showError(err.message);
+    });
+  }
+
+  // 从终端或设置回来：和切换对话走同一条路，接着当前这段
+  function resume() {
+    if (clerkMode) { clerkOpen(currentThread); return; }
+    if (blankChat) switchSession("fresh", false, null);
+    else switchSession("continue", false, currentThread);
+  }
+
+  function switchSession(mode, withOpening, threadId) {
+    pause();
+    stopped = false;
+    failures = 0;
+    if (connectFailed) model.dropErrors();
+    connectFailed = false;
+    blankChat = false;
+    if (currentThread && !pendingModel && model.blocks.length) threadCache[currentThread] = model;
+    var cached = threadId ? threadCache[threadId] : null;
+    currentThread = threadId || null;
+    drawn = [];
+    list.innerHTML = "";
+    if (cached) {
+      // 先显示读好的内容，连接在后台进行，连上后静默换成最新的
+      model = cached;
+      model.busy = false;
+      model.status = "已连上 " + (names[dispatcher] || dispatcher);
+      pendingModel = new ChatCore.Model();
+    } else {
+      model = new ChatCore.Model();
+      model.status = "正在连接 " + (names[dispatcher] || dispatcher) + "…";
+      pendingModel = null;
+    }
+    render();
+    list.scrollTop = list.scrollHeight;
     var myGen = ++gen;
     api("/api/chat/open", { dispatcher: dispatcher, mode: mode, opening: withOpening, thread_id: threadId || "" })
       .catch(function (err) { if (myGen === gen) showError(err.message); })
       .then(function () { if (myGen === gen && !stopped) poll(myGen); });
   }
 
-  function formatTime(sec) {
-    if (!sec) return "";
-    var d = new Date(sec * 1000), now = new Date();
-    var pad = function (n) { return n < 10 ? "0" + n : "" + n; };
-    var hm = pad(d.getHours()) + ":" + pad(d.getMinutes());
-    if (d.toDateString() === now.toDateString()) return "今天 " + hm;
-    return pad(d.getMonth() + 1) + "-" + pad(d.getDate()) + " " + hm;
+  function hideCard() {
+    viewingCard = false;
+    var head = document.getElementById("cardHead");
+    var box = document.getElementById("cardInfo");
+    if (head) { head.hidden = true; head.textContent = ""; }
+    if (box) { box.hidden = true; box.textContent = ""; }
+    if (window.__cardPhaseTimer) clearInterval(window.__cardPhaseTimer);
   }
 
-  if ($("newChatBtn")) {
-    $("newChatBtn").addEventListener("click", function () {
-      switchSession("fresh", true, null);
-    });
-  }
-
-  if ($("historyBtn")) {
-    $("historyBtn").addEventListener("click", function (e) {
-      e.stopPropagation();
-      var menu = $("historyMenu"), btn = $("historyBtn");
-      if (!menu.hidden) { closeHistoryMenu(); return; }
-      menu.hidden = false;
-      btn.setAttribute("aria-expanded", "true");
-      menu.innerHTML = "<div class=\"history-empty\">正在读取历史对话…</div>";
-      fetch("/api/chat/threads?" + new URLSearchParams({ project: project, token: token }).toString())
-        .then(function (r) { return r.json(); })
-        .then(function (d) {
-          var items = (d && d.threads) || [];
-          if (!items.length) {
-            menu.innerHTML = "<div class=\"history-empty\">还没有其他历史对话</div>";
-            return;
-          }
-          menu.innerHTML = items.map(function (it) {
-            var cur = it.current ? " current" : "";
-            var mark = it.current ? "✓ " : "";
-            return "<button type=\"button\" class=\"history-item" + cur + "\" data-thread=\"" + ChatCore.esc(it.id) +
-              "\" data-current=\"" + (it.current ? "1" : "0") + "\"><span class=\"h-title\">" + mark +
-              ChatCore.esc(it.title || "对话") + "</span><span class=\"h-time\">" +
-              ChatCore.esc(formatTime(it.updated)) + "</span></button>";
-          }).join("");
-        })
-        .catch(function () {
-          menu.innerHTML = "<div class=\"history-empty\">读取历史对话失败</div>";
+  window.SuperAgentChat = {
+    pause: pause, resume: resume,
+    isWorking: function () { return !clerkMode && !stopped && !!(model.busy || (pendingModel && pendingModel.busy)); },
+    startFresh: function () {
+      if (clerkMode) { hideCard(); clerkOpen(null); } else switchSession("fresh", true, null);
+    },
+    openThread: function (id) {
+      if (clerkMode) { if (id !== currentThread) clerkOpen(id); return; }
+      if (ChatCore.needsOpen(id, currentThread, connectFailed)) switchSession("continue", false, id);
+    },
+    openCard: function (info) {
+      info = info || {};
+      var head = document.getElementById("cardHead");
+      var box = document.getElementById("cardInfo");
+      if (head) {
+        head.hidden = false;
+        head.textContent = (info.title || "") + (info.phase && info.phase.label ? " · " + info.phase.label : "");
+      }
+      if (box) {
+        box.hidden = false;
+        box.textContent = "";
+        ChatCore.cardInfoRows(info).forEach(function (row) {
+          var line = document.createElement("p");
+          line.textContent = row.label + "：" + row.text;
+          box.appendChild(line);
         });
-    });
-  }
-
-  if ($("historyMenu")) {
-    $("historyMenu").addEventListener("click", function (e) {
-      e.stopPropagation();
-      var item = e.target.closest("[data-thread]");
-      if (!item) return;
-      var tid = item.getAttribute("data-thread");
-      if (item.getAttribute("data-current") === "1") { closeHistoryMenu(); return; }
-      switchSession("continue", false, tid);
-    });
-  }
-
-  document.addEventListener("click", closeHistoryMenu);
-
-  window.SuperAgentChat = { pause: pause, resume: resume, startFresh: function () { switchSession("fresh", true, null); } };
+      }
+      viewingCard = true;
+      if (info.conversation) clerkOpen(info.conversation);
+      if (window.__cardPhaseTimer) clearInterval(window.__cardPhaseTimer);
+      window.__cardPhaseTimer = setInterval(function () {
+        if (!info.conversation) return;
+        fetch("/api/cards?project=" + encodeURIComponent(project)).then(function (r) { return r.json(); }).then(function (cards) {
+          if (!Array.isArray(cards) || !head) return;
+          for (var i = 0; i < cards.length; i++) {
+            if (cards[i].id === info.id) {
+              var label = cards[i].phase && cards[i].phase.label;
+              if (label) head.textContent = (info.title || "") + " · " + label;
+            }
+          }
+        }).catch(function () {});
+      }, 3000);
+    },
+    closeCard: function () {
+      if (!viewingCard) return;
+      hideCard();
+      clerkOpen(mainThread);
+    },
+  };
   window.addEventListener("pagehide", pause);
   window.addEventListener("beforeunload", pause);
+
+  // 连上之后，把最近几段对话的内容先读好
+  function prefetchThreads() {
+    var query = function (extra) { return new URLSearchParams(Object.assign({ project: project, token: token }, extra)).toString(); };
+    fetch("/api/chat/threads?" + query({})).then(function (r) { return r.json(); }).then(function (d) {
+      var wanted = (d.threads || []).filter(function (t) { return !t.current && !threadCache[t.id]; }).slice(0, 10);
+      return wanted.reduce(function (done, t) {
+        return done.then(function () {
+          return fetch("/api/chat/thread?" + query({ id: t.id })).then(function (r) { return r.json(); }).then(function (x) {
+            if (x.events && x.events.length && !threadCache[t.id]) threadCache[t.id] = ChatCore.modelFrom(x.events);
+          });
+        });
+      }, Promise.resolve());
+    }).catch(function () { /* 读不到就等点的时候再连 */ });
+  }
 
   function poll(myGen) {
     if (stopped || myGen !== gen) return;
     var active = pendingModel || model;
     pollCtrl = typeof AbortController !== "undefined" ? new AbortController() : null;
-    fetch("/api/chat/events?" + new URLSearchParams({ project: project, since: active.seq, wait: 20, token: token }).toString(),
+    var feed = clerkMode ? "/api/clerk/events?" : "/api/chat/events?";
+    fetch(feed + new URLSearchParams({ project: project, conversation: currentThread || "", since: active.seq, wait: 20, token: token }).toString(),
           pollCtrl ? { signal: pollCtrl.signal } : {})
       .then(function (r) { return r.json(); })
       .then(function (d) {
@@ -427,6 +624,13 @@ if (typeof document !== "undefined") (function () {
         failures = 0; $("offline").hidden = true;
         if (d.error) throw new Error(d.error);
         d.events.forEach(function (ev) {
+          if (ev.type === "status" && ev.thread_id) {
+            currentThread = ev.thread_id;
+            blankChat = !(pendingModel || model).blocks.length;
+            setTimeout(prefetchThreads, 300);
+          }
+          if (ev.type === "user" || ev.type === "opening") blankChat = false;
+          if (ev.type === "status" && ev.text && ev.text.indexOf("未连上") === 0) connectFailed = true;
           if (!pendingModel) { model.apply(ev); return; }
           pendingModel.apply(ev);
           if (ev.type === "status" && ev.text && ev.text.indexOf("正在等") === 0) {
@@ -437,11 +641,13 @@ if (typeof document !== "undefined") (function () {
               drawn.forEach(function (el) { if (el) el.v = 0; });
             } else {
               model.status = pendingModel.status;
+              model.seq = pendingModel.seq;   // 接着新连接的编号取，不然旧事件会再来一遍
             }
             pendingModel = null;
           } else if (ev.type === "error") {
             model.status = pendingModel.status || ("未连上 " + (names[dispatcher] || dispatcher));
             model.apply({ type: "error", text: ev.text });
+            model.seq = pendingModel.seq;
             pendingModel = null;
           }
         });
@@ -464,6 +670,18 @@ if (typeof document !== "undefined") (function () {
 
   if (!project || !token) {
     $("status").textContent = "请从超级助手窗口打开聊天";
+  } else if (clerkMode) {
+    $("whoFace").textContent = "行";
+    $("who").textContent = "行政";
+    $("input").placeholder = clerkPlaceholder;
+    fetch("/api/clerk/list?" + new URLSearchParams({ project: project, token: token }).toString())
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        var latest = d.threads && d.threads.length ? d.threads[0].id : null;
+        if (viewingCard) mainThread = latest;   // 列表回来前已经开了卡，不能把卡片换掉
+        else clerkOpen(latest);
+      })
+      .catch(function () { if (!viewingCard) clerkOpen(null); });
   } else {
     var initGen = ++gen;
     api("/api/chat/open", { dispatcher: dispatcher, mode: params.get("mode") || "continue",
