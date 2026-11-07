@@ -120,7 +120,7 @@ class ChatSession:
                 self.failed = True
                 if not self.closed:
                     self.emit({"type": "status", "text": f"未连上 {name}"})
-                    self.emit({"type": "error", "text": f"连不上 {name}：{exc}。可以切到终端视图继续。"})
+                    self.emit({"type": "error", "text": f"连不上 {name}：{exc}。可以从菜单“对话 → 打开终端（高级）”继续。"})
 
         threading.Thread(target=run, daemon=True).start()
 
@@ -355,7 +355,7 @@ class ChatHub:
     def open(self, project, dispatcher: str, mode: str = "continue", with_opening: bool = True,
              thread_id: str = None) -> ChatSession:
         if dispatcher not in self.factories:
-            raise ValueError("这个调度员暂时还不能用聊天视图，请用终端视图")
+            raise ValueError("这个调度员暂时还不能用聊天，请用终端")
         key = str(Path(project).resolve())
         with self._lock:
             s = self._session

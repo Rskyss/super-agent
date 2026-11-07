@@ -4,7 +4,7 @@ html { background: rgba(19, 20, 23, .72); }
 body { overflow: hidden; }
 .nav { height: 100%; display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; }
 
-/* 和中间的“聊天 | 终端”同一种样子 */
+/* 分段切换的样子 */
 .tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 2px; margin: 0 12px 10px; padding: 2px; background: rgba(255, 255, 255, .06); border-radius: var(--r-md); }
 .tabbtn { display: flex; align-items: center; justify-content: center; gap: 6px; height: 26px; min-width: 0; padding: 0 6px; font-size: var(--fs-base); color: var(--dim); background: none; border: 0; border-radius: var(--r-sm); cursor: default; white-space: nowrap; transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease); }
 .tabbtn:hover { color: var(--text); }

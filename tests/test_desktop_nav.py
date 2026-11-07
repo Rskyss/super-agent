@@ -108,8 +108,9 @@ class NavPageTest(unittest.TestCase):
         self.assertIn("切到终端会中断这一轮", swift)
         change = swift[swift.index("func segmentChanged()"):swift.index("// MARK: 右边：本机数据服务")]
         self.assertIn("switchToTerminal()", change)
-        menu = swift[swift.index("@objc func showTerminalView"):]
+        menu = swift[swift.index("func openTerminalAfterWarning"):]
         self.assertIn("switchToTerminal()", menu.split("\n")[0])
+        self.assertIn("openTerminalAfterWarning()", swift[swift.index("@objc func showTerminalView"):swift.index("func openTerminalAfterWarning")])
 
     def test_leaving_settings_for_terminal_still_frees_the_conversation(self):
         swift = SWIFT.read_text(encoding="utf-8")

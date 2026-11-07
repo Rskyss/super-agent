@@ -268,7 +268,7 @@ class CodexDispatcher:
         self._pending.clear()
         if self.proc is not None and not self._closing:
             self.emit({"type": "status", "text": f"未连上 {self.name}"})
-            self.emit({"type": "error", "text": "和 Codex 的连接断了。可以重新打开这个项目，或切到终端视图继续。"})
+            self.emit({"type": "error", "text": "和 Codex 的连接断了。可以重新打开这个项目，或从菜单“对话 → 打开终端（高级）”继续。"})
 
     # ---------- 对外 ----------
 
@@ -476,6 +476,6 @@ class CodexDispatcher:
                        "reason": p.get("reason") or ""})
         elif method == "item/tool/requestUserInput":
             self._write({"id": rid, "result": {"answers": {}}})
-            self.emit({"type": "notice", "text": "调度员想问你几个选择题，聊天视图暂时还不支持，已跳过；需要时切到终端视图。"})
+            self.emit({"type": "notice", "text": "调度员想问你几个选择题，聊天视图暂时还不支持，已跳过；需要时从菜单“对话 → 打开终端（高级）”回答。"})
         else:
             self._write({"id": rid, "error": {"code": -32601, "message": f"超级助手不支持：{method}"}})

@@ -7,8 +7,9 @@
 // 窗口分三段：
 //   左栏：搜索、主对话、卡片列表、项目名和设置（页面 nav，点击用 superagent:// 地址告诉窗口）。
 //   中间：和这个项目的调度员对话（用户亲手选，每个项目分别记住；没选不启动任何 AI）。
-//         顶部细栏「聊天 | 终端」切换：Codex 默认聊天视图（一问一答、图片直接显示、允许/拒绝按钮），
-//         其他调度员先用终端视图。切换时前一个视图先让出对话，后一个接着同一个对话，不重复开场交代。
+//         中间只显示一种界面：配了行政或调度员是 Codex 时是聊天（一问一答、图片直接显示、允许/拒绝按钮），
+//         其他调度员是终端。终端也可以从菜单“对话 → 打开终端（高级）”打开，这时顶部有“返回聊天”。
+//         切换时前一个视图先让出对话，后一个接着同一个对话，不重复开场交代。
 //         设置页也放在中间，打开时右栏临时收起。
 //   右栏：一张卡的流程和交接（只读项目的 .collab/），可以收起。
 // 页面都由本机数据服务提供；聊天地址要带窗口启动时生成的一次性口令。
@@ -33,6 +34,7 @@
 //   --walk-clerk-forget         只走“删除这一家的密钥”，不发话也可能发一句（密钥在时检测）
 //   --walk-clerk-edge --walk-other <项目B> --walk-good-key <密钥文件>  走边界：固定设置、切项目时测试还在路上、测试期间取消
 //   --walk-clerk-new --walk-good-key <密钥文件>  走新用户：没选调度员，填密钥后能回到对话
+//   --walk-view                 走一遍中间界面：菜单打开终端、提醒、返回聊天。不发话
 //   --walk-clerk-look           只打开设置页看第一行，不发话
 //   --walk-tabs --walk-card <卡片编号>  只走左栏两个标签：不发消息，不花额度
 //   --clerk-try <文件> [--clerk-base 地址]  用文件里的密钥走一次第一屏的测试和保存，结果写到“文件.result”
@@ -331,6 +333,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
     var leftContent: NSView!             // 聊天、终端或设置
     var rightBox: NSView!                // 右栏：顶部留给拖动，下面是页面
     var segment: ViewSwitch!
+    var backToChat: NSButton!
     var rightToggle: NSButton!
     var term: LocalProcessTerminalView?  // 终端视图时才有
     var chatWeb: WKWebView!              // 聊天视图
@@ -583,7 +586,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
         rightBox = NSView()
         rightBox.wantsLayer = true
         rightBox.layer?.backgroundColor = panelBackground.cgColor
-        pin(web, in: rightBox)   // 右栏的“流程 / 交接”和中间的切换同一高度
+        pin(web, in: rightBox)   // 右栏的“流程 / 交接”和中间顶部细栏同一高度
 
         // 三段的位置由 layoutColumns 算，不交给系统按比例分
         split.arrangesAllSubviews = false
@@ -622,13 +625,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
         NSLayoutConstraint.activate(rules)
     }
 
-    /// 中间顶部细栏：左边切换聊天和终端，右边收起右栏。拖它就是拖窗口
+    /// 中间顶部细栏：只在从菜单打开终端时左边有“返回聊天”，右边收起右栏。拖它就是拖窗口
     func buildTopBar() -> NSView {
         let bar = TopBar()
         segment = ViewSwitch(labels: ["聊天", "终端"])
         segment.translatesAutoresizingMaskIntoConstraints = false
         segment.onChange = { [weak self] in self?.segmentChanged() }
+        segment.isHidden = true  // 用户定的：两个能说话的地方并排太乱，切换留在内部，界面上不显示
         bar.addSubview(segment)
+
+        backToChat = NSButton(title: "返回聊天", target: self, action: #selector(showChatView(_:)))
+        backToChat.translatesAutoresizingMaskIntoConstraints = false
+        backToChat.isHidden = true
+        bar.addSubview(backToChat)
 
         rightToggle = NSButton(image: NSImage(systemSymbolName: "sidebar.right", accessibilityDescription: "收起或展开右栏")
                                ?? NSImage(), target: self, action: #selector(toggleRight(_:)))
@@ -642,6 +651,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
         NSLayoutConstraint.activate([
             segment.leadingAnchor.constraint(equalTo: bar.leadingAnchor, constant: 16),
             segment.centerYAnchor.constraint(equalTo: bar.centerYAnchor, constant: 2),
+            backToChat.leadingAnchor.constraint(equalTo: bar.leadingAnchor, constant: 16),
+            backToChat.centerYAnchor.constraint(equalTo: bar.centerYAnchor, constant: 2),
             rightToggle.trailingAnchor.constraint(equalTo: bar.trailingAnchor, constant: -10),
             rightToggle.centerYAnchor.constraint(equalTo: bar.centerYAnchor, constant: 2),
             rightToggle.widthAnchor.constraint(equalToConstant: 28),
@@ -894,8 +905,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
         segment.setEnabled(who != nil, forSegment: 1)
     }
 
+    /// 只有从菜单打开终端、又有聊天可回时才显示
+    func syncBackToChat() {
+        if backToChat == nil { return }  // 窗口还没建好
+        let canChat = Dispatcher.forProject(project)?.hasChat == true || clerkReady
+        backToChat.isHidden = !(leftView == .terminal && canChat)
+    }
+
     func showLeft(_ view: LeftView, opening: Bool, chatMode: String = "continue") {
-        defer { syncRight(); syncNav() }
+        defer { syncRight(); syncNav(); syncBackToChat() }
         updateViewSwitch()
         let who = Dispatcher.forProject(project)
         let canChat = who?.hasChat == true || clerkReady
@@ -1415,7 +1433,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
         askClerk()
     }
 
-    var clerkReady = false  // 配好了行政人员：聊天找行政，不连 Codex
+    var clerkReady = false {  // 配好了行政人员：聊天找行政，不连 Codex
+        didSet { syncBackToChat() }
+    }
     var clerkFields: (alert: NSAlert, key: NSSecureTextField)?
     var clerkPrompt: ClerkKeyPrompt?
     var clerkPromptPlace: URL?  // 弹框打开时的项目：开着时切了项目，这次就作废
@@ -1504,6 +1524,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
                     self.postLocal("/api/clerk/config", self.clerkForm(base, model, known, provider: provider, place: place)) { _ in
                         guard self.project == place else { return }
                         self.clerkReady = true
+                        if self.leftView != .config { self.loadPanel() }  // 等测试时用户可能已经离开设置页
                         if reply { self.tellClerkResult(true, "") } else { self.afterClerkKeyChange() }
                     }
                 }
@@ -1733,7 +1754,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
         chatKept = false
         chatLoadedKey = nil
         if leftView == .chat {
-            chatWeb.loadHTMLString(Self.message("聊天连接停止了。可以切到终端视图继续。", background: "#17181b"), baseURL: nil)
+            chatWeb.loadHTMLString(Self.message(Dispatcher.forProject(project) == nil
+                ? "聊天连接停止了。可以用菜单「面板 → 刷新右栏」再试一次。"
+                : "聊天连接停止了。可以从菜单“对话 → 打开终端（高级）”继续。", background: "#17181b"), baseURL: nil)
         }
     }
 
@@ -1824,8 +1847,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
         main.addItem(submenu("项目", [("团队配置…", #selector(openTeamConfig(_:)), ",")]))
         main.addItem(submenu("对话", [("接着上一次的对话", #selector(continueChat(_:)), "r"),
                                        ("开始新对话", #selector(newChat(_:)), "n"),
-                                       ("聊天视图", #selector(showChatView(_:)), "1"),
-                                       ("终端视图", #selector(showTerminalView(_:)), "2")]))
+                                       ("打开终端（高级）", #selector(showTerminalView(_:)), "2")]))
         main.addItem(submenu("面板", [("刷新右栏", #selector(reloadPanel(_:)), "R"),
                                        ("收起或展开右栏", #selector(toggleRight(_:)), "\\")]))
         main.addItem(submenu("窗口", [("最小化", #selector(NSWindow.performMiniaturize(_:)), "m")]))
@@ -1859,9 +1881,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
         case #selector(continueChat(_:)), #selector(newChat(_:)):
             return who != nil  // 还没配调度员时，先去团队配置
         case #selector(openRecent(_:)): item.state = (item.representedObject as? String) == project?.path ? .on : .off
-        case #selector(showChatView(_:)):
-            item.state = leftView == .chat ? .on : .off
-            return who?.hasChat == true || clerkReady
         case #selector(showTerminalView(_:)):
             item.state = leftView == .terminal ? .on : .off
             return who != nil
@@ -1871,7 +1890,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
     }
 
     @objc func continueChat(_ sender: Any?) {
-        if leftView == .chat { loadChat(mode: "continue", opening: false) } else { switchToTerminal(opening: true) }
+        if leftView == .chat {
+            loadChat(mode: "continue", opening: false)
+        } else if preferredLeft() == .chat {
+            showLeft(.chat, opening: false)  // 有聊天就回聊天，终端只从菜单进
+        } else {
+            switchToTerminal(opening: true)
+        }
     }
 
     @objc func newChat(_ sender: Any?) {
@@ -1881,13 +1906,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
             } else {
                 loadChat(mode: "fresh", opening: true)
             }
+        } else if preferredLeft() == .chat {
+            showLeft(.chat, opening: false)  // 先回到聊天，再开新对话
+            chatWeb.evaluateJavaScript("window.SuperAgentChat && window.SuperAgentChat.startFresh && window.SuperAgentChat.startFresh()", completionHandler: nil)
         } else {
             switchToTerminal(opening: true, chatMode: "fresh")
         }
     }
 
     @objc func showChatView(_ sender: Any?) { if leftView != .chat { showLeft(.chat, opening: false) } }
-    @objc func showTerminalView(_ sender: Any?) { if leftView != .terminal { switchToTerminal() } }
+    @objc func showTerminalView(_ sender: Any?) {
+        guard leftView != .terminal, window.attachedSheet == nil else { return }  // 提醒开着再按一次，不能排第二个
+        let who = Dispatcher.forProject(project)
+        let canChat = who?.hasChat == true || clerkReady
+        let place = project
+        // 只能用终端的调度员没有别的地方可说话，不用提醒
+        guard canChat, !clerkPrefs.bool(forKey: "terminalWarned") else { return openTerminalAfterWarning() }
+        let alert = NSAlert()
+        alert.messageText = "打开终端"
+        alert.informativeText = "这里直接和调度员说话，" + (clerkReady ? "不经过行政，" : "") + "也不留在卡片记录里。"
+        alert.addButton(withTitle: "打开")
+        alert.addButton(withTitle: "取消")
+        alert.beginSheetModal(for: window) { [weak self] response in
+            MainActor.assumeIsolated {
+                // 弹框开着时可能切了项目：不能在别的项目打开终端，也不能重启已经在跑的终端
+                guard let self = self, response == .alertFirstButtonReturn, self.project == place,
+                      self.leftView != .terminal, Dispatcher.forProject(self.project) != nil else { return }
+                clerkPrefs.set(true, forKey: "terminalWarned")
+                self.openTerminalAfterWarning()
+            }
+        }
+    }
+
+    func openTerminalAfterWarning() { switchToTerminal() }
 
     /// 刷新右边：数据服务在就重新载入页面；没起来或已停就重新启动它
     @objc func reloadPanel(_ sender: Any?) {
@@ -2093,6 +2144,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
         let forgetSteps: [(String, () -> Void)] = [("开设置", openSettings), nap, nap, nap, ("看", { rowView("打开") }),
             ("点删除", { cfg("clerkForget.click()") }), ("答1", { answer("1") }), ("答2", { answer("2") }), ("答3", { answer("3") }), ("答4", { answer("4") }),
             nap, nap, nap, ("看删后", { rowView("删后") }), ("再测", { cfg("clerkCheck.click()") }), nap, ("答要密钥", { answer("要密钥", .alertSecondButtonReturn) }), nap, ("看取消", { rowView("取消后") })]
+        func barView(_ name: String) {
+            log += "\(name)：中间=\(self.leftView) 返回聊天=\(self.backToChat.isHidden ? "隐藏" : "显示") 切换=\(self.segment.isHidden ? "隐藏" : "显示") 终端=\(self.term == nil ? "没开" : "开着")\n"
+            self.chatWeb.evaluateJavaScript("(document.getElementById('status')||{}).textContent") { t, _ in log += "  聊天状态：\(String(describing: t ?? "无"))\n" }
+        }
+        let viewSteps: [(String, () -> Void)] = [("看1", { barView("1打开") }),
+            ("开设置", openSettings), nap, nap, ("看设置", { barView("2设置页") }),
+            ("点返回", { nav("var b=document.getElementById('backToChat')||document.querySelector('.thread');if(b)b.click()") }), nap, nap, ("看回", { barView("3回到对话") }),
+            ("菜单开终端", { self.showTerminalView(nil) }), nap, ("答取消", { answer("4第一次提醒，取消", .alertSecondButtonReturn) }), nap, ("看取消", { barView("5取消后") }),
+            ("再开", { self.showTerminalView(nil) }), nap, ("答开", { answer("6第一次提醒，打开") }), nap, nap, nap, ("看终端", { barView("7终端") }),
+            ("点返回聊天", { self.backToChat.performClick(nil) }), nap, nap, nap, ("看聊天", { barView("8点返回聊天后") }),
+            ("第二次开", { self.showTerminalView(nil) }), nap, ("不该再问", { answer("9第二次") }), nap, nap, ("看终端2", { barView("10第二次打开") }),
+            ("返回", { self.backToChat.performClick(nil) }), nap, nap, ("看完", { barView("11返回") }),
+            ("开设置2", openSettings), nap, nap, ("设置里新对话", { self.newChat(nil) }), nap, nap, ("看新", { barView("12设置页点新对话") }),
+            ("再开终端", { self.showTerminalView(nil) }), nap, nap, nap, ("左栏新对话", { nav("document.getElementById('newChat').click()") }), nap, nap, nap, ("看新2", { barView("13终端里点左栏新对话") }),
+            ("两次开终端", { self.showTerminalView(nil); self.showTerminalView(nil) }), nap, ("收尾", { answer("14两次") }), nap, nap, ("看", { barView("14") })]
         let lookSteps: [(String, () -> Void)] = [("开设置", openSettings), nap, ("看", { rowView("沿用时") })]
         let rowSteps: [(String, () -> Void)] = [
             ("开设置", openSettings), nap, ("看1", { rowView("1打开") }),
@@ -2162,7 +2228,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
             ("等切换", {}),
             ("看切换后", { threads("切换后") }),
         ]
-        let steps = CommandLine.arguments.contains("--walk-clerk-new") ? newUserSteps
+        let steps = CommandLine.arguments.contains("--walk-view") ? viewSteps
+            : CommandLine.arguments.contains("--walk-clerk-new") ? newUserSteps
             : CommandLine.arguments.contains("--walk-clerk-edge") ? edgeSteps
             : CommandLine.arguments.contains("--walk-clerk-forget") ? forgetSteps
             : CommandLine.arguments.contains("--walk-clerk-first") ? Array(rowSteps.prefix { $0.0 != "开设置2" })
@@ -2170,7 +2237,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
             : CommandLine.arguments.contains("--walk-clerk-look") ? lookSteps
             : CommandLine.arguments.contains("--walk-tabs") ? tabSteps : CommandLine.arguments.contains("--walk-clerk") ? clerkSteps
             : (CommandLine.arguments.contains("--walk-work") ? workSteps : allSteps)
-        let first = ["--walk-tabs", "--walk-clerk-new", "--walk-clerk-edge", "--walk-clerk-forget", "--walk-clerk-row", "--walk-clerk-first", "--walk-clerk-look"].contains { CommandLine.arguments.contains($0) } ? 20.0 : 6.0  // 本机服务刚生成的应用起得慢，等左栏加载好
+        let first = ["--walk-view", "--walk-tabs", "--walk-clerk-new", "--walk-clerk-edge", "--walk-clerk-forget", "--walk-clerk-row", "--walk-clerk-first", "--walk-clerk-look"].contains { CommandLine.arguments.contains($0) } ? 20.0 : 6.0  // 本机服务刚生成的应用起得慢，等左栏加载好
         for (index, step) in steps.enumerated() {
             let at = first + Double(index) * 2.0
             DispatchQueue.main.asyncAfter(deadline: .now() + at) { step.1() }
@@ -2193,7 +2260,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
             let point = view.convert(NSPoint(x: 40, y: view.isFlipped ? 20 : view.bounds.maxY - 20), to: frameView.superview)
             return frameView.hitTest(point).map { String(describing: type(of: $0)) } ?? "无"
         }
-        return "切换=\(hit(segment)) 收起=\(hit(rightToggle)) 右栏顶部=\(hitTop(web))"
+        return "返回聊天=\(hit(backToChat)) 收起=\(hit(rightToggle)) 右栏顶部=\(hitTop(web))"
     }
 }
 
