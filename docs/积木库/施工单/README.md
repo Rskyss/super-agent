@@ -12,7 +12,9 @@
 
 | 单号 | 任务清单第几项 | 文件 | 状态 |
 |---|---|---|---|
-| 50 | 1 | [50-资料夹和接法卡.md](50-资料夹和接法卡.md) | 待施工 |
+| 50 | 1 | [50-资料夹和接法卡.md](50-资料夹和接法卡.md) | ✅ Gemini 施工，Claude 按复查修过 |
+| 51–53 | 2–4 | 没写单，Claude 直接做（体检、检测、安装） | ✅ |
+| 54 | 5 | [54-积木库行政.md](54-积木库行政.md) | 待施工（Gemini） |
 
 后面的单写好后会加到这里。**一次只做表里“待施工”的单，做完就停。**
 
@@ -28,13 +30,19 @@
 
 ## 必须跑的检查
 
+测试节奏（用户 2026-11-08 定）：
+
+- **每次修改后：** 只跑和这次改动相关的测试。
+- **每张单提交前：** 全量跑一次，只用 Python 3.9。
+- **发版本前：** Python 3.9 和 3.15 都全量跑。两个版本先后跑，不要同时跑（会抢同一个临时文件夹）。
+
 ```sh
 # 这张单的验收测试（NN 换成单号）
 python3 -m unittest discover -s tests -p 'test_acceptance_NN_*.py'
-/opt/homebrew/bin/python3.15 -m unittest discover -s tests -p 'test_acceptance_NN_*.py'
-# 原有测试：两个版本的 Python 都要跑
-python3 -m unittest discover -s tests -p 'test_[!a]*.py'
-/opt/homebrew/bin/python3.15 -m unittest discover -s tests -p 'test_[!a]*.py'
+# 提交前：全量，Python 3.9
+python3 -m unittest discover -s tests
+# 发版本前再加：Python 3.15 全量
+/opt/homebrew/bin/python3.15 -m unittest discover -s tests
 # 改了 main.swift 才需要
 cd desktop/mac && swift build
 ```
@@ -57,8 +65,8 @@ cd desktop/mac && swift build
 ```markdown
 ## 单号 NN 标题
 - 改了哪些文件：
-- 这张单的测试 Python 3.9 / 3.15：通过 / 失败（失败贴原文）
-- 原有测试 Python 3.9 / 3.15：通过 / 失败 / 未跑
+- 这张单的测试：通过 / 失败（失败贴原文）
+- 全量测试 Python 3.9：通过 / 失败 / 未跑
 - Mac 编译：通过 / 失败 / 未跑 / 不涉及
 - 和施工单不一样的地方：
 - 拿不准的地方：
@@ -69,3 +77,7 @@ cd desktop/mac && swift build
 ## 用户交给 Cursor 的话
 
 > 读 `docs/积木库/施工单/README.md`，严格按它施工。确认当前在 `blocks` 分支，只做 50 号单，做完提交一次，写好回执后停下。测试不合理就停下告诉我，不准改测试。不要推送。
+
+54 号单，交给 Gemini 的话：
+
+> 读 `docs/积木库/施工单/README.md` 和 `docs/积木库/施工单/54-积木库行政.md`，严格按它施工。确认当前在 `blocks` 分支、工作区是干净的。只做 54 号单：不要改 `desktop/clerk/roles/积木库.md`、`collab/blocks*.py` 和任何测试。做完先跑 `python3 -m unittest discover -s tests -p 'test_acceptance_54_*.py'`，再跑全量 `python3 -m unittest discover -s tests`，都过了再提交一次（标题 `施工单 54：积木库行政`），把回执写进 `docs/积木库/施工单/回执.md` 并一起提交，然后停下。测试不合理就停下告诉我，不准改测试。不要推送。
