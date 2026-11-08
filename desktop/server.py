@@ -53,15 +53,18 @@ from collab.scope import read_allowed  # noqa: E402
 from collab.state import Card, InvalidTransition  # noqa: E402
 from collab.workspace import has_blanks, profile_path, render_board  # noqa: E402
 from desktop.chat import ChatHub  # noqa: E402
+from collab import blocks, blocks_check, blocks_env, blocks_install
+from collab.blocks import BlockError
+from desktop.clerk import blocks_tools, tasks as clerk_tasks
 from desktop.clerk.client import DEFAULT_BASE_URL, DEFAULT_MODEL, ModelClient, ModelError  # noqa: E402
 from desktop.clerk.desk import ClerkDesk  # noqa: E402
-from desktop.clerk.providers import PROVIDERS, find as find_provider  # noqa: E402
+from desktop.clerk.providers import PROVIDERS, account_for, find as find_provider  # noqa: E402
 from desktop.clerk.tasks import (  # noqa: E402
     StopWrongCard, TaskBusy, TaskWatcher, apply_revise, launch, running, stop_construction,
 )
 from desktop.preview import PreviewHub  # noqa: E402
 from collab.tasks import TaskError  # noqa: E402
-from desktop.shell_path import adopt_terminal_path  # noqa: E402
+from desktop.shell_path import adopt_terminal_path, merged_path, terminal_path  # noqa: E402
 from desktop.view import card_view, event_text, list_cards, set_archived  # noqa: E402
 
 _TOOLS = [{"value": "codex", "label": "Codex"}, {"value": "cursor", "label": "Cursor"}, {"value": "agy", "label": "agy"}]
@@ -300,6 +303,184 @@ class Handler(BaseHTTPRequestHandler):
             return
         self._send(200, target.read_bytes(), _TYPES.get(target.suffix, "application/octet-stream"))
 
+    def _blocks_get(self, path: str, query: dict) -> None:
+        project = str(blocks.home())
+        if not Path(project).is_dir():
+            Path(project).mkdir(parents=True, exist_ok=True)
+        
+        if path == "/api/blocks/state":
+            clerk = load_clerk(project)
+            account = account_for(clerk["provider"], clerk.get("base_url", "")) if clerk else ""
+            self._json({"setting": clerk, "key_account": account,
+                        "connected": self.server.blocks_clerk is not None,
+                        "installing": blocks_install.installing()})
+        elif path == "/api/blocks/list":
+            all_items = blocks.list_cards(project)
+            valid, broken = [], []
+            for item in all_items:
+                if "problem" in item:
+                    broken.append({"id": item["id"], "problem": item["problem"]})
+                else:
+                    last = blocks.last_record(item["id"], project, type="check")
+                    status = "never" if not last else ("ok" if last.get("ok") else "fail")
+                    valid.append({
+                        "id": item["id"], "name": item["name"], "kind": item["kind"],
+                        "verified": blocks.is_verified(item), "status": status,
+                        "reason": last.get("reason") if last else "",
+                        "time": last.get("time") if last else "",
+                        "seconds": last.get("seconds") if last else 0
+                    })
+            self._json({"blocks": valid, "broken": broken})
+        elif path == "/api/blocks/detail":
+            card_id = query.get("id", "")
+            if not blocks._ID.fullmatch(card_id):
+                self._json({"error": "编号不对"}, 400); return
+            try:
+                card = blocks.load_card(card_id, project)
+                verified = blocks.is_verified(card)
+                t_path = self.server.terminal_path() or ""
+                m_path = merged_path(os.environ.get("PATH", ""), t_path)
+                preview = blocks_check.preview(card, m_path) if card["kind"] == "cli" else ""
+                last_check = blocks.last_record(card_id, project, type="check")
+                last_install = blocks.last_record(card_id, project, type="install")
+                self._json({"card": card, "verified": verified, "key_account": card.get("key_account", ""),
+                            "preview": preview, "last_check": last_check, "last_install": last_install})
+            except BlockError:
+                self._json({"error": "没有这张卡"}, 404)
+        elif path == "/api/blocks/job":
+            job_id = query.get("id", "")
+            job = self.server.blocks_jobs.get(job_id)
+            if not job:
+                self._json({"error": "没有这个任务"}, 404); return
+            res = {"kind": job["kind"], "done": job["done"], "result": job.get("result"), "error": job.get("error") or ""}
+            if job["kind"] == "install":
+                res["tail"] = blocks_install.output_tail()
+            self._json(res)
+        else:
+            self._json({"error": "没有这个地址"}, 404)
+
+    def _blocks_post(self, path: str, body: dict) -> None:
+        project = str(blocks.home())
+        if not Path(project).is_dir():
+            Path(project).mkdir(parents=True, exist_ok=True)
+        factory = self.server.blocks_client_factory or blocks_check._default_client
+            
+        if path == "/api/blocks/bind":
+            prov, model, key = str(body.get("provider") or "").strip(), str(body.get("model") or "").strip(), str(body.get("api_key") or "").strip()
+            if not key or not model or not prov:
+                self._json({"error": "缺失参数"}, 400); return
+            item = find_provider(prov)
+            if not item:
+                self._json({"error": "没有这个服务商"}, 400); return
+            base_url = str(item.get("base_url") or body.get("base_url") or "").strip()
+            if not base_url.startswith("https://"):
+                self._json({"error": "地址不对"}, 400); return
+            try:
+                account = account_for(prov, base_url)
+            except ValueError:
+                self._json({"error": "地址不对"}, 400); return
+            
+            card = {"id": "clerk", "kind": "llm_api", "name": "行政", "provider": prov, "base_url": base_url, "model": model, "key_account": account}
+            try:
+                res = blocks_check.check_api(card, key, need_tools=True, record=False, client_factory=self.server.blocks_client_factory)
+                if not res.get("ok"):
+                    self._json({"ok": False, "reason": res.get("reason") or "", "how": res.get("how") or ""}); return
+                save_clerk(project, {"provider": prov, "model": model, "base_url": base_url})
+                self.server.blocks_clerk = factory(base_url, model, key)
+                self._json({"ok": True, "key_account": account, "reason": res.get("reason") or "", "how": res.get("how") or ""})
+            except Exception as e:
+                self._json({"ok": False, "reason": str(e), "how": "检查设置后重试"})
+        elif path == "/api/blocks/connect":
+            key = str(body.get("api_key") or "").strip()
+            if not key:
+                self._json({"error": "没有密钥"}, 400); return
+            clerk = load_clerk(project)
+            if not clerk:
+                self._json({"error": "还没绑定"}, 409); return
+            self.server.blocks_clerk = factory(clerk["base_url"], clerk["model"], key)
+            self._json({"ok": True})
+        elif path == "/api/blocks/remove":
+            card_id = str(body.get("id") or "")
+            if not blocks._ID.fullmatch(card_id):
+                self._json({"error": "编号不对"}, 400); return
+            if blocks_check.checking(card_id):
+                self._json({"error": "正在检测"}, 409); return
+            try:
+                blocks.remove_card(card_id, project)
+                self._json({"ok": True})
+            except BlockError:
+                self._json({"error": "没有这张卡"}, 404)
+        elif path == "/api/blocks/scan":
+            job_id = uuid.uuid4().hex
+            self.server.blocks_jobs[job_id] = {"kind": "scan", "done": False, "result": None, "error": ""}
+            def run():
+                try:
+                    t_path = self.server.terminal_path() or ""
+                    res = blocks_env.scan(root=project, app_path=os.environ.get("PATH", ""), terminal_path=t_path, record=True)
+                    self.server.blocks_jobs[job_id]["result"] = res
+                except Exception as e:
+                    self.server.blocks_jobs[job_id]["error"] = str(e)
+                finally:
+                    self.server.blocks_jobs[job_id]["done"] = True
+            threading.Thread(target=run, daemon=True).start()
+            self._json({"job": job_id})
+        elif path == "/api/blocks/check":
+            card_id = str(body.get("id") or "")
+            if not blocks._ID.fullmatch(card_id):
+                self._json({"error": "编号不对"}, 400); return
+            try:
+                card = blocks.load_card(card_id, project)
+            except BlockError:
+                self._json({"error": "没有这张卡"}, 404); return
+            
+            approved = body.get("approved")
+            api_key = body.get("api_key")
+            if card["kind"] == "cli" and not blocks.is_verified(card) and not approved:
+                self._json({"error": "需要确认完整命令"}, 400); return
+            if card["kind"] == "llm_api" and not api_key:
+                self._json({"error": "需要密钥"}, 400); return
+                
+            job_id = uuid.uuid4().hex
+            self.server.blocks_jobs[job_id] = {"kind": "check", "done": False, "result": None, "error": ""}
+            def run():
+                try:
+                    t_path = self.server.terminal_path() or ""
+                    m_path = merged_path(os.environ.get("PATH", ""), t_path)
+                    if card["kind"] == "cli":
+                        res = blocks_check.check_cli(card, root=project, approved=approved, path=m_path, terminal_path=t_path)
+                    else:
+                        res = blocks_check.check_api(card, api_key, root=project, client_factory=self.server.blocks_client_factory)
+                    self.server.blocks_jobs[job_id]["result"] = res
+                except BlockError as e:
+                    if "确认" in str(e) or "对不上" in str(e):
+                        self.server.blocks_jobs[job_id]["result"] = {"ok": False, "status": "changed", "reason": "要跑的命令和你确认时看到的不一样", "how": "跟行政说重新提议，确认新的完整命令"}
+                    else:
+                        self.server.blocks_jobs[job_id]["error"] = str(e)
+                except Exception as e:
+                    self.server.blocks_jobs[job_id]["error"] = str(e)
+                finally:
+                    self.server.blocks_jobs[job_id]["done"] = True
+            threading.Thread(target=run, daemon=True).start()
+            self._json({"job": job_id})
+        elif path == "/api/blocks/save":
+            job_id = str(body.get("job") or "")
+            job = self.server.blocks_jobs.get(job_id)
+            if not job:
+                self._json({"error": "没有这个任务"}, 404); return
+            if job.get("saved"):
+                card = job["card"]
+                self._json({"ok": True, "id": card["id"], "key_account": card.get("key_account")}); return
+            if job["kind"] != "check" or not job["done"] or not (job.get("result") or {}).get("ok") or not job.get("card"):
+                self._json({"error": "检测没通过或还没完"}, 409); return
+            card = job["card"]
+            if blocks._card_path(card["id"], project).is_file() and not job.get("replaces"):
+                self._json({"error": "要重新提议"}, 409); return
+            blocks.save_card(card, project)
+            job["saved"] = True
+            self._json({"ok": True, "id": card["id"], "key_account": card.get("key_account")})
+        else:
+            self._json({"error": "没有这个地址"}, 404)
+
     def do_GET(self):  # noqa: N802  名字由 http.server 规定
         url = urlparse(self.path)
         query = {k: v[0] for k, v in parse_qs(url.query).items()}
@@ -307,6 +488,9 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if url.path == "/api/health":
                 self._json({"ok": True})
+            elif url.path.startswith("/api/blocks/"):
+                if self._block_allowed(query):
+                    self._blocks_get(url.path, query)
             elif url.path == "/api/view":
                 if not project or not Path(project).is_dir():
                     self._json({"error": "项目文件夹不存在"}, 400)
@@ -361,6 +545,10 @@ class Handler(BaseHTTPRequestHandler):
             return True
         self._json({"error": "聊天需要从超级助手窗口里打开"}, 403)
         return False
+
+    def _block_allowed(self, query=None) -> bool:
+        """积木库接口也要校验口令，避免非法访问。"""
+        return self._chat_allowed(query)
 
     def _chat_get(self, path: str, query: dict) -> None:
         hub = self.server.hub
@@ -457,6 +645,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def _clerk_get(self, path: str, query: dict) -> None:
         desk, project = self.server.desk, query.get("project", "")
+        if blocks_tools.is_blocks_home(project):
+            Path(project).mkdir(parents=True, exist_ok=True)
         if path == "/api/clerk/list":
             if project and Path(project).is_dir():
                 self.server.watcher.ensure_watching(project)
@@ -505,6 +695,98 @@ class Handler(BaseHTTPRequestHandler):
     def _clerk_post(self, path: str, body: dict) -> None:
         """窗口把行政人员的密钥交给本机服务：只放内存，不写文件，也不回传。"""
         desk, project, conversation = self.server.desk, str(body.get("project") or ""), str(body.get("conversation") or "")
+        is_blocks = blocks_tools.is_blocks_home(project)
+        if is_blocks:
+            Path(project).mkdir(parents=True, exist_ok=True)
+            if path == "/api/clerk/send":
+                try:
+                    self._json({"ok": True, "conversation": desk.send(project, conversation, str(body.get("text") or ""))})
+                except RuntimeError as exc:
+                    self._json({"error": str(exc)}, 409)
+                return
+            if path == "/api/clerk/proposal":
+                pid = str(body.get("id") or "")
+                decision = str(body.get("decision") or "")
+                proposal = clerk_tasks.load_proposal(project, pid)
+                if decision == "confirm" and proposal and proposal.get("state") == "open":
+                    if proposal.get("kind") == "connect_api" and not str(body.get("api_key") or "").strip():
+                        self._json({"error": "请先在密钥框里填写密钥"}, 400)
+                        return
+                    if proposal.get("kind") == "install" and blocks_install.installing():
+                        self._json({"error": "正在安装别的工具，等它装完再装"}, 409)
+                        return
+                try:
+                    answer = desk.decide_proposal(project, conversation, pid, decision)
+                except LookupError as exc:
+                    self._json({"error": str(exc)}, 404)
+                    return
+                except (RuntimeError, TaskError) as exc:
+                    self._json({"error": str(exc)}, 409)
+                    return
+                if decision == "confirm" and answer.get("state") == "confirmed" and answer.get("kind") in ("install", "connect", "connect_api"):
+                    if answer.get("repeat"):
+                        job_id = self.server.blocks_proposal_jobs.get(pid, "")
+                        self._json({"ok": True, "card": answer.get("card") or "", "state": answer.get("state"), "job": job_id})
+                        return
+                    kind = answer.get("kind")
+                    job_id = uuid.uuid4().hex
+                    self.server.blocks_proposal_jobs[pid] = job_id
+                    replaces = bool(proposal and proposal.get("replaces"))
+                    if kind == "install":
+                        install_id = answer["install"]
+                        self.server.blocks_jobs[job_id] = {"kind": "install", "done": False, "result": None, "error": ""}
+                        def run_inst():
+                            try:
+                                t_path = self.server.terminal_path() or ""
+                                m_path = merged_path(os.environ.get("PATH", ""), t_path)
+                                res = blocks_install.run_install(install_id, root=project, path=m_path)
+                                if res.get("ok"):
+                                    os.environ["PATH"] = m_path
+                                self.server.blocks_jobs[job_id]["result"] = res
+                            except Exception as e:
+                                self.server.blocks_jobs[job_id]["error"] = str(e)
+                            finally:
+                                self.server.blocks_jobs[job_id]["done"] = True
+                        threading.Thread(target=run_inst, daemon=True).start()
+                    elif kind == "connect":
+                        block = answer["block"]
+                        approved = answer.get("approved")
+                        self.server.blocks_jobs[job_id] = {"kind": "check", "done": False, "result": None, "error": "", "card": block, "replaces": replaces}
+                        def run_cli():
+                            try:
+                                t_path = self.server.terminal_path() or ""
+                                m_path = merged_path(os.environ.get("PATH", ""), t_path)
+                                res = blocks_check.check_cli(block, root=project, approved=approved, path=m_path, terminal_path=t_path)
+                                self.server.blocks_jobs[job_id]["result"] = res
+                            except BlockError as e:
+                                if "确认" in str(e) or "对不上" in str(e):
+                                    self.server.blocks_jobs[job_id]["result"] = {"ok": False, "status": "changed", "reason": "要跑的命令和你确认时看到的不一样", "how": "跟行政说重新提议，确认新的完整命令"}
+                                else:
+                                    self.server.blocks_jobs[job_id]["error"] = str(e)
+                            except Exception as e:
+                                self.server.blocks_jobs[job_id]["error"] = str(e)
+                            finally:
+                                self.server.blocks_jobs[job_id]["done"] = True
+                        threading.Thread(target=run_cli, daemon=True).start()
+                    elif kind == "connect_api":
+                        block = answer["block"]
+                        api_key = str(body.get("api_key") or "").strip()
+                        self.server.blocks_jobs[job_id] = {"kind": "check", "done": False, "result": None, "error": "", "card": block, "replaces": replaces}
+                        def run_api():
+                            try:
+                                res = blocks_check.check_api(block, api_key, root=project, client_factory=self.server.blocks_client_factory)
+                                self.server.blocks_jobs[job_id]["result"] = res
+                            except Exception as e:
+                                self.server.blocks_jobs[job_id]["error"] = str(e)
+                            finally:
+                                self.server.blocks_jobs[job_id]["done"] = True
+                        threading.Thread(target=run_api, daemon=True).start()
+                    self._json({"ok": True, "card": answer.get("card") or "", "state": answer.get("state"), "job": job_id})
+                    return
+                self._json({"ok": True, "card": answer.get("card") or "", "state": answer.get("state")})
+                return
+
+        # 原有逻辑
         if path == "/api/clerk/preview":
             card_id = str(body.get("card") or "").strip()
             action = str(body.get("action") or "").strip()
@@ -651,7 +933,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):  # noqa: N802
         url = urlparse(self.path)
-        if not url.path.startswith(("/api/chat/", "/api/team/", "/api/clerk/")):
+        if not url.path.startswith(("/api/chat/", "/api/team/", "/api/clerk/", "/api/blocks/")):
             self._json({"error": "没有这个地址"}, 404)
             return
         if not self._chat_allowed():  # 没口令：已经回了 403
@@ -667,6 +949,10 @@ class Handler(BaseHTTPRequestHandler):
             return
         if url.path.startswith("/api/team/"):
             self._team_post(url.path, body)
+            return
+        if url.path.startswith("/api/blocks/"):
+            if self._block_allowed():
+                self._blocks_post(url.path, body)
             return
         if url.path.startswith("/api/clerk/"):
             self._clerk_post(url.path, body)
@@ -735,9 +1021,14 @@ def make_server(port: int = 0, token=None, hub=None) -> ThreadingHTTPServer:
     server.token = token          # 聊天口令；没有就不开放聊天
     server.hub = hub if hub is not None else ChatHub()
     server.clerk = None           # 行政人员的模型连接，密钥只在内存里
+    server.blocks_clerk = None    # 积木库行政的模型连接
+    server.blocks_client_factory = None
+    server.terminal_path = terminal_path
+    server.blocks_jobs = {}
+    server.blocks_proposal_jobs = {}
     server.clerk_project = ""     # 这份连接属于哪个项目；空表示不拦（旧测试直接设 clerk）
     server.clerk_setting = None   # 这份连接用的服务商和模型，不含密钥
-    server.desk = ClerkDesk(lambda: server.clerk)
+    server.desk = ClerkDesk(lambda: server.clerk, blocks_client=lambda: server.blocks_clerk)
     server.watcher = TaskWatcher(server.desk)
     server.preview = PreviewHub()
     server.checks = {}            # (项目, 第几次检测) -> 这次检测连通的进度

@@ -74,8 +74,9 @@ class _Conversation:
 
 
 class ClerkDesk:
-    def __init__(self, client):
+    def __init__(self, client, blocks_client=None):
         self._client = client  # 取当前模型连接的函数：密钥可能晚一点才配好
+        self._blocks_client = blocks_client
         self._open = {}
         self._focus = {}
         self._lock = threading.Lock()
@@ -264,7 +265,8 @@ class ClerkDesk:
             return {"events": list(conv.events[since:]), "open": True, "busy": conv.busy}
 
     def send(self, project: str, cid: str, text: str) -> str:
-        client = self._client()
+        use_blocks = self._blocks_client is not None and blocks_tools.is_blocks_home(project)
+        client = self._blocks_client() if use_blocks else self._client()
         if client is None:
             raise RuntimeError("行政人员还没配置好，请先填写模型密钥")
         # 积木库里贴了像密钥的字：保存和发给模型之前就换掉（项目窗口不变）
