@@ -215,7 +215,7 @@ class UnverifiedCodeDoesNotSpread(MergeCase):
         self.second_card("待验收")
         status, answer = self.post("/api/clerk/card", self.body("revise", text="改"))
         self.assertEqual(status, 409)
-        self.assertIn("合并", answer["error"])
+        self.assertIn("放进项目", answer["error"])
 
     def test_approve_waits(self):
         self.merging_a()
@@ -225,7 +225,7 @@ class UnverifiedCodeDoesNotSpread(MergeCase):
         (docs / "项目说明.md").write_text("# 项目说明\n正文\n", encoding="utf-8")
         status, answer = self.post("/api/clerk/card", self.body("approve"))
         self.assertEqual(status, 409)
-        self.assertIn("合并", answer["error"])
+        self.assertIn("放进项目", answer["error"])
         self.assertEqual(self.state("CARD-002"), "待对齐")
 
     def test_leftover_mark_of_a_finished_card_does_not_block(self):
@@ -519,7 +519,7 @@ class HonestReasons(MergeCase):
         self.commit("src/app.py", "主项目也改了\n")
         reason = self.merge()["reason"]
         self.assertIn("src/app.py", reason)
-        self.assertIn("还要修改", reason)
+        self.assertIn("继续改", reason)
 
     def test_commit_hook_failure_says_so(self):
         self.prepared()
@@ -543,7 +543,7 @@ class HonestReasons(MergeCase):
         from desktop.view import card_view
         self.prepared()
         self.mark("merge", "CARD-001", __import__("os").getpid())
-        self.assertEqual(card_view(self.project, "CARD-001")["now"]["text"], "合并中")
+        self.assertEqual(card_view(self.project, "CARD-001")["now"]["text"], "正在放进项目")
 
 
 class ConflictIsNotADeadEnd(MergeCase):
@@ -717,7 +717,7 @@ class ReportWords(Case):
         record(cdir, "合并失败", src="程序", dst="你", summary="有冲突。点按钮处理。")
         said = Said()
         TaskWatcher(said).tick(self.project)
-        self.assertEqual(said.lines, ["「甲」合并没成功：有冲突。点按钮处理。"])
+        self.assertEqual(said.lines, ["「甲」没能放进项目：有冲突。点按钮处理。"])
 
 
 class BoxEdges(ChatCase):
@@ -780,7 +780,7 @@ class Pages(Case):
     def test_button_without_a_branch(self):
         done = run_node("const P = require(" + json.dumps(str(STATIC / "panel.js")) + ");" + """
           const b = P.actionButtons({ actions: ['accept'], branch: '' }, true);
-          if (b[0].label !== '验收通过，合并') throw new Error(b[0].label);
+          if (b[0].label !== '确认没问题，放进项目') throw new Error(b[0].label);
         """)
         self.assertEqual(done.returncode, 0, done.stderr)
 

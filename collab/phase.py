@@ -324,7 +324,7 @@ def card_phase(project: str, card_id: str) -> dict:
                 break
         if merging:
             return {
-                "code": "merging", "label": "合并中", "tone": "run", "needs_you": False,
+                "code": "merging", "label": "正在放进项目", "tone": "run", "needs_you": False,
                 "detail": "", "actions": [],
             }
         last_result = None
@@ -334,26 +334,32 @@ def card_phase(project: str, card_id: str) -> dict:
         if (cdir / "合并进行中.json").is_file():
             told = last_result.get("summary") if last_result and last_result.get("kind") == "合并失败" else ""
             if not told and _merge_not_started(project, cdir):
-                told = "合并中途断了，项目没有变，可以再试一次。"
+                told = "放进项目中途断了，项目没有变，可以再试一次。"
             return {
-                "code": "merge_failed", "label": "合并没成功", "tone": "bad", "needs_you": True,
-                "detail": str(told or "合并停在了半路，项目里的代码还没验证完。再点一次继续验证，或点“不做了”退回。"),
+                "code": "merge_failed", "label": "没能放进项目", "tone": "bad", "needs_you": True,
+                "detail": str(told or "放进项目停在了半路，项目里的代码还没验证完。再点一次继续验证，或点“放弃这个需求”退回。"),
                 "actions": ["accept", "discard"], "branch": branch,
+            }
+        worktree = Path(project).parent / f"{Path(project).name}-worktrees" / card_id
+        if any(ev.get("kind") == "开跑" for ev in events) and not worktree.is_dir():
+            return {
+                "code": "copy_missing", "label": "改好的版本不在了", "tone": "bad", "needs_you": True,
+                "detail": "改好的版本不在了。可以重新提这个需求。", "actions": ["discard"],
             }
         if last_result and last_result.get("kind") == "合并失败":
             return {
-                "code": "merge_failed", "label": "合并没成功", "tone": "bad", "needs_you": True,
+                "code": "merge_failed", "label": "没能放进项目", "tone": "bad", "needs_you": True,
                 "detail": str(last_result.get("summary") or ""), "actions": ["accept", "revise", "discard"],
                 "branch": branch,
             }
         if last_result and last_result.get("kind") == "合并开始":
             return {
-                "code": "merge_failed", "label": "合并没成功", "tone": "bad", "needs_you": True,
-                "detail": "合并中途断了，可以再试一次", "actions": ["accept", "revise", "discard"],
+                "code": "merge_failed", "label": "没能放进项目", "tone": "bad", "needs_you": True,
+                "detail": "放进项目中途断了，可以再试一次", "actions": ["accept", "revise", "discard"],
                 "branch": branch,
             }
         return {
-            "code": "review", "label": "等你验收", "tone": "ok", "needs_you": True,
+            "code": "review", "label": "等你确认", "tone": "ok", "needs_you": True,
             "detail": "", "actions": ["accept", "revise", "discard"], "branch": branch,
         }
 

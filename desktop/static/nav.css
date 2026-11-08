@@ -34,15 +34,26 @@ body { overflow: hidden; }
 .newchat:hover { background: rgba(255, 255, 255, .05); color: var(--text); }
 .newchat:focus-visible { box-shadow: inset 0 0 0 2px rgba(240, 162, 59, .5); }
 #threads { padding: 2px 0 0; }
-.thread { display: flex; align-items: baseline; gap: 8px; width: 100%; padding: 6px 10px; font-size: var(--fs-sm); text-align: left; color: var(--dim); background: none; border: 0; border-radius: var(--r-md); cursor: default; transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease); }
-.thread:hover { background: rgba(255, 255, 255, .05); color: var(--text); }
-.thread.on { background: rgba(255, 255, 255, .1); color: var(--text); }
+.row { position: relative; display: flex; align-items: center; width: 100%; border-radius: var(--r-md); }
+.row:hover, .row:focus-within { background: rgba(255, 255, 255, .05); }
+.row .thread.on, .row:has(.thread.on), .row .item.on, .row:has(.item.on) { background: rgba(255, 255, 255, .1); }
+.row .item { flex: 1; min-width: 0; width: auto; }
+.row .item:hover { background: none; }
+.thread { display: flex; align-items: baseline; gap: 8px; flex: 1; min-width: 0; width: auto; padding: 6px 10px; font-size: var(--fs-sm); text-align: left; color: var(--dim); background: none; border: 0; border-radius: var(--r-md); cursor: default; transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease); }
+.thread:hover { color: var(--text); }
+.thread.on { color: var(--text); }
 .thread.on .tt { font-weight: 500; }
 .thread .tt { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.thread .tm { flex: none; font: var(--fs-xs) var(--font-mono); color: var(--faint); }
+.thread .tm { flex: none; font: var(--fs-xs) var(--font-mono); color: var(--faint); transition: opacity var(--t-fast) var(--ease); }
+.row:has(.rowact):hover .tm, .row:has(.rowact):focus-within .tm { opacity: 0; }
+.row:has(.rowact):hover .item, .row:has(.rowact):focus-within .item { padding-right: 36px; }
+.rowact { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); width: 28px; height: 28px; display: grid; place-items: center; color: var(--dim); background: none; border: 0; border-radius: var(--r-sm); cursor: default; opacity: 0; transition: opacity var(--t-fast) var(--ease), color var(--t-fast) var(--ease), background var(--t-fast) var(--ease); }
+.row:hover .rowact, .row:focus-within .rowact { opacity: 1; }
+.rowact:hover { color: var(--text); background: rgba(255, 255, 255, .08); }
 .more { display: block; width: 100%; padding: 4px 10px; font-size: var(--fs-sm); text-align: left; color: var(--faint); background: none; border: 0; cursor: default; }
 .more:hover { color: var(--text); }
 .gh { display: flex; align-items: center; justify-content: space-between; padding: 12px 10px 5px; font-size: var(--fs-base); font-weight: 500; color: var(--text); }
+.gh.fold { width: 100%; font-family: inherit; text-align: left; background: none; border: 0; cursor: default; }
 .gh span:last-child { font-family: var(--font-mono); font-size: var(--fs-xs); font-weight: 400; color: var(--dim); }
 
 .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--surface-3); }

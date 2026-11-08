@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from urllib.parse import urlparse
 from typing import Optional, Tuple
 
 from collab.config import load_models
@@ -16,17 +17,19 @@ from collab.state import Card
 from collab.workspace import PROFILE_TEMPLATE, has_blanks, profile_path, render_board
 
 _PLAN_TIMEOUT = 15 * 60
+_VIEW_KEYS = ("view_how", "view_command", "view_url")
 _PLAN_SCHEMA_KEYS = (
     "summary", "steps", "result", "not_do", "questions",
     "allowed", "test_command", "profile",
-)
+) + _VIEW_KEYS
+_CORE_KEYS = tuple(k for k in _PLAN_SCHEMA_KEYS if k not in _VIEW_KEYS)
 _TEXT_KEYS = ("summary", "result", "not_do", "test_command", "profile")
 _LIST_KEYS = ("steps", "questions", "allowed")
 
 
 def _plan_schema() -> dict:
     props = {}
-    for key in _TEXT_KEYS:
+    for key in _TEXT_KEYS + _VIEW_KEYS:
         props[key] = {"type": "string"}
     for key in _LIST_KEYS:
         props[key] = {"type": "array", "items": {"type": "string"}}
@@ -81,7 +84,7 @@ def _need_profile(project: Path) -> bool:
 def _validate_answer(data: dict, need_profile: bool) -> Tuple[bool, str]:
     if not isinstance(data, dict):
         return False, "回答不是一份结构化的内容"
-    for k in _PLAN_SCHEMA_KEYS:
+    for k in _CORE_KEYS:
         if k not in data:
             return False, f"缺少字段：{k}"
     for k in _TEXT_KEYS:
@@ -90,6 +93,9 @@ def _validate_answer(data: dict, need_profile: bool) -> Tuple[bool, str]:
     for k in _LIST_KEYS:
         value = data.get(k)
         if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+            return False, f"字段类型不对：{k}"
+    for k in _VIEW_KEYS:
+        if k in data and data[k] is not None and not isinstance(data[k], str):
             return False, f"字段类型不对：{k}"
 
     summary = data["summary"].strip()
@@ -122,6 +128,34 @@ def _validate_answer(data: dict, need_profile: bool) -> Tuple[bool, str]:
     return True, ""
 
 
+def is_local_url(url: str) -> bool:
+    """预览只开本机的 http 地址。窗口那边用同一条规则，两边不一致会启动了却打不开。"""
+    try:
+        parsed = urlparse(str(url or "").strip())
+        return parsed.scheme == "http" and (parsed.hostname or "").lower() in ("127.0.0.1", "localhost")
+    except ValueError:
+        return False
+
+
+def _clean_view_fields(plan: dict) -> Tuple[str, str, str]:
+    """命令解析不了或地址不是本机时，命令和地址都清空；怎么看保留。"""
+    how = str(plan.get("view_how") or "").strip()
+    cmd = str(plan.get("view_command") or "").strip()
+    url = str(plan.get("view_url") or "").strip()
+    drop = False
+    if cmd:
+        try:
+            if not shlex.split(cmd):
+                drop = True
+        except ValueError:
+            drop = True
+    if url and not is_local_url(url):
+        drop = True
+    if drop:
+        cmd, url = "", ""
+    return how, cmd, url
+
+
 def _render_plan_md(plan: dict) -> str:
     steps = plan.get("steps") or []
     if not isinstance(steps, (list, tuple)):
@@ -132,13 +166,23 @@ def _render_plan_md(plan: dict) -> str:
         questions = [str(questions)]
     q_lines = [str(q).strip() for q in questions if str(q).strip()]
     q_txt = "\n".join(f"- {q}" for q in q_lines) if q_lines else "无"
+    how, cmd, url = _clean_view_fields(plan)
+    view_lines = []
+    if how:
+        view_lines.append(how)
+    if cmd:
+        view_lines.append(f"启动：{cmd}")
+    if url:
+        view_lines.append(f"地址：{url}")
+    view_txt = "\n".join(view_lines) if view_lines else "方案里没写"
     return (
         "# 拆解方案\n\n"
         f"## 要做什么（一句话）\n{plan['summary'].strip()}\n\n"
         f"## 拆成几步，每步做什么、产出什么\n{steps_txt}\n\n"
-        f"## 你会看到什么结果（验收标准）\n{str(plan.get('result') or '').strip()}\n\n"
+        f"## 你会看到什么结果\n{str(plan.get('result') or '').strip()}\n\n"
         f"## 明确不做什么\n{str(plan.get('not_do') or '').strip()}\n\n"
-        f"## 需要你确认的问题\n{q_txt}\n"
+        f"## 需要你确认的问题\n{q_txt}\n\n"
+        f"## 做完后怎么看结果\n{view_txt}\n"
     )
 
 
@@ -166,11 +210,14 @@ def _build_prompt(card_dir: Path, requirement_text: str, need_profile: bool) -> 
         + "。",
         "- summary：一句话说明要做什么。",
         "- steps：字符串数组，每一步一句话。",
-        "- result：用户会看到什么验收结果。",
+        "- result：用户会看到什么结果。",
         "- not_do：明确不做什么。",
         "- questions：字符串数组；没有问题就写空数组。问题里要带推荐答案。",
         "- allowed：字符串数组，尽量窄，列出允许改动的相对路径（相对项目根）。",
         "- test_command：一条测试命令字符串。",
+        "- view_how：大白话说明打开后看哪里、看什么。用户点按钮就能打开，不要让用户运行命令。",
+        "- view_command：本机启动命令；网页类项目填写，用 --host 127.0.0.1 这类写法绑定本机地址，端口不要和项目日常开的相同；不是网页就填空字符串。",
+        "- view_url：打开的地址，网页类填 http://127.0.0.1 开头的地址；不是网页就填空字符串。",
     ]
     if need_profile:
         lines.append(
@@ -264,8 +311,16 @@ def plan_card(project: str, card_id: str) -> int:
 
         (card_dir / "方案.md").write_text(plan_md, encoding="utf-8")
         req_path.write_text(_replace_allowed_section(requirement, allowed), encoding="utf-8")
+        start = {"test_command": str(data.get("test_command") or "").strip()}
+        how, cmd, url = _clean_view_fields(data)
+        if how:
+            start["view_how"] = how
+        if cmd:
+            start["view_command"] = cmd
+        if url:
+            start["view_url"] = url
         (card_dir / "开工.json").write_text(
-            json.dumps({"test_command": str(data.get("test_command") or "").strip()}, ensure_ascii=False, indent=2),
+            json.dumps(start, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
 

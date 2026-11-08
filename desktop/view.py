@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import time
@@ -12,7 +13,7 @@ from datetime import datetime
 from pathlib import Path
 
 from collab.config import ConfigError, load_team
-from collab.flow import read_flow, summarize, text_of, working_now
+from collab.flow import card_title, read_flow, summarize, text_of, working_now
 from collab.phase import card_phase, process_is_alive
 from collab.judge import PASS
 from collab.state import Card
@@ -50,28 +51,7 @@ def _when(event):
         return None
 
 
-_INTERNAL_HEADINGS = ("务必先看", "执行员", "不要调用", "注意事项", "重要提示")
-
-
-def _title(cdir: Path, card_id: str) -> str:
-    for ev in read_flow(cdir):
-        if ev.get("kind") == "需求" and (ev.get("summary") or "").strip():
-            cand = ev["summary"].strip()
-            if not any(k in cand for k in _INTERNAL_HEADINGS):
-                return cand
-    path = cdir / "需求卡.md"
-    if path.exists():
-        text = path.read_text(encoding="utf-8")
-        for line in text.splitlines():
-            s = line.strip()
-            if s.startswith("#"):
-                cand = s.lstrip("#").strip()
-                if cand and not any(k in cand for k in _INTERNAL_HEADINGS):
-                    return summarize(cand)
-        title = summarize(text)
-        if title:
-            return title
-    return card_id
+_title = card_title
 
 
 def _card_dirs(project: Path) -> dict:
@@ -81,9 +61,38 @@ def _card_dirs(project: Path) -> dict:
     return {d.name: d for d in base.iterdir() if d.is_dir() and (d / "状态.json").exists()}
 
 
+ARCHIVE_MARK = "已归档.json"
+
+
 def _updated(cdir: Path) -> float:
     stamps = [p.stat().st_mtime for p in (cdir / "状态.json", cdir / "流转.jsonl") if p.exists()]
     return max(stamps) if stamps else 0.0
+
+
+def _finished(phase: dict) -> bool:
+    return phase.get("tone") == "done" and not phase.get("needs_you")
+
+
+def _archived(cdir: Path, phase: dict) -> bool:
+    """有归档标记，并且卡现在是结束的。要用户处理的卡不能藏着。"""
+    return (cdir / ARCHIVE_MARK).exists() and _finished(phase)
+
+
+def set_archived(project_dir, card_id: str, on: bool) -> None:
+    project = Path(project_dir)
+    cdir = _card_dirs(project).get(card_id)
+    if cdir is None:
+        raise LookupError("没有这张卡片")
+    mark = cdir / ARCHIVE_MARK
+    if on:
+        phase = card_phase(str(project), card_id)
+        if not _finished(phase):
+            raise RuntimeError("这张卡还没结束，不能归档")
+        if not mark.exists():
+            mark.write_text("{}", encoding="utf-8")
+        return
+    if mark.exists():
+        mark.unlink()
 
 
 def list_cards(project_dir) -> list:
@@ -97,7 +106,8 @@ def list_cards(project_dir) -> list:
         except (OSError, ValueError, TypeError, KeyError):
             continue
         cards.append({"id": card_id, "title": _title(cdir, card_id), "state": card.state,
-                      "rework": card.rework, "updated": _updated(cdir), "phase": phase})
+                      "rework": card.rework, "updated": _updated(cdir), "phase": phase,
+                      "archived": _archived(cdir, phase)})
     cards.sort(key=lambda c: (c["updated"], c["id"]), reverse=True)
     return cards
 
@@ -227,7 +237,7 @@ def _stations(tools: dict, reviewer_on: bool, dispatcher=None) -> list:
         {"key": "check", "role": "跑测试", "who": "程序", "face": "检"},
         {"key": "rev", "role": "复查", "who": _name(tools["复查员"]) if reviewer_on else "不复查",
          "face": _face(tools["复查员"]) if reviewer_on else "—"},
-        {"key": "accept", "role": "验收", "who": "你", "face": "你"},
+        {"key": "accept", "role": "确认", "who": "你", "face": "你"},
     ]
 
 
@@ -315,15 +325,16 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
     explicit_card = card_id
     if explicit_card in dirs:
         chat = None   # 用户点开的是这张卡：只看它自己的记录，主对话正在聊什么和它无关
-    if card_id is None and cards:
-        card_id = cards[0]["id"]
+    top = next((c for c in cards if not c.get("archived")), None)
+    if card_id is None and top is not None:
+        card_id = top["id"]
     if card_id not in dirs:
         if chat:
             return _chat_view(base, chat, tools, team_reviewer_on, dispatcher)
         base["now"] = {"text": "等你提需求", "tone": "idle"}
         return base
-    if explicit_card is None and chat and cards and cards[0]["state"] == "已合并" \
-            and (chat["busy"] or chat["asking"] or chat["updated"] > cards[0]["updated"]):
+    if explicit_card is None and chat and top is not None and top["state"] == "已合并" \
+            and (chat["busy"] or chat["asking"] or chat["updated"] > top["updated"]):
         return _chat_view(base, chat, tools, team_reviewer_on, dispatcher)
 
     cdir = dirs[card_id]
@@ -375,7 +386,7 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
 
     disp = {"待对齐": ("active", "在和你对齐需求、写方案"), "待派发": ("active", "方案已批准，准备开工"),
             "需Claude介入": ("fail", escalations[-1]["summary"] if escalations else "需要调度员介入"),
-            "待验收": ("done", "已向你汇报"), "已合并": ("done", "已合并")}
+            "待验收": ("done", "已向你汇报"), "已合并": ("done", "已放进项目")}
     if chat and (chat["busy"] or chat["asking"]) and state in ("待对齐", "待派发", "待验收"):
         _set(stations, "disp", "wait" if chat["asking"] else "active", chat["step_text"],
              live=bool(chat["busy"]), elapsed=chat["elapsed"], quiet=chat["quiet"])
@@ -422,9 +433,14 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
 
     if disp_busy_after:
         _set(stations, "accept", "idle", "等调度员最终核验完")
+    elif phase.get("code") in ("merge_failed", "copy_missing"):
+        _set(stations, "accept", "fail", phase.get("detail") or phase.get("label") or "没能放进项目")
+    elif state == "待验收":
+        _set(stations, "accept", "wait", "做完了，请你确认")
+    elif state == "已合并":
+        _set(stations, "accept", "done", "已放进项目")
     else:
-        _set(stations, "accept", *{"待验收": ("wait", "做完了，等你验收"), "已合并": ("done", "已合并")}
-             .get(state, ("idle", "等全部做完")))
+        _set(stations, "accept", "idle", "等全部做完")
 
     view["back"] = bool(open_ev and open_ev.get("dst") == "开发员" and last_verdict
                         and last_verdict.get("result") != PASS)
@@ -465,9 +481,9 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
     elif state == "待派发":
         now_text, tone = "方案已批准，等调度员开工", "run"
     elif state == "待验收":
-        now_text, tone = "做完了，等你验收", "ok"
+        now_text, tone = "做完了，等你确认", "ok"
     elif state == "已合并":
-        now_text, tone = "已合并", "ok"
+        now_text, tone = "已放进项目", "ok"
     elif state == "需Claude介入":
         reason = escalations[-1]["summary"] if escalations else "原因见交接记录"
         now_text, tone = f"需要调度员介入：{reason}", "bad"
@@ -481,7 +497,7 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
     code = phase.get("code")
     chat_live = bool(chat and (chat.get("busy") or chat.get("asking")))
     tone_map = {"wait": "wait", "run": "run", "bad": "bad", "ok": "ok", "done": "idle"}
-    if code in ("dropped", "interrupted", "merging", "merge_failed"):
+    if code in ("dropped", "interrupted", "merging", "merge_failed", "copy_missing"):
         now_text = phase.get("label") or now_text
         tone = tone_map.get(phase.get("tone"), tone)
     elif (code in ("plan_failed", "plan_waiting", "planning", "start_failed")
@@ -489,4 +505,35 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
         now_text = phase.get("label") or now_text
         tone = tone_map.get(phase.get("tone"), tone)
     view["now"] = {"text": now_text, "tone": tone}
+    if code in ("review", "merge_failed"):
+        start = {}
+        start_path = cdir / "开工.json"
+        if start_path.is_file():
+            try:
+                raw = json.loads(start_path.read_text(encoding="utf-8"))
+                start = raw if isinstance(raw, dict) else {}
+            except (OSError, ValueError):
+                start = {}
+        how = str(start.get("view_how") or "").strip()
+        cmd = str(start.get("view_command") or "").strip()
+        url = str(start.get("view_url") or "").strip()
+        result = ""
+        plan_path = cdir / "方案.md"
+        if plan_path.is_file():
+            try:
+                plan_text = plan_path.read_text(encoding="utf-8")
+            except OSError:
+                plan_text = ""
+            lines, inside = [], False
+            for line in plan_text.splitlines():
+                if line.startswith("## "):
+                    if inside:
+                        break
+                    inside = line.startswith("## 你会看到什么结果")  # 老方案的标题后面还带着说明
+                elif inside:
+                    lines.append(line)
+            result = "\n".join(lines).strip()
+        root = Path(project)
+        copy_there = (root.parent / f"{root.name}-worktrees" / card_id).is_dir()
+        view["accept"] = {"result": result, "how": how, "can_preview": bool(cmd and url), "copy_there": copy_there}
     return view

@@ -9,6 +9,13 @@
 </head>
 <body>
 <main class="side" id="side" aria-label="卡片详情">
+  <div class="accept-box" id="acceptBox" hidden>
+    <div class="accept-title">做完了，请你确认</div>
+    <div class="accept-row"><span class="accept-lbl">你应该看到</span><div id="acceptResult"></div></div>
+    <div class="accept-row"><span class="accept-lbl">在哪看</span><div id="acceptHow"></div></div>
+    <button type="button" id="previewBtn">打开改好的版本</button>
+    <p class="accept-err" id="previewErr" hidden></p>
+  </div>
   <div class="actions" id="actions" hidden>
     <div class="phase-hint" id="phaseHint"></div>
     <div class="action-btns" id="actionBtns"></div>

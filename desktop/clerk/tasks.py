@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from collab.config import ConfigError, load_team, save_team_member
-from collab.flow import record as flow_record
+from collab.flow import card_title, record as flow_record
 from collab.merge import merge_unfinished, sync_copy
 from collab.phase import card_phase, process_is_alive, process_start
 from collab.tasks import TaskError, new_card, revise_card
@@ -87,6 +87,28 @@ def _open_in_conversation(project: str, conversation: str) -> list:
         if isinstance(data, dict) and data.get("conversation") == conversation and data.get("state") == "open":
             found.append(data)
     return found
+
+
+def conversations_with_open(project: str) -> set:
+    """哪些对话里有还没确认的提议。左栏每次刷新都问，只扫一遍文件夹。"""
+    folder = _folder(project)
+    if not folder.is_dir():
+        return set()
+    found = set()
+    for path in folder.glob("*.json"):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(data, dict) and data.get("state") == "open" and data.get("conversation"):
+            found.add(data["conversation"])
+    return found
+
+
+def cancel_open(project: str, conversation: str) -> None:
+    """对话删掉时，里面没确认的提议一起作废。"""
+    for data in _open_in_conversation(project, conversation):
+        decide(project, conversation, data["id"], "cancel")
 
 
 def propose(conv, arguments: dict) -> str:
@@ -502,7 +524,7 @@ def apply_revise(project: str, card_id: str, text: str) -> None:
     if running(project, "run") is not None:
         raise RuntimeError("已有一张卡在施工，等它做完再改")
     if running(project, "merge") is not None or merge_unfinished(project):
-        raise RuntimeError("另一张卡的合并还没结束，等它结束再改")
+        raise RuntimeError("另一张卡还在放进项目，等它结束再改")
     start = Path(project) / ".collab" / "cards" / card_id / "开工.json"
     command = ""
     if start.is_file():
@@ -511,7 +533,7 @@ def apply_revise(project: str, card_id: str, text: str) -> None:
         except (OSError, ValueError, TypeError):
             command = ""
     if not command:
-        raise RuntimeError("这张卡没有测试命令，没法接着改。可以点“不做了”，再提一张新卡。")
+        raise RuntimeError("这张卡没有测试命令，没法接着改。可以点“放弃这个需求”，再提一张新卡。")
     sync_copy(project, card_id)  # 同步不成会抛错，这时什么都没改
     revise_card(project, card_id, words)
     cdir = Path(project) / ".collab" / "cards" / card_id
@@ -564,7 +586,7 @@ def launch(project: str, kind: str, card_id: str, args: list) -> int:
                                 summary="开始施工", pid=proc.pid, started=started)
                 elif kind == "merge":
                     flow_record(cdir, "合并开始", src="程序", dst="程序",
-                                summary="开始合并", pid=proc.pid, started=started)
+                                summary="开始放进项目", pid=proc.pid, started=started)
             except OSError:
                 pass
 
@@ -603,16 +625,7 @@ _REPORT_CODES = frozenset({
 })
 
 
-def _card_title(cdir: Path, card_id: str) -> str:
-    req = cdir / "需求卡.md"
-    if req.is_file():
-        for line in req.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if line.startswith("# "):
-                t = line[2:].strip()
-                if t:
-                    return t
-    return card_id
+_card_title = card_title
 
 
 def _conversation_from_source(cdir: Path) -> str:
@@ -688,7 +701,7 @@ def _report_text(code: str, title: str, phase: dict) -> str:
             base += "：原因不明"
         return base + "。可以点卡片重写。"
     if code == "review":
-        return f"「{title}」做完了，等你验收。"
+        return f"「{title}」做完了，等你确认。"
     if code == "blocked":
         base = f"「{title}」卡住了"
         if reason:
@@ -699,11 +712,11 @@ def _report_text(code: str, title: str, phase: dict) -> str:
     if code == "interrupted":
         return f"「{title}」中断了，可以点卡片接着跑。"
     if code == "start_failed":
-        return f"「{title}」开工失败，可以点卡片接着跑，或者不做了。"
+        return f"「{title}」开工失败，可以点卡片接着跑，或者放弃这个需求。"
     if code == "done":
-        return f"「{title}」已合并。"
+        return f"「{title}」已放进项目。"
     if code == "merge_failed":
-        base = f"「{title}」合并没成功"
+        base = f"「{title}」没能放进项目"
         if reason:
             base += f"：{reason}"
         return base + "。"

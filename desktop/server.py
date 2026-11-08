@@ -15,6 +15,7 @@ import argparse
 import hmac
 import json
 import os
+import signal
 import re
 import socketserver
 import sys
@@ -31,6 +32,7 @@ if str(ROOT) not in sys.path:  # 直接用 python3 desktop/server.py 启动时�
 
 from collab.check import check_team  # noqa: E402
 from collab.cli import cmd_approve, cmd_confirm_profile  # noqa: E402
+from collab.dispatch import uncommitted_count  # noqa: E402
 from collab.config import (  # noqa: E402
     DEFAULT_MODELS,
     DEFAULT_TEAM,
@@ -45,7 +47,7 @@ from collab.config import (  # noqa: E402
 )
 from collab.flow import read_flow, record as flow_record  # noqa: E402
 from collab.ledger import ledger_add  # noqa: E402
-from collab.merge import merge_unfinished, undo_interrupted  # noqa: E402
+from collab.merge import merge_unfinished, remove_copy, undo_interrupted  # noqa: E402
 from collab.phase import card_phase  # noqa: E402
 from collab.scope import read_allowed  # noqa: E402
 from collab.state import Card, InvalidTransition  # noqa: E402
@@ -57,9 +59,10 @@ from desktop.clerk.providers import PROVIDERS, find as find_provider  # noqa: E4
 from desktop.clerk.tasks import (  # noqa: E402
     StopWrongCard, TaskBusy, TaskWatcher, apply_revise, launch, running, stop_construction,
 )
+from desktop.preview import PreviewHub  # noqa: E402
 from collab.tasks import TaskError  # noqa: E402
 from desktop.shell_path import adopt_terminal_path  # noqa: E402
-from desktop.view import card_view, event_text, list_cards  # noqa: E402
+from desktop.view import card_view, event_text, list_cards, set_archived  # noqa: E402
 
 _TOOLS = [{"value": "codex", "label": "Codex"}, {"value": "cursor", "label": "Cursor"}, {"value": "agy", "label": "agy"}]
 _TEAM_OPTIONS = {"dispatcher": _TOOLS, "worker": _TOOLS,
@@ -132,6 +135,9 @@ class Handler(BaseHTTPRequestHandler):
         self._json({"error": text}, 409)
 
     def _do_card_action(self, project: str, card_id: str, action: str, text: str = "") -> None:
+        preview = getattr(self.server, "preview", None)
+        if preview is not None:
+            preview.stop()
         phase = card_phase(project, card_id)
         actions = phase.get("actions") or []
         cdir = Path(project) / ".collab" / "cards" / card_id
@@ -143,7 +149,7 @@ class Handler(BaseHTTPRequestHandler):
 
         if action == "accept":
             if running(project, "merge") is not None:
-                self._card_action_error("另一张卡正在合并，等它结束再试")
+                self._card_action_error("另一张卡正在放进项目，等它结束再试")
                 return
             if action not in actions:
                 self._card_action_error("现在不能做这个操作，请先看我说的阶段。")
@@ -151,7 +157,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 launch(project, "merge", card_id, ["merge", project, card_id])
             except (TaskBusy, OSError):
-                self._card_action_error("另一张卡正在合并，等它结束再试")
+                self._card_action_error("另一张卡正在放进项目，等它结束再试")
                 return
             self._json({"ok": True})
             return
@@ -183,6 +189,7 @@ class Handler(BaseHTTPRequestHandler):
             flow_record(cdir, "放弃", src="你", dst="程序", summary=("先不做。" + told) if told else "先不做")
             render_board(Path(project) / ".collab")
             ledger_add(project, f"{card_id}：标记为先不做")
+            remove_copy(project, card_id)
             self._json({"ok": True})
             return
 
@@ -201,7 +208,7 @@ class Handler(BaseHTTPRequestHandler):
 
         if action == "approve":
             if running(project, "merge") is not None or merge_unfinished(project):
-                self._card_action_error("另一张卡的合并还没结束，等它结束再开工")
+                self._card_action_error("另一张卡还在放进项目，等它结束再开工")
                 return
             run_busy = running(project, "run")
             if run_busy is not None and str(run_busy.get("card") or "") != card_id:
@@ -247,7 +254,7 @@ class Handler(BaseHTTPRequestHandler):
             except OSError as exc:
                 flow_record(cdir, "开工失败", src="程序", dst="你",
                             summary="开工没能启动起来", text=str(exc))
-                self._card_action_error("开工没能启动起来，可以点接着跑再试，或者先不做了")
+                self._card_action_error("开工没能启动起来，可以点接着跑再试，或者先放弃这个需求")
                 return
             self._json({"ok": True})
             return
@@ -269,7 +276,7 @@ class Handler(BaseHTTPRequestHandler):
             except OSError as exc:
                 flow_record(cdir, "开工失败", src="程序", dst="你",
                             summary="开工没能启动起来", text=str(exc))
-                self._card_action_error("开工没能启动起来，可以点接着跑再试，或者先不做了")
+                self._card_action_error("开工没能启动起来，可以点接着跑再试，或者先放弃这个需求")
                 return
             self._json({"ok": True})
             return
@@ -468,6 +475,21 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"setting": load_clerk(project)})
             except ConfigError as exc:
                 self._json({"error": str(exc)}, 400)
+        elif path == "/api/clerk/preview":
+            project = query.get("project", "")
+            card_id = query.get("card", "")
+            if not project or not card_id:
+                self._json({"error": "需要项目和卡片"}, 400)
+                return
+            if not _CARD_ID.fullmatch(card_id):
+                self._json({"error": "卡片编号不对"}, 400)
+                return
+            self._json(self.server.preview.status(project, card_id))
+        elif path == "/api/clerk/uncommitted":
+            if not project:
+                self._json({"error": "需要项目"}, 400)
+                return
+            self._json({"count": uncommitted_count(project)})
         else:
             self._json({"error": "没有这个地址"}, 404)
 
@@ -483,6 +505,21 @@ class Handler(BaseHTTPRequestHandler):
     def _clerk_post(self, path: str, body: dict) -> None:
         """窗口把行政人员的密钥交给本机服务：只放内存，不写文件，也不回传。"""
         desk, project, conversation = self.server.desk, str(body.get("project") or ""), str(body.get("conversation") or "")
+        if path == "/api/clerk/preview":
+            card_id = str(body.get("card") or "").strip()
+            action = str(body.get("action") or "").strip()
+            if not project or not card_id or action not in ("start", "stop"):
+                self._json({"error": "需要项目、卡片和操作"}, 400)
+                return
+            if not _CARD_ID.fullmatch(card_id):
+                self._json({"error": "卡片编号不对"}, 400)
+                return
+            if action == "stop":
+                self.server.preview.stop()
+                self._json({"ok": True})
+                return
+            self._json(self.server.preview.start(project, card_id))
+            return
         if path in ("/api/clerk/send", "/api/clerk/stop", "/api/clerk/focus"):
             if not project or not Path(project).is_dir():
                 self._json({"error": "项目文件夹不存在"}, 400)
@@ -500,6 +537,20 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": True})
             except RuntimeError as exc:
                 self._json({"error": str(exc)}, 409)
+            return
+        if path == "/api/clerk/delete":
+            if not project or not Path(project).is_dir():
+                self._json({"error": "项目文件夹不存在"}, 400)
+                return
+            try:
+                desk.delete(project, conversation)
+                self._json({"ok": True})
+            except LookupError as exc:
+                self._json({"error": str(exc)}, 404)
+            except RuntimeError as exc:
+                self._json({"error": str(exc)}, 409)
+            except OSError:
+                self._json({"error": "没能删掉这段对话，请检查文件夹权限。"}, 409)
             return
         if path == "/api/clerk/proposal":
             if not project or not Path(project).is_dir():
@@ -526,6 +577,24 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(self.server.desk.open_card(project, card_id))
             except LookupError as exc:
                 self._json({"error": str(exc)}, 404)
+            return
+        if path == "/api/clerk/card/archive":
+            card_id = str(body.get("card") or "").strip()
+            if not project or not Path(project).is_dir():
+                self._json({"error": "项目文件夹不存在"}, 400)
+                return
+            if not card_id or not _CARD_ID.fullmatch(card_id):
+                self._json({"error": "卡片编号不对"}, 400)
+                return
+            try:
+                set_archived(project, card_id, bool(body.get("archived")))
+                self._json({"ok": True})
+            except LookupError as exc:
+                self._json({"error": str(exc)}, 404)
+            except RuntimeError as exc:
+                self._json({"error": str(exc)}, 409)
+            except OSError:
+                self._json({"error": "没能保存，请检查文件夹权限。"}, 409)
             return
         if path == "/api/clerk/card":
             card_id = str(body.get("card") or "").strip()
@@ -617,6 +686,15 @@ class Handler(BaseHTTPRequestHandler):
                 hub.close(project)
                 self._json({"ok": True})
                 return
+            if url.path == "/api/chat/delete":
+                try:
+                    hub.delete_thread(project, str(body.get("thread_id") or ""))
+                    self._json({"ok": True})
+                except LookupError as exc:
+                    self._json({"error": str(exc)}, 404)
+                except RuntimeError as exc:
+                    self._json({"error": str(exc)}, 409)
+                return
             session = hub.get(project)
             if session is None:
                 self._json({"error": "这个项目的调度员还没连上"}, 409)
@@ -661,15 +739,21 @@ def make_server(port: int = 0, token=None, hub=None) -> ThreadingHTTPServer:
     server.clerk_setting = None   # 这份连接用的服务商和模型，不含密钥
     server.desk = ClerkDesk(lambda: server.clerk)
     server.watcher = TaskWatcher(server.desk)
+    server.preview = PreviewHub()
     server.checks = {}            # (项目, 第几次检测) -> 这次检测连通的进度
     return server
 
 
-def _exit_with_parent() -> None:
+def _exit_with_parent(server=None) -> None:
     parent = os.getppid()
     while True:
         time.sleep(2)
         if os.getppid() != parent:  # 父进程没了（被系统接管），说明窗口已经关掉
+            if server is not None:
+                try:
+                    server.preview.stop()
+                except Exception:
+                    pass
             os._exit(0)
 
 
@@ -683,13 +767,24 @@ def main(argv=None) -> int:
     adopt_terminal_path()  # 双击打开时拿不到终端里的路径，Codex 等会被误报“没装”；从终端启动时这一步什么也不加
     server = make_server(args.port, token=args.token)
     print(f"PORT={server.server_address[1]}", flush=True)
+    def _quit(*_):  # 窗口退出时发这个信号：不处理的话进程直接没了，预览会留下来
+        try:
+            server.preview.stop()
+        finally:
+            os._exit(0)
+
+    signal.signal(signal.SIGTERM, _quit)
     if args.watch_parent:
-        threading.Thread(target=_exit_with_parent, daemon=True).start()
+        threading.Thread(target=_exit_with_parent, args=(server,), daemon=True).start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
+        try:
+            server.preview.stop()
+        except Exception:
+            pass
         server.server_close()
     return 0
 

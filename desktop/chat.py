@@ -126,12 +126,38 @@ class ChatSession:
 
     def list_threads(self) -> list:
         """列出当前项目的全部历史对话。"""
+        return self.read_threads() or []
+
+    def read_threads(self):
+        """和 list_threads 一样，但取失败时返回 None：取失败和真的没有不是一回事。"""
         if self.adapter is None or not hasattr(self.adapter, "list_threads"):
             return []
         try:
             return self.adapter.list_threads()
         except Exception:
-            return []
+            return None
+
+    def delete_thread(self, thread_id: str) -> None:
+        """删掉列表里的一段对话。不在列表里的（例如 Codex 独立客户端的旧对话）不删。"""
+        failed = "没能删除这段对话，列表没有变。可能要升级 Codex。"
+        if self.adapter is None or not hasattr(self.adapter, "delete_thread"):
+            raise RuntimeError(failed)
+        try:
+            rows = self.adapter.list_threads()   # 不用 self.list_threads：它把取失败也当成没有
+        except Exception as exc:
+            raise RuntimeError(failed) from exc
+        row = next((t for t in rows if t.get("id") == thread_id), None)
+        if row is None:
+            raise LookupError("这段对话已经不在了")
+        if row.get("deletable") is False:
+            raise LookupError("这段对话不是在超级助手里开始的，不能在这里删除")
+        current = getattr(self.adapter, "thread_id", None)
+        if thread_id == current and self.busy:
+            raise RuntimeError("这段对话还在回复，等说完或先点停止再删")
+        try:
+            self.adapter.delete_thread(thread_id)
+        except Exception as exc:
+            raise RuntimeError(failed) from exc
 
     def read_thread(self, thread_id: str) -> list:
         """读取另一段历史对话的内容（不切过去），读不到就返回空。"""
@@ -351,6 +377,7 @@ class ChatHub:
         self.factories = factories if factories is not None else default_factories()
         self._session = None
         self._lock = threading.Lock()
+        self._deleted = set()
 
     def open(self, project, dispatcher: str, mode: str = "continue", with_opening: bool = True,
              thread_id: str = None) -> ChatSession:
@@ -376,12 +403,29 @@ class ChatHub:
         session = self.get(project)
         current = getattr(getattr(session, "adapter", None), "thread_id", None)
         path = Path(project) / THREAD_LIST_FILE
-        if current is not None:
-            threads = session.list_threads()
-            if threads:
-                _save_thread_list(path, {"threads": threads, "current": current})
-            return {"threads": threads, "current": current, "cached": False}
+        rows = session.read_threads() if current is not None and session.usable else None
+        # 删除前就发出去的取列表，回答可能晚到：不能把删掉的写回去
+        threads = [t for t in rows or [] if t.get("id") not in self._deleted]
+        # 断了、取失败、取回来是空，都按没连上：显示记住的列表，不给删除。
+        # 空不代表真的没有：只取最新 30 段，可能全被外来对话占满。删最后一段时记住的列表已经改过了
+        if threads:
+            _save_thread_list(path, {"threads": threads, "current": current})
+            listed = [dict(t, busy=(t.get("id") == current and session.busy)) for t in threads]
+            return {"threads": listed, "current": current, "cached": False}
         return dict(_load_thread_list(path), cached=True)
+
+    def delete_thread(self, project, thread_id: str) -> None:
+        """删对话并更新本机记住的列表。列表空了也要写，否则重开软件它会回来。"""
+        session = self.get(project)
+        connected = session is not None and session.usable and getattr(session.adapter, "thread_id", None) is not None
+        if not connected:
+            raise RuntimeError("这个项目的调度员还没连上")
+        session.delete_thread(thread_id)
+        self._deleted.add(thread_id)
+        path = Path(project) / THREAD_LIST_FILE
+        saved = _load_thread_list(path)
+        rest = [t for t in saved["threads"] if t.get("id") != thread_id]
+        _save_thread_list(path, {"threads": rest, "current": None if saved["current"] == thread_id else saved["current"]})
 
     def get(self, project):
         s = self._session

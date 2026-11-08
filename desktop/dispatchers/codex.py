@@ -97,6 +97,12 @@ def _is_super_agent_thread(item: dict, marker: str, current_id: str = None) -> b
     return False
 
 
+def deletable_thread(item: dict) -> bool:
+    """进列表的规则比较宽：内容提到超级助手的外来对话也会进来，还可能被自动接上成当前对话。
+    能看不等于能删。删除找不回来，只认来源明确写着是超级助手开的。"""
+    return item.get("originator") == "super-agent"
+
+
 NO_USER_WORDS = "新对话（刚接手项目）"  # 这段对话里用户一句话都没说过
 
 
@@ -367,8 +373,16 @@ class CodexDispatcher:
                 "title": title,
                 "updated": int(updated) if updated else 0,
                 "current": (tid == self.thread_id),
+                "deletable": deletable_thread(item),
             })
         return result
+
+    def delete_thread(self, thread_id: str) -> None:
+        """删掉一段 Codex 对话。失败时换成大白话，不把 Codex 原话给用户。"""
+        try:
+            self._request("thread/delete", {"threadId": thread_id})
+        except (RuntimeError, TimeoutError) as exc:
+            raise RuntimeError("没能删除这段对话，列表没有变。可能要升级 Codex。") from exc
 
     def read_thread(self, thread_id: str) -> list:
         """只读取一段历史对话的内容，不切过去。切换前先备好，点的时候就不用等连接。"""

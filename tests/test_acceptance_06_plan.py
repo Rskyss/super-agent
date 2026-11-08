@@ -172,7 +172,7 @@ class PhaseTest(ProjectCase):
     def test_finished_states(self):
         self.make_card(state="待验收")
         self.assertEqual(self.phase()["code"], "review")
-        self.assertEqual(self.phase()["label"], "等你验收")
+        self.assertEqual(self.phase()["label"], "等你确认")
         self.assertTrue(self.phase()["needs_you"])
         self.make_card(state="已合并")
         self.assert_phase("done", "已完成", "done", False, [])
@@ -332,7 +332,7 @@ class PageTest(ProjectCase):
     def test_panel_action_bar(self):
         self.assertIn('id="actions"', (STATIC / "panel.html").read_text(encoding="utf-8"))
         js = (STATIC / "panel.js").read_text(encoding="utf-8")
-        for words in ("/api/clerk/card", "/api/plan", "批准并开工", "不做了", "重写方案", "接着跑", "停下", "X-Chat-Token"):
+        for words in ("/api/clerk/card", "/api/plan", "批准并开工", "放弃这个需求", "重写方案", "接着跑", "停下", "X-Chat-Token"):
             self.assertIn(words, js)
 
     def test_window_gives_the_panel_a_token(self):

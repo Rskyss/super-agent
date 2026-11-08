@@ -213,7 +213,14 @@ var ChatCore = (function () {
     return m;
   }
 
-  return { esc: esc, md: md, Model: Model, actsSummary: actsSummary, usageText: usageText, modelFrom: modelFrom, needsOpen: needsOpen, cardInfoRows: cardInfoRows };
+  // 对话删掉后聊天页怎么办：正在看卡片时不打断，回主对话时是空白
+  function afterThreadDeleted(id, state) {
+    if (state.clerk) {
+      return { clearMain: state.main === id, open: !state.viewingCard && state.current === id ? "blank" : null };
+    }
+    return { clearMain: false, open: state.current === id ? "fresh" : null };
+  }
+  return { esc: esc, md: md, Model: Model, actsSummary: actsSummary, usageText: usageText, modelFrom: modelFrom, needsOpen: needsOpen, cardInfoRows: cardInfoRows, afterThreadDeleted: afterThreadDeleted };
 })();
 
 if (typeof module !== "undefined") module.exports = ChatCore;
@@ -319,7 +326,7 @@ if (typeof document !== "undefined") (function () {
           "<div class=\"btns\"><button class=\"btn primary\" data-prop=\"confirm\">确认</button>" +
           "<button class=\"btn\" data-prop=\"cancel\">先不做</button></div>";
         if (isRevise) {
-          el.querySelector("h3").textContent = "还要修改？";
+          el.querySelector("h3").textContent = "继续改？";
           var note = document.createElement("p");
           note.textContent = b.text || "";
           el.querySelector(".rows").appendChild(note);
@@ -549,6 +556,12 @@ if (typeof document !== "undefined") (function () {
     isWorking: function () { return !clerkMode && !stopped && !!(model.busy || (pendingModel && pendingModel.busy)); },
     startFresh: function () {
       if (clerkMode) { hideCard(); clerkOpen(null); } else switchSession("fresh", true, null);
+    },
+    threadDeleted: function (id) {
+      var next = ChatCore.afterThreadDeleted(id, { clerk: clerkMode, current: currentThread, main: mainThread, viewingCard: viewingCard });
+      if (next.clearMain) mainThread = null;
+      if (next.open === "blank") clerkOpen(null);
+      else if (next.open === "fresh") switchSession("fresh", false, null);   // 空白对话：不带开场白，不自动发话
     },
     openThread: function (id) {
       if (clerkMode) { if (id !== currentThread) clerkOpen(id); return; }

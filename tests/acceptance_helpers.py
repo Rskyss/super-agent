@@ -138,6 +138,14 @@ class ProjectCase(unittest.TestCase):
     def git(self, *args):
         subprocess.run(["git", *args], cwd=self.project, check=True, capture_output=True, text=True)
 
+    def make_copy(self, card_id="CARD-001"):
+        """真实施工时的副本。待验收的卡没有它，会显示“改好的版本不在了”。"""
+        folder = Path(self.project).parent / (Path(self.project).name + "-worktrees") / card_id
+        if not folder.exists():
+            folder.parent.mkdir(parents=True, exist_ok=True)
+            self.git("worktree", "add", "-q", "-b", f"card/{card_id}", str(folder))
+        return folder
+
     @property
     def collab(self):
         return Path(self.project) / ".collab"
@@ -159,7 +167,7 @@ class ProjectCase(unittest.TestCase):
         if plan:
             (cdir / "方案.md").write_text(
                 "# 拆解方案\n\n## 要做什么（一句话）\n改颜色\n\n## 拆成几步，每步做什么、产出什么\n1. 改\n\n"
-                "## 你会看到什么结果（验收标准）\n变蓝\n\n## 明确不做什么\n无\n\n## 需要你确认的问题\n无\n",
+                "## 你会看到什么结果\n变蓝\n\n## 明确不做什么\n无\n\n## 需要你确认的问题\n无\n",
                 encoding="utf-8")
             (cdir / "开工.json").write_text(json.dumps({"test_command": "true"}), encoding="utf-8")
             record(cdir, "方案", src="Codex", dst="你", summary="改颜色")

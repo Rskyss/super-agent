@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 
 from collab.archive import archive_card
+from collab.flow import card_title
 from collab.dispatch import CONFLICTS, _changed_list, has_conflict_marks, unresolved_conflicts
 from collab.flow import read_flow, record
 from collab.judge import PASS, judge
@@ -35,7 +36,7 @@ def _git(cwd, *args, check=True):
     except subprocess.TimeoutExpired as exc:
         raise _Stop("git 一直没有结束，这次先停下", str(exc)) from exc
     if check and proc.returncode != 0:
-        raise _Stop("合并没能完成", (proc.stderr or proc.stdout or "").strip())
+        raise _Stop("没能放进项目", (proc.stderr or proc.stdout or "").strip())
     return proc
 
 
@@ -43,11 +44,7 @@ def _card_dir(project: Path, card_id: str) -> Path:
     return project / ".collab" / "cards" / card_id
 
 
-def _title(cdir: Path, card_id: str) -> str:
-    for ev in read_flow(cdir):
-        if ev.get("kind") == "需求" and (ev.get("summary") or "").strip():
-            return ev["summary"].strip()
-    return card_id
+_title = card_title
 
 
 def _fail(project: Path, card_id: str, reason: str, detail: str = "") -> None:
@@ -150,10 +147,10 @@ def _ready_branch(project: Path) -> str:
     for mark in _BUSY_MARKS:
         found = _git(project, "rev-parse", "--git-path", mark, check=False).stdout.strip()
         if found and (project / found).exists():
-            raise _Stop("项目里有一个没做完的合并或变基，先处理完再合并")
+            raise _Stop("项目里有一个没做完的 git 操作，先处理完再放进项目")
     branch = _current_branch(project)
     if not branch:
-        raise _Stop("项目现在不在任何分支上，先切回一个分支再合并")
+        raise _Stop("项目现在不在任何分支上，先切回一个分支再放进项目")
     return branch
 
 
@@ -190,8 +187,8 @@ def _resume_point(project: Path, cdir: Path, saved: dict) -> tuple:
         if head == saved["base"]:
             _clear_progress(cdir)
             return "", ""
-    raise _Stop("上次合并停在半路，之后项目又有了新变动，这次没有动你的项目。"
-                "这张卡的改动可能已经在项目里，没有验证过。可以点“不做了”结束这张卡。")
+    raise _Stop("上次放进项目停在半路，之后项目又有了新变动，这次没有动你的项目。"
+                "这张卡的改动可能已经在项目里，没有验证过。可以点“放弃这个需求”结束这张卡。")
 
 
 def _roll_back(project: Path, cdir: Path, detail: str) -> None:
@@ -199,14 +196,14 @@ def _roll_back(project: Path, cdir: Path, detail: str) -> None:
     saved = _load_progress(cdir) or {}
     head = _git(project, "rev-parse", "HEAD").stdout.strip()
     if _current_branch(project) != saved.get("branch") or head != saved.get("merged"):
-        raise _Stop("合并后测试没过。测试期间项目有了新提交或换了分支，所以没有自动退回。"
-                    f"这次合并的提交是 {str(saved.get('merged'))[:8]}。", detail)
+        raise _Stop("放进项目后测试没过。测试期间项目有了新提交或换了分支，所以没有自动退回。"
+                    f"这次放进去的提交是 {str(saved.get('merged'))[:8]}。", detail)
     reset = _git(project, "reset", "--keep", saved["base"], check=False)
     if reset.returncode != 0 or _git(project, "rev-parse", "HEAD").stdout.strip() != saved["base"]:
-        raise _Stop("合并后测试没过，而且没能退回：测试改动了项目里的文件。撤销这些改动后，点“不做了”退回。",
+        raise _Stop("放进项目后测试没过，而且没能退回：测试改动了项目里的文件。撤销这些改动后，点“放弃这个需求”退回。",
                     detail + "\n" + (reset.stderr or ""))
     _clear_progress(cdir)
-    raise _Stop("合并后测试没过，已退回合并前的提交", detail)
+    raise _Stop("放进项目后测试没过，已退回放进去之前的提交", detail)
 
 
 def undo_interrupted(project, card_id: str) -> str:
@@ -226,15 +223,15 @@ def undo_interrupted(project, card_id: str) -> str:
         return f"项目有了新变动，没有自动撤回。这张卡的提交是 {saved['merged'][:8]}，可能还在项目里。"
     reset = _git(project, "reset", "--keep", saved["base"], check=False)
     if reset.returncode != 0:
-        raise RuntimeError("没能退回合并：项目里有文件和这次合并冲突，先撤销这些改动再试。")
+        raise RuntimeError("没能退回：项目里有文件和这次改动冲突，先撤销这些改动再试。")
     _clear_progress(cdir)
-    return "已退回合并前的提交。"
+    return "已退回放进去之前的提交。"
 
 
 def _commit_work(project: Path, worktree: Path, cdir: Path, card_id: str, base: str) -> None:
     left = unresolved_conflicts(worktree, cdir)
     if left:
-        raise _Stop("这些文件还有没解决的冲突：" + "、".join(left) + "。点“还要修改”让开发员处理。")
+        raise _Stop("这些文件还有没解决的冲突：" + "、".join(left) + "。点“不满意，继续改”让开发员处理。")
     files = _selected(worktree, cdir)
     if files:
         _stage(worktree, files)
@@ -244,15 +241,15 @@ def _commit_work(project: Path, worktree: Path, cdir: Path, card_id: str, base: 
             raise _Stop("提交没成功：项目的提交检查没过，详情在这张卡的记录里",
                         (done.stderr or done.stdout or "").strip())
     if not files and _ahead(worktree, base) == 0:
-        raise _Stop("这张卡没有改动可以合并")
+        raise _Stop("这张卡没有改动可以放进项目")
     changed = _names(worktree, "diff", "--name-only", f"{base}...HEAD")
     allowed, tester = _scope(cdir)
     stray = [name for name in changed if not _keep(name, allowed, tester)]
     if stray:
-        raise _Stop("这张卡的提交里有不该进项目的文件：" + "、".join(stray) + "。这次没有合并。")
+        raise _Stop("这张卡的提交里有不该进项目的文件：" + "、".join(stray) + "。这次没有放进项目。")
     marked = [name for name in changed if has_conflict_marks(worktree / name)]
     if marked:
-        raise _Stop("这些文件还有没解决的冲突：" + "、".join(marked) + "。点“还要修改”让开发员处理。")
+        raise _Stop("这些文件还有没解决的冲突：" + "、".join(marked) + "。点“不满意，继续改”让开发员处理。")
 
 
 def _check_overlap(project: Path, card_id: str) -> None:
@@ -261,7 +258,7 @@ def _check_overlap(project: Path, card_id: str) -> None:
     overlap = [name for name in names if name in dirty]
     if overlap:
         shown = "、".join(overlap)
-        raise _Stop(f"你的项目里这些文件也有没提交的改动：{shown}。先提交或撤销后再合并。")
+        raise _Stop(f"你的项目里这些文件也有没提交的改动：{shown}。先提交或撤销后再放进项目。")
 
 
 def _fast_forward(project: Path, worktree: Path, cdir: Path, card_id: str, base: str, branch: str,
@@ -275,17 +272,17 @@ def _fast_forward(project: Path, worktree: Path, cdir: Path, card_id: str, base:
             _git(worktree, "rebase", "--abort", check=False)
             text = (replay.stderr or replay.stdout or "").strip()
             if clash:
-                raise _Stop("和项目里新的改动有冲突：" + "、".join(clash) + "。点“还要修改”让开发员处理。", text)
-            raise _Stop("这张卡的副本没法同步项目里新的改动，详情在这张卡的记录里", text)
+                raise _Stop("和项目里新的改动有冲突：" + "、".join(clash) + "。点“不满意，继续改”让开发员处理。", text)
+            raise _Stop("改好的版本没法同步项目里新的改动，详情在这张卡的记录里", text)
         verdict = _run_tests(command, worktree)
         if verdict.result != PASS:
-            raise _Stop("同步项目新内容后测试没过，先不合并", verdict.output or "")
+            raise _Stop("同步项目新内容后测试没过，先不放进项目", verdict.output or "")
     tip = _git(project, "rev-parse", card_ref).stdout.strip()
     _save_progress(cdir, base, branch, tip)
     fast = _git(project, "merge", "--ff-only", card_ref, check=False)
     if fast.returncode != 0:
         _clear_progress(cdir)
-        raise _Stop("合并时项目里有文件挡住了，这次没有动你的项目", (fast.stderr or fast.stdout or "").strip())
+        raise _Stop("放进项目时有文件挡住了，这次没有动你的项目", (fast.stderr or fast.stdout or "").strip())
 
 
 def _names(cwd: Path, *args) -> list:
@@ -333,9 +330,9 @@ def sync_copy(project, card_id: str) -> list:
         marked, stuck = _clash_kinds(worktree)
         if stuck:
             raise _Stop("这些文件没法自动同步（一边删了，或者不是文本）：" + "、".join(stuck)
-                        + "。这张卡没有改动。可以点“不做了”，或者先在项目里处理这些文件。")
+                        + "。这张卡没有改动。可以点“放弃这个需求”，或者先在项目里处理这些文件。")
         if merged.returncode != 0 and not marked:
-            raise _Stop("这张卡的副本没法同步项目里新的内容，这张卡没有改动。", merged.stderr or merged.stdout or "")
+            raise _Stop("改好的版本没法同步项目里新的内容，这张卡没有改动。", merged.stderr or merged.stdout or "")
         _git(worktree, "reset", "-q")
     except _Stop as exc:
         _git(worktree, "reset", "-q", "--hard", tip, check=False)
@@ -387,7 +384,7 @@ def merge_card(project, card_id: str) -> dict:
         _fail(project, card_id, exc.reason, exc.detail)
         return {"ok": False, "reason": exc.reason}
     except Exception as exc:  # 任何意外都记下来，不能把合并弄崩
-        reason = "合并没能完成"
+        reason = "没能放进项目"
         _fail(project, card_id, reason, str(exc))
         return {"ok": False, "reason": reason}
 
@@ -399,10 +396,10 @@ def _merge(project: Path, card_id: str) -> None:
         raise _Stop("找不到这张卡片")
     card = Card.load(state_path)
     if card.state != "待验收":
-        raise _Stop("这张卡还不能合并")
+        raise _Stop("这张卡现在还不能放进项目")
     worktree = project.parent / f"{project.name}-worktrees" / card_id
-    if not worktree.is_dir():
-        raise _Stop("找不到施工副本，没法合并")
+    if not worktree.is_dir() and not (cdir / PROGRESS).is_file():  # 放进一半断了：不用副本也能接着验证或退回
+        raise _Stop("改好的版本不在了，没法放进项目")
     start = cdir / "开工.json"
     command = ""
     if start.is_file():
@@ -411,7 +408,7 @@ def _merge(project: Path, card_id: str) -> None:
         except (OSError, ValueError, TypeError):
             command = ""
     if not command:
-        raise _Stop("还没有测试命令，没法合并")
+        raise _Stop("还没有测试命令，没法放进项目")
 
     saved = _load_progress(cdir)
     if saved:
@@ -422,7 +419,7 @@ def _merge(project: Path, card_id: str) -> None:
         branch = _ready_branch(project)
         synced = _read_text(cdir / SYNCED_FROM)
         if synced and synced != branch:
-            raise _Stop(f"这张卡同步的是 {synced} 分支的内容，现在项目在 {branch} 分支。先切回 {synced} 再合并，"
+            raise _Stop(f"这张卡同步的是 {synced} 分支的内容，现在项目在 {branch} 分支。先切回 {synced} 再放进项目，"
                         "不然那个分支的提交会一起进来。")
         base = _git(project, "rev-parse", "HEAD").stdout.strip()
         _commit_work(project, worktree, cdir, card_id, base)
@@ -437,13 +434,28 @@ def _merge(project: Path, card_id: str) -> None:
     card.save(state_path)
     _clear_progress(cdir)
     render_board(project / ".collab")
-    summary = f"已合并到 {branch}"
+    summary = f"已放进 {branch}"
     record(cdir, "合并", src="程序", dst="你", summary=summary)
     ledger_add(project, f"{card_id}：{summary}")
     try:
         archive_card(project, card_id, _title(cdir, card_id))
     except Exception as exc:
-        _note(cdir, "记录没能归档", str(exc))
-    removed = _git(project, "worktree", "remove", "--force", str(worktree), check=False)
-    if removed.returncode != 0:
-        _note(cdir, "施工副本没能删掉", (removed.stderr or removed.stdout or "").strip())
+        _note(cdir, "记录没能存入项目文档", str(exc))
+    remove_copy(project, card_id)
+
+
+def remove_copy(project, card_id: str) -> None:
+    """删掉改好的版本。没有就不做；删失败只记一条。分支不删。"""
+    project = Path(project)
+    cdir = _card_dir(project, card_id)
+    worktree = project.parent / f"{project.name}-worktrees" / card_id
+    if not worktree.exists():
+        return
+    try:
+        removed = _git(project, "worktree", "remove", "--force", str(worktree), check=False)
+    except (_Stop, OSError) as exc:  # git 太慢或运行不了：卡片已经结束，只记一条
+        if cdir.is_dir():
+            _note(cdir, "改好的版本没能删掉", str(exc))
+        return
+    if removed.returncode != 0 and cdir.is_dir():
+        _note(cdir, "改好的版本没能删掉", (removed.stderr or removed.stdout or "").strip())

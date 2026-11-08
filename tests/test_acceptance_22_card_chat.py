@@ -31,6 +31,7 @@ class ChatCase(Case):
     def building(self, **kwargs):
         cdir = self.card(state="开发中", **kwargs)
         record(cdir, "开跑", src="调度员", dst="程序", summary="开工", pid=os.getpid())
+        self.make_copy()
         return cdir
 
     def open(self, card="CARD-001"):
@@ -313,7 +314,7 @@ class Progress(ChatCase):
         record(cdir, "判定", src="程序", summary="第 1 轮：测试全部通过")
         record(cdir, "结束", src="程序", dst="你", state="待验收", summary="施工结束")
         TaskWatcher(self.desk).tick(self.project)
-        self.assertIn("「改按钮」做完了，等你验收。", self.words(main))
+        self.assertIn("「改按钮」做完了，等你确认。", self.words(main))
         self.assertNotIn("第 1 轮：测试全部通过", self.words(main))
         self.assertIn("第 1 轮：测试全部通过", self.words(cid))
 
@@ -359,7 +360,7 @@ class Window(Case):
         script = (STATIC / "chat.js").read_text(encoding="utf-8")
         self.assertIn('id="cardHead"', html)
         self.assertIn('id="cardInfo"', html)
-        for words in ("openCard", "closeCard", "还要修改？"):
+        for words in ("openCard", "closeCard", "继续改？"):
             self.assertIn(words, script)
 
     @needs_node()

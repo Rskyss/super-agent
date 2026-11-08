@@ -112,3 +112,29 @@ def reply_summary(step: str, text: str, ok: bool) -> str:
         return marker + (tail[0].strip() if tail else "")
     lines = [ln.strip() for ln in body.splitlines() if ln.strip()]
     return lines[-1] if lines else "（没有回复文字）"
+
+
+_INTERNAL_HEADINGS = ("务必先看", "执行员", "不要调用", "注意事项", "重要提示")
+
+
+def card_title(cdir, card_id: str) -> str:
+    """卡片标题只有这一种取法：左栏、聊天、汇报都用它。跳过写给执行员看的内部叮嘱。"""
+    cdir = Path(cdir)
+    for ev in read_flow(cdir):
+        if ev.get("kind") == "需求" and (ev.get("summary") or "").strip():
+            cand = ev["summary"].strip()
+            if not any(k in cand for k in _INTERNAL_HEADINGS):
+                return cand
+    path = cdir / "需求卡.md"
+    if path.exists():
+        text = path.read_text(encoding="utf-8")
+        for line in text.splitlines():
+            s = line.strip()
+            if s.startswith("#"):
+                cand = s.lstrip("#").strip()
+                if cand and not any(k in cand for k in _INTERNAL_HEADINGS):
+                    return summarize(cand)
+        title = summarize(text)
+        if title:
+            return title
+    return card_id

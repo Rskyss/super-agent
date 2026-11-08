@@ -10,15 +10,14 @@ var PanelCore = {
   // 只按 phase.actions 出按钮；行政没开时不显示
   actionButtons: function (phase, clerkOn) {
     if (!clerkOn) return [];
-    var branch = (phase && phase.branch) || "";
     var labels = {
       approve: { key: "approve", label: "批准并开工" },
-      discard: { key: "discard", label: "不做了", danger: true },
+      discard: { key: "discard", label: "放弃这个需求", danger: true },
       replan: { key: "replan", label: "重写方案" },
       resume: { key: "resume", label: "接着跑" },
       stop: { key: "stop", label: "停下" },
-      accept: { key: "accept", label: branch ? "验收通过，合并到 " + branch : "验收通过，合并" },
-      revise: { key: "revise", label: "还要修改" },
+      accept: { key: "accept", label: "确认没问题，放进项目" },
+      revise: { key: "revise", label: "不满意，继续改" },
     };
     var actions = (phase && phase.actions) || [];
     var out = [];
@@ -43,6 +42,10 @@ if (typeof document !== "undefined") (function () {
   var opened = {}, texts = {};
   var planCache = null;
   var actionBusy = false;
+  var previewBusy = false;
+  var previewFor = "";   // 正在打开预览的是哪张卡：切卡后回来的结果不能算到新卡头上
+  var previewClosing = false;
+  var previewRunning = false;
 
   function $(id) { return document.getElementById(id); }
   function esc(s) {
@@ -60,9 +63,10 @@ if (typeof document !== "undefined") (function () {
     return h;
   }
 
-  function postCard(action, text) {
-    var body = { project: project, card: view.card.id, action: action };
-    if (text) body = { project: project, card: view.card.id, action: action, text: text };
+  function postCard(action, text, cardId) {
+    var card = cardId || view.card.id;
+    var body = { project: project, card: card, action: action };
+    if (text) body = { project: project, card: card, action: action, text: text };
     return fetch("/api/clerk/card", { method: "POST", headers: cardHeaders(),
       body: JSON.stringify(body) })
       .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, status: r.status, d: d }; }); });
@@ -106,6 +110,19 @@ if (typeof document !== "undefined") (function () {
     });
   });
 
+  function runCardAction(act, cardId) {
+    actionBusy = true;
+    renderActions();
+    postCard(act, "", cardId).then(function (res) {
+      if (!res.ok && res.d && res.d.error) alert(res.d.error);
+      actionBusy = false;
+      poll();
+    }).catch(function () {
+      actionBusy = false;
+      renderActions();
+    });
+  }
+
   $("actions").addEventListener("click", function (ev) {
     var b = ev.target.closest("button[data-act]");
     if (!b || !view || !view.card || actionBusy) return;
@@ -117,17 +134,24 @@ if (typeof document !== "undefined") (function () {
       if (field) field.focus();
       return;
     }
-    if (act === "discard" && !window.confirm("确定标记为「不做了」？这张卡会停下来。")) return;
-    actionBusy = true;
-    renderActions();
-    postCard(act).then(function (res) {
-      if (!res.ok && res.d && res.d.error) alert(res.d.error);
-      actionBusy = false;
-      poll();
-    }).catch(function () {
-      actionBusy = false;
+    if (act === "discard" && !window.confirm("这次的改动不会进入项目，你的项目不会变。改好的版本也会删除。")) return;
+    var cardId = view.card.id;   // 问的时候可能切了卡：批准的必须是点的那张
+    if (act === "approve") {
+      actionBusy = true;
       renderActions();
-    });
+      fetch("/api/clerk/uncommitted?project=" + encodeURIComponent(project) + "&token=" + encodeURIComponent(token))
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .catch(function () { return null; })
+        .then(function (d) {
+          if (d && d.count > 0) {
+            var msg = "你的项目有 " + d.count + " 个文件还没提交，这次施工看不到它们，改好的版本里也没有。先提交，或者继续？";
+            if (!window.confirm(msg)) { actionBusy = false; renderActions(); return; }
+          }
+          runCardAction(act, cardId);
+        });
+      return;
+    }
+    runCardAction(act, cardId);
   });
 
   function renderPlan() {
@@ -147,6 +171,98 @@ if (typeof document !== "undefined") (function () {
       prev.textContent = "";
     }
   }
+
+  function previewIsBusyHere() {
+    return previewBusy && !!view && !!view.card && view.card.id === previewFor;
+  }
+
+  function previewLabel() {
+    if (!view || !view.accept) return "打开文件夹";
+    if (previewClosing) return "正在关闭…";
+    if (previewIsBusyHere()) return "正在打开…";
+    if (previewRunning) return "关闭预览";
+    return view.accept.can_preview ? "打开改好的版本" : "打开文件夹";
+  }
+
+  function renderAccept() {
+    var box = $("acceptBox");
+    if (!view || !view.accept || !clerkOn) { box.hidden = true; return; }   // 没开行政时没有确认按钮
+    box.hidden = false;
+    $("acceptResult").textContent = view.accept.result || "";
+    $("acceptHow").textContent = view.accept.how || "";
+    var btn = $("previewBtn");
+    btn.hidden = view.accept.copy_there === false;   // 副本不在了，点了也打不开
+    btn.textContent = previewLabel();
+    btn.disabled = previewIsBusyHere() || previewClosing;
+  }
+
+  function showPreviewError(reason, path) {
+    var err = $("previewErr");
+    err.hidden = false;
+    err.textContent = "";
+    err.appendChild(document.createTextNode(reason || "没打开"));
+    if (path) {
+      var a = document.createElement("a");
+      a.href = "superagent://clerk-open?project=" + encodeURIComponent(project) + "&path=" + encodeURIComponent(path);
+      a.textContent = "打开文件夹";
+      err.appendChild(a);
+    }
+  }
+
+  function refreshPreviewStatus() {
+    if (!view || !view.card || !view.accept || !token) return;
+    var q = new URLSearchParams({ project: project, card: view.card.id, token: token });
+    fetch("/api/clerk/preview?" + q.toString()).then(function (r) { return r.json(); }).then(function (d) {
+      previewRunning = !!(d && d.running);
+      renderAccept();
+    }).catch(function () {});
+  }
+
+  $("previewBtn").addEventListener("click", function () {
+    if (!view || !view.card || !view.accept || previewIsBusyHere() || previewClosing) return;
+    $("previewErr").hidden = true;
+    if (previewRunning) {
+      previewClosing = true;
+      renderAccept();
+      fetch("/api/clerk/preview", { method: "POST", headers: cardHeaders(),
+        body: JSON.stringify({ project: project, card: view.card.id, action: "stop" }) })
+        .then(function () { previewRunning = false; previewClosing = false; renderAccept(); })
+        .catch(function () { previewClosing = false; renderAccept(); });
+      return;
+    }
+    previewBusy = true;
+    previewFor = view.card.id;
+    var startedFor = previewFor;
+    renderAccept();
+    fetch("/api/clerk/preview", { method: "POST", headers: cardHeaders(),
+      body: JSON.stringify({ project: project, card: startedFor, action: "start" }) })
+      .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
+      .then(function (res) {
+        if (startedFor !== previewFor) return;   // 之后又开了别的卡：这个结果已经没用了
+        previewBusy = false;
+        var d = res.d || {};
+        if (!view || !view.card || view.card.id !== startedFor) { renderAccept(); return; }
+        if (d.ok && d.mode === "web" && d.url) {
+          previewRunning = true;
+          location.href = "superagent://clerk-open?project=" + encodeURIComponent(project)
+            + "&url=" + encodeURIComponent(d.url);
+        } else if (d.ok && d.mode === "folder" && d.path) {
+          previewRunning = false;
+          location.href = "superagent://clerk-open?project=" + encodeURIComponent(project)
+            + "&path=" + encodeURIComponent(d.path);
+        } else {
+          previewRunning = false;
+          showPreviewError(d.reason || "没打开", d.path || "");
+        }
+        renderAccept();
+      })
+      .catch(function () {
+        if (startedFor !== previewFor) return;
+        previewBusy = false;
+        showPreviewError("没打开", "");
+        renderAccept();
+      });
+  });
 
   // ---------- 流程：7 步先搭好，之后只改内容 ----------
   var GLYPH = {
@@ -268,6 +384,8 @@ if (typeof document !== "undefined") (function () {
       view = v; fetchedAt = Date.now();
       renderShell(v); renderFlow(v); tick();
       renderActions();
+      renderAccept();
+      refreshPreviewStatus();
       var needPlan = v.card && v.card.phase && v.card.phase.code === "plan_ready";
       var cid = v.card && v.card.id;
       if (needPlan && cid && token) {
@@ -296,6 +414,8 @@ if (typeof document !== "undefined") (function () {
       selected = id || null;
       $("reviseBox").hidden = true;   // 没提交的修改不能发到另一张卡
       $("reviseText").value = "";
+      $("previewErr").hidden = true;
+      previewRunning = false;
       filterWho = null;
       select("flow"); poll();
     },

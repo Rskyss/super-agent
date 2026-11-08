@@ -34,9 +34,13 @@
 //   --walk-clerk-forget         只走“删除这一家的密钥”，不发话也可能发一句（密钥在时检测）
 //   --walk-clerk-edge --walk-other <项目B> --walk-good-key <密钥文件>  走边界：固定设置、切项目时测试还在路上、测试期间取消
 //   --walk-clerk-new --walk-good-key <密钥文件>  走新用户：没选调度员，填密钥后能回到对话
+//   --walk-accept --card <卡片>  走确认区：打开、关闭、再打开、确认放进项目。不弹浏览器
 //   --walk-view                 走一遍中间界面：菜单打开终端、提醒、返回聊天。不发话
 //   --walk-clerk-look           只打开设置页看第一行，不发话
 //   --walk-tabs --walk-card <卡片编号>  只走左栏两个标签：不发消息，不花额度
+//   --walk-list                 走左栏的删除和归档：真弹确认框、真删真归档。行政模式不发话，不花额度
+//   --walk-list-codex           同上，用真实 Codex：先说两句很短的话建两段对话，花很少额度
+//   --walk-list-look            只看左栏现在有什么，用来查重开软件后删掉的有没有回来
 //   --clerk-try <文件> [--clerk-base 地址]  用文件里的密钥走一次第一屏的测试和保存，结果写到“文件.result”
 //   --interrupt-answer <stay|leave>  调度员干活时切终端，代替用户回答提示
 import AppKit
@@ -475,6 +479,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
 
     /// 打开另一个项目（菜单“打开项目…”或“最近打开”）
     func switchTo(_ url: URL) {
+        // 换项目前关掉旧项目的预览，别留下本机服务
+        if let port = port, let stopURL = URL(string: "http://127.0.0.1:\(port)/api/clerk/preview") {
+            var req = URLRequest(url: stopURL)
+            req.httpMethod = "POST"
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            req.setValue(chatToken, forHTTPHeaderField: "X-Chat-Token")
+            req.httpBody = try? JSONSerialization.data(withJSONObject: [
+                "project": project.path,
+                "card": selectedCard ?? "_",
+                "action": "stop",
+            ])
+            URLSession.shared.dataTask(with: req).resume()
+        }
         closeChatOnServer(clearView: true)
         project = url
         selectedCard = nil
@@ -583,6 +600,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
         buildLeft()
         web = makeWeb(message: "正在启动…")
         web.uiDelegate = self
+        web.navigationDelegate = self  // 右栏的“打开改好的版本”走 superagent:// 地址
         rightBox = NSView()
         rightBox.wantsLayer = true
         rightBox.layer?.backgroundColor = panelBackground.cgColor
@@ -1073,6 +1091,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
             selectCard(nil)
         case "thread":
             if let id = value("id") { openThread(id) }
+        case "thread-deleted":
+            if let id = value("id") {
+                chatWeb.evaluateJavaScript(
+                    "window.SuperAgentChat && window.SuperAgentChat.threadDeleted(\(jsValue(id)))",
+                    completionHandler: nil)
+                refreshNavThreads()
+            }
         case "new":
             selectCard(nil)
             newChat(nil)
@@ -1108,8 +1133,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
         case "clerk-forget":
             confirmForgetClerk(provider: value("provider") ?? providerFor(base: clerkBase),
                                base: value("base_url") ?? clerkBase)
+        case "clerk-open":
+            if let raw = value("url"), let target = URL(string: raw),
+               target.scheme?.lowercased() == "http",
+               ["127.0.0.1", "localhost"].contains(target.host?.lowercased() ?? "") {
+                openFromPanel(target)
+            } else if let raw = value("path") {
+                let folder = URL(fileURLWithPath: raw).resolvingSymlinksInPath()
+                let parent = project.deletingLastPathComponent()
+                let allowed = parent.appendingPathComponent(project.lastPathComponent + "-worktrees")
+                    .resolvingSymlinksInPath()
+                let path = folder.path
+                if path == allowed.path || path.hasPrefix(allowed.path + "/") {
+                    var isDir: ObjCBool = false
+                    if FileManager.default.fileExists(atPath: path, isDirectory: &isDir), isDir.boolValue {
+                        openFromPanel(folder)
+                    }
+                }
+            }
         default:
             break
+        }
+    }
+
+    /// 走查时只记下来，不弹浏览器、不开访达
+    var walkOpened: [String] = []
+    func openFromPanel(_ target: URL) {
+        if CommandLine.arguments.contains(where: { $0.hasPrefix("--walk") }) {
+            walkOpened.append(target.absoluteString)
+        } else {
+            NSWorkspace.shared.open(target)
         }
     }
 
@@ -2083,7 +2136,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
             ("看回来后", { clerkView("回来后") }),
         ]
         let walkStart = Date()
-        if CommandLine.arguments.contains(where: { $0.hasPrefix("--walk-clerk") }) {
+        if CommandLine.arguments.contains(where: { $0.hasPrefix("--walk-clerk") || $0.hasPrefix("--walk-list") }) {
             // 窗口被挡住时系统会压慢它，走查的时机就全乱了
             walkActivity = ProcessInfo.processInfo.beginActivity(options: [.userInitiated], reason: "走查")
             window.level = .floating
@@ -2159,6 +2212,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
             ("开设置2", openSettings), nap, nap, ("设置里新对话", { self.newChat(nil) }), nap, nap, ("看新", { barView("12设置页点新对话") }),
             ("再开终端", { self.showTerminalView(nil) }), nap, nap, nap, ("左栏新对话", { nav("document.getElementById('newChat').click()") }), nap, nap, nap, ("看新2", { barView("13终端里点左栏新对话") }),
             ("两次开终端", { self.showTerminalView(nil); self.showTerminalView(nil) }), nap, ("收尾", { answer("14两次") }), nap, nap, ("看", { barView("14") })]
+        func acceptView(_ name: String) {
+            web.evaluateJavaScript("[acceptBox.hidden?'确认区隐藏':'确认区显示',acceptResult.textContent,acceptHow.textContent,previewBtn.textContent,previewErr.hidden?'':previewErr.textContent,[].map.call(document.querySelectorAll('#actionBtns button'),function(b){return b.textContent}).join('/')].join(' | ')") { row, _ in
+                log += "\(name)：\(String(describing: row ?? "?")) ｜打开过=\(self.walkOpened)\n"
+            }
+        }
+        let acceptSteps: [(String, () -> Void)] = [nap, nap, ("看1", { acceptView("1做完时") }),
+            ("点打开", { self.web.evaluateJavaScript("previewBtn.click()", completionHandler: nil) }), nap, nap, nap, nap, ("看2", { acceptView("2打开后") }),
+            ("点关闭", { self.web.evaluateJavaScript("previewBtn.click()", completionHandler: nil) }), nap, nap, ("看3", { acceptView("3关闭后") }),
+            ("再打开", { self.web.evaluateJavaScript("previewBtn.click()", completionHandler: nil) }), nap, nap, nap, nap, ("看4", { acceptView("4再打开") }),
+            ("点确认", { self.web.evaluateJavaScript("(document.querySelector('#actionBtns button[data-act=accept]')||{click:function(){}}).click()", completionHandler: nil) }),
+            nap, nap, nap, nap, nap, nap, nap, nap, ("看5", { acceptView("5确认后") })]
         let lookSteps: [(String, () -> Void)] = [("开设置", openSettings), nap, ("看", { rowView("沿用时") })]
         let rowSteps: [(String, () -> Void)] = [
             ("开设置", openSettings), nap, ("看1", { rowView("1打开") }),
@@ -2228,7 +2292,77 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
             ("等切换", {}),
             ("看切换后", { threads("切换后") }),
         ]
-        let steps = CommandLine.arguments.contains("--walk-view") ? viewSteps
+        func listView(_ name: String) {
+            let script = "JSON.stringify({对话:[].map.call(document.querySelectorAll('#threads .row'),function(r){var b=r.querySelector('.thread');return (b.classList.contains('on')?'*':'')+b.querySelector('.tt').innerText+(r.querySelector('[data-delete]')?' 能删':'')}),"
+                + "点到弹框:window.__tookConfirm,点击到变化:window.__took,卡片:[].map.call(document.querySelectorAll('#cards .gh, #cards .more, #cards .row'),function(r){if(!r.classList.contains('row'))return '['+r.innerText.replace(/\\s+/g,' ')+']';return r.querySelector('.tt').innerText+(r.querySelector('[data-archive]')?' 能归档':'')+(r.querySelector('[data-unarchive]')?' 能取消归档':'')})})"
+            navWeb.evaluateJavaScript(script) { rows, _ in
+                self.chatWeb.evaluateJavaScript("document.getElementById('msgs').innerText.replace(/\\s+/g,' ').slice(-40)") { text, _ in
+                    log += "\(name) 选中=\(self.selectedCard ?? "主对话") \(String(describing: rows ?? "?")) 中间：\(String(describing: text ?? "?"))\n"
+                }
+            }
+        }
+        // 量一下从点击到列表变化要多久：归档没有确认框，慢了用户会以为没点上
+        func timedClick(_ what: String) {
+            nav("var t0=performance.now(),n=document.querySelectorAll('\(what)').length;document.querySelector('\(what)').click();var w=setInterval(function(){if(document.querySelectorAll('\(what)').length!==n){clearInterval(w);window.__took=Math.round(performance.now()-t0)}},20);")
+        }
+        func clickDelete(_ which: String) {
+            nav("if(!window.__oc){window.__oc=window.confirm;window.confirm=function(m){window.__tookConfirm=Math.round(performance.now()-window.__c0);return window.__oc.call(window,m)}}window.__c0=performance.now();var b=document.querySelector('\(which) [data-delete]');if(b)b.click();")
+        }
+        // 确认框可能晚一点才出来：等它出来再按，不靠固定时间
+        func answerWhenShown(_ name: String, _ code: NSApplication.ModalResponse = .alertFirstButtonReturn, left: Int = 60) {
+            if self.window.attachedSheet != nil || left <= 0 { answer(name, code); return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { answerWhenShown(name, code, left: left - 1) }
+        }
+        let deleteSteps: [(String, () -> Void)] = [
+            ("看图标", { listView("1打开") }),
+            ("点删除别的对话", { clickDelete(".row:has(.thread:not(.on))") }),
+            ("取消", { answerWhenShown("点取消", .alertSecondButtonReturn) }), nap, nap, nap,
+            ("看取消后", { listView("2取消后还在") }),
+            ("再点删除", { clickDelete(".row:has(.thread:not(.on))") }),
+            ("确定", { answerWhenShown("点确定") }), nap, nap, nap,
+            ("看删除后", { listView("3删了别的对话") }),
+            ("等刷新", {}),
+            ("看刷新后", { listView("4刷新后没回来") }),
+            ("点删除当前", { clickDelete(".row:has(.thread.on)") }),
+            ("确定当前", { answerWhenShown("删当前") }), nap, nap, nap,
+            ("等换新", {}),
+            ("看删当前后", { listView("5删了当前") }),
+        ]
+        let archiveSteps: [(String, () -> Void)] = [
+            ("去卡片标签", { nav("document.getElementById('tabCards').click()") }),
+            ("看卡片", { listView("6卡片") }),
+            nap,
+            ("归档一张", { timedClick("[data-archive]") }),
+            ("看归档后", { listView("7归档一张") }),
+            nap,
+            ("展开已归档", { nav("document.getElementById('toggleArchived').click()") }),
+            ("看展开", { listView("8展开") }),
+            nap,
+            ("点开已归档的卡", { nav("document.querySelector('[data-unarchive]').parentNode.querySelector('[data-id]').click()") }),
+            ("看点开", { listView("9点开已归档的卡") }),
+            nap,
+            ("取消归档", { timedClick("[data-unarchive]") }),
+            ("看取消归档", { listView("10取消归档") }),
+            nap,
+            ("点开能归档的卡", { nav("document.querySelector('[data-archive]').parentNode.querySelector('[data-id]').click()") }),
+            nap,
+            ("归档正在看的卡", { nav("document.querySelector('.item.on').parentNode.querySelector('[data-archive]').click()") }),
+            ("等跳回", {}),
+            ("看跳回", { listView("11归档正在看的卡") }),
+            ("搜索已归档", { nav("var q=document.getElementById('q');q.value='另一张';q.dispatchEvent(new Event('input'))") }),
+            ("看搜索", { listView("12搜索已归档") }),
+            ("清搜索", { nav("var q=document.getElementById('q');q.value='';q.dispatchEvent(new Event('input'))") }),
+            ("看清搜索", { listView("13清搜索") }),
+        ]
+        let talkSteps: [(String, () -> Void)] = [nap, nap, nap, nap, ("说第一段", { say("只回复两个字：好的") })] + Array(repeating: nap, count: 12)
+            + [("新对话", { nav("document.getElementById('newChat').click()") }), nap, nap, ("说第二段", { say("只回复两个字：收到") })] + Array(repeating: nap, count: 12)
+        let againSteps: [(String, () -> Void)] = [nap, ("删当前后再说一句", { say("只回复两个字：明白") })] + Array(repeating: nap, count: 12) + [("看再说一句", { listView("5b删当前后再说一句") })]
+        let listSteps = (CommandLine.arguments.contains("--walk-list-codex") ? talkSteps + deleteSteps + againSteps : [nap, nap] + deleteSteps) + archiveSteps
+        let lookSteps2: [(String, () -> Void)] = [nap, nap, ("看对话", { listView("重开后对话") }), ("去卡片标签", { nav("document.getElementById('tabCards').click()") }), ("看卡片", { listView("重开后卡片") })]
+        let steps = CommandLine.arguments.contains("--walk-list-look") ? lookSteps2
+            : CommandLine.arguments.contains("--walk-list") || CommandLine.arguments.contains("--walk-list-codex") ? listSteps
+            : CommandLine.arguments.contains("--walk-accept") ? acceptSteps
+            : CommandLine.arguments.contains("--walk-view") ? viewSteps
             : CommandLine.arguments.contains("--walk-clerk-new") ? newUserSteps
             : CommandLine.arguments.contains("--walk-clerk-edge") ? edgeSteps
             : CommandLine.arguments.contains("--walk-clerk-forget") ? forgetSteps
@@ -2237,13 +2371,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
             : CommandLine.arguments.contains("--walk-clerk-look") ? lookSteps
             : CommandLine.arguments.contains("--walk-tabs") ? tabSteps : CommandLine.arguments.contains("--walk-clerk") ? clerkSteps
             : (CommandLine.arguments.contains("--walk-work") ? workSteps : allSteps)
-        let first = ["--walk-view", "--walk-tabs", "--walk-clerk-new", "--walk-clerk-edge", "--walk-clerk-forget", "--walk-clerk-row", "--walk-clerk-first", "--walk-clerk-look"].contains { CommandLine.arguments.contains($0) } ? 20.0 : 6.0  // 本机服务刚生成的应用起得慢，等左栏加载好
+        let first = ["--walk-list", "--walk-list-codex", "--walk-list-look", "--walk-accept", "--walk-view", "--walk-tabs", "--walk-clerk-new", "--walk-clerk-edge", "--walk-clerk-forget", "--walk-clerk-row", "--walk-clerk-first", "--walk-clerk-look"].contains { CommandLine.arguments.contains($0) } ? 20.0 : 6.0  // 本机服务刚生成的应用起得慢，等左栏加载好
         for (index, step) in steps.enumerated() {
             let at = first + Double(index) * 2.0
             DispatchQueue.main.asyncAfter(deadline: .now() + at) { step.1() }
             DispatchQueue.main.asyncAfter(deadline: .now() + at + 1.6) { report(step.0) }
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + first + Double(steps.count) * 2.0 + 1) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + first + Double(steps.count) * 2.0 + 3) {
             try? log.write(toFile: file, atomically: true, encoding: .utf8)
             NSApp.terminate(nil)
         }

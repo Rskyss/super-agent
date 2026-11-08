@@ -213,7 +213,7 @@ class Actions(ServerCase, Base):
         watcher = TaskWatcher(said)
         watcher.tick(self.project)
         watcher.tick(self.project)
-        self.assertEqual(said.lines, ["「甲」开工失败，可以点卡片接着跑，或者不做了。"])
+        self.assertEqual(said.lines, ["「甲」开工失败，可以点卡片接着跑，或者放弃这个需求。"])
 
     def test_user_stop_through_the_button_is_not_reported(self):
         from desktop.clerk.tasks import TaskWatcher
@@ -520,7 +520,7 @@ class Tough(Base):
         self.make_card("CARD-002", state="待验收", source=CONV, reported="running", title="好卡")
         said = Said()
         TaskWatcher(said).tick(self.project)
-        self.assertEqual(said.lines, ["「好卡」做完了，等你验收。"])
+        self.assertEqual(said.lines, ["「好卡」做完了，等你确认。"])
         self.assertEqual([c["id"] for c in list_cards(self.project)], ["CARD-002"])
 
     def test_empty_folder_does_not_block_new_cards(self):
@@ -616,7 +616,7 @@ class Pages(unittest.TestCase):
           assert.deepStrictEqual(keys(['看不懂的动作']), []);
           const labels = P.actionButtons({ actions: ['approve', 'discard', 'replan', 'resume', 'stop'] }, true)
             .map((b) => b.label);
-          assert.deepStrictEqual(labels, ['批准并开工', '不做了', '重写方案', '接着跑', '停下']);
+          assert.deepStrictEqual(labels, ['批准并开工', '放弃这个需求', '重写方案', '接着跑', '停下']);
           assert.deepStrictEqual(P.actionButtons({ actions: ['approve'] }, false), []);
         """)
 

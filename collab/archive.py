@@ -56,7 +56,7 @@ def _acceptance_text(feature: str, card: Card, cdir: Path) -> str:
     return "\n".join([
         f"# 验收记录：{feature}（{card.card_id}）",
         "",
-        f"- 归档时间：{datetime.now():%Y-%m-%d %H:%M}",
+        f"- 存入时间：{datetime.now():%Y-%m-%d %H:%M}",
         f"- 最终状态：{card.state}，返工 {card.rework} 次",
         f"- 测试：{test_text}（最后一轮）",
         f"- 独立复查：{review or '未复查'}",
@@ -82,7 +82,7 @@ def archive_card(project_dir, card_id: str, feature: str) -> Path:
         src = cdir / src_name
         if src.exists():
             shutil.copy2(src, _free_name(target, dst_name, card_id))
-    record(cdir, "归档", src="调度员", summary=f"记录已归档到 docs/{name}/")
+    record(cdir, "归档", src="调度员", summary=f"记录已存入项目文档 docs/{name}/")
     for src_name in _PROCESS_FILES:
         src = cdir / src_name
         if src.exists():
@@ -90,5 +90,5 @@ def archive_card(project_dir, card_id: str, feature: str) -> Path:
     _free_name(target, "验收记录.md", card_id).write_text(
         _acceptance_text(name, card, cdir), encoding="utf-8")
 
-    ledger_add(project, f"{card_id}：记录已归档到 docs/{name}/")
+    ledger_add(project, f"{card_id}：记录已存入项目文档 docs/{name}/")
     return target

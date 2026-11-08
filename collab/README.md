@@ -105,7 +105,9 @@ python3 collab run <P> CARD-xxx --test-command "npm test" --session-jsonl auto
 - 只做快进合并：`git merge --ff-only card/CARD-xxx`。合并后在主项目上重跑测试和验收测试。
 - 状态改为“已合并”，登记台账。
 
-### 8. 归档
+### 8. 记录存入项目文档
+命令名仍是 `archive`。左栏的“归档”是另一件事：只把已结束的卡从列表收起来，不动任何记录。
+
 `python3 collab archive <P> CARD-xxx --feature 功能名` → 记录整理进 `docs/功能名/`（需求共识、方案、验收记录、过程记录/），不覆盖已有文件，自动登记台账。
 
 ### 9. 推送 / 上线

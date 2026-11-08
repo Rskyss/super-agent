@@ -33,6 +33,8 @@ class ViewTest(unittest.TestCase):
         self.tmp.cleanup()
 
     def _card(self, card_id="CARD-003", state="开发中", rework=0):
+        # 真实施工时的副本；待验收的卡没有它会显示“改好的版本不在了”
+        Path(self.project).parent.joinpath(Path(self.project).name + "-worktrees", card_id).mkdir(parents=True, exist_ok=True)
         cdir = self.collab / "cards" / card_id
         cdir.mkdir(parents=True, exist_ok=True)
         (cdir / "需求卡.md").write_text("# 粘贴链接后显示处理进度\n", encoding="utf-8")
@@ -115,7 +117,7 @@ class ViewTest(unittest.TestCase):
         record(cdir, "结束", src="程序", dst="你", state="待验收", summary="做完了，等你验收（返工 1 次）")
         view = card_view(self.project)
         self.assertEqual(_station(view, "accept")["state"], "wait")
-        self.assertEqual(view["now"], {"text": "做完了，等你验收", "tone": "ok"})
+        self.assertEqual(view["now"], {"text": "做完了，等你确认", "tone": "ok"})
         self.assertEqual(view["handoffs"][-1]["to"], "你")
         self.assertEqual(view["handoffs"][-1]["tone"], "ok")
 
@@ -344,7 +346,7 @@ class ViewTest(unittest.TestCase):
         done_view = card_view(self.project, dispatcher="codex", chat_session=session)
         self.assertEqual(_station(done_view, "disp")["state"], "done")
         self.assertEqual(_station(done_view, "accept")["state"], "wait")
-        self.assertEqual(done_view["now"], {"text": "做完了，等你验收", "tone": "ok"})
+        self.assertEqual(done_view["now"], {"text": "做完了，等你确认", "tone": "ok"})
 
     def test_interrupted_run_is_detected_when_process_exited(self):
         cdir = self._card(state="开发中")

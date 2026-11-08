@@ -44,6 +44,28 @@ def _append(path: Path, text: str) -> None:
         fh.write(text)
 
 
+def uncommitted_count(project) -> int:
+    """项目里还没提交的文件数；协作包目录不算。不是 git 或读失败返回 0。"""
+    try:
+        proc = subprocess.run(
+            ["git", "-c", "core.quotepath=off", "status", "--porcelain"],
+            cwd=str(project), capture_output=True, text=True, check=True, timeout=5,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return 0
+    count = 0
+    for line in proc.stdout.splitlines():
+        if not line.strip() or len(line) < 4:
+            continue
+        path = line[3:].strip().strip('"')
+        if " -> " in path:
+            path = path.split(" -> ", 1)[-1].strip().strip('"')
+        if path == ".collab" or path.startswith(".collab/"):
+            continue
+        count += 1
+    return count
+
+
 def _changed_files(worktree) -> str:
     """副本里当前有哪些改动（累计）。读不到时说明原因，不抛错。"""
     try:
@@ -197,6 +219,8 @@ def _expand_to_files(worktree, paths: list) -> list:
         if not rel or rel in seen:
             continue
         full = root / rel
+        if "node_modules" in rel.split("/"):  # 依赖不是这张卡的产物；预览借的还是软链接，写进去会改到真实依赖
+            continue
         if full.is_dir():
             for child in sorted(full.rglob("*")):
                 if not child.is_file():
@@ -237,6 +261,8 @@ def _restore_test_snapshot(cdir: Path, worktree) -> list:
         if not path.is_file():
             continue
         rel = path.relative_to(snap).as_posix()
+        if "node_modules" in rel.split("/"):
+            continue
         dest = root / rel
         data = path.read_bytes()
         try:
@@ -253,6 +279,14 @@ def _restore_test_snapshot(cdir: Path, worktree) -> list:
         shutil.copy2(path, dest)
         restored.append(rel)
     return restored
+
+
+def _tester_files_hint(cdir: Path) -> str:
+    """测试员写的测试是流程要求的，不在“允许改动的范围”里也不算越界（真实走查时被判过不通过）。"""
+    files = _load_test_files(cdir)
+    if not files:
+        return ""
+    return "这些是测试员按流程写的测试文件，不算越界改动：" + "、".join(files) + "。"
 
 
 def _review_reject_pending(cdir: Path, past: list) -> tuple:
@@ -294,11 +328,11 @@ def _save_report(cdir: Path, output: str) -> None:
 
 def _log_step(cdir: Path, step: str, adapter: str, worktree) -> None:
     _append(cdir / "执行记录.md",
-            f"- {datetime.now():%Y-%m-%d %H:%M} | {step} | 执行者：{adapter} | 副本累计改动：{_changed_files(worktree)}\n")
+            f"- {datetime.now():%Y-%m-%d %H:%M} | {step} | 执行者：{adapter} | 累计改动：{_changed_files(worktree)}\n")
 
 
 _STEP_SUMMARY = {
-    "写测试": "按验收标准先写测试（只写测试，不改产品代码）",
+    "写测试": "按要求先写测试（只写测试，不改产品代码）",
     "开发": "按测试写代码，让测试全部通过",
     "返工修改": "测试没过，带着测试输出退回修改",
     "复查": "只读复查：对照需求检查改动",
@@ -587,6 +621,7 @@ def run_card(card: Card, collab_dir, worktree, test_command, dev_adapter, test_a
             review = _dispatch(ask_fn, cdir, "复查员", reviewer_adapter, "复查",
                                f"{_READ_RULES}只读复查：对照任务卡 {needs} 检查本次改动是否符合需求和验收标准。"
                                f"{plan_hint}"
+                               f"{_tester_files_hint(cdir)}"
                                f"台账、归档这些流程记录由程序在施工结束后补写，现在没有不算问题。"
                                f"第一行写“结论：通过”或“结论：不通过”，之后列出问题。不要修改任何文件。",
                                worktree, models, card.rework + 1)
@@ -607,7 +642,7 @@ def run_card(card: Card, collab_dir, worktree, test_command, dev_adapter, test_a
             card.transition("待验收")
             _save(collab, card)
             record(cdir, "结束", src="程序", dst="你", state="待验收",
-                   summary=f"做完了，等你验收（返工 {card.rework} 次）")
+                   summary=f"做完了，等你确认（返工 {card.rework} 次）")
             return card, verdict
 
         if verdict.result in (ENV_ERROR, TIMEOUT):

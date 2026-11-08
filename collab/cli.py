@@ -234,7 +234,7 @@ def cmd_run(args, ask_fn=None, judge_fn=None, **_):
                 summary=run_summary,
                 tools={"测试员": tools["test"], "开发员": tools["dev"], "复查员": reviewer},
                 pid=main_pid, started=started_at,
-                text=f"判定命令：{args.test_command}\n页面检查：{args.page_check or '无'}\n独立副本：{worktree}")
+                text=f"判定命令：{args.test_command}\n页面检查：{args.page_check or '无'}\n改好的版本在：{worktree}")
     card, verdict = run_card(
         card, collab_dir=_collab(args.project), worktree=str(worktree),
         test_command=["/bin/bash", "-o", "pipefail", "-c", args.test_command],
@@ -257,9 +257,9 @@ def cmd_run(args, ask_fn=None, judge_fn=None, **_):
 def cmd_merge(args, **_):
     result = merge_card(args.project, args.card_id)
     if result.get("ok"):
-        print(f"{args.card_id} 已合并")
+        print(f"{args.card_id} 已放进项目")
         return 0
-    print(result.get("reason") or "合并没能完成", file=sys.stderr)
+    print(result.get("reason") or "没能放进项目", file=sys.stderr)
     return 2
 
 
@@ -371,7 +371,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("card_id")
     p.add_argument("--test-command", required=True, help="判定用的测试命令，只看退出码")
     p.add_argument("--session-jsonl", help="Claude 会话记录路径，用于记录额度；填 auto 自动找最新的一份")
-    p.add_argument("--page-check", help="真实页面检查命令（由项目定义），通过才算待验收")
+    p.add_argument("--page-check", help="真实页面检查命令（由项目定义），通过才算做完")
     p.add_argument("--dev-tool", default=None, choices=["cursor", "codex", "agy"],
                    help="开发员（写代码）；不写就用团队配置（默认 Cursor）")
     p.add_argument("--test-tool", default=None, choices=["cursor", "codex", "agy"],
@@ -396,7 +396,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("card_id")
     p.set_defaults(func=cmd_plan)
 
-    p = sub.add_parser("merge", help="把待验收的卡片合并进当前分支")
+    p = sub.add_parser("merge", help="把做完的卡片放进项目当前分支")
     p.add_argument("project")
     p.add_argument("card_id")
     p.set_defaults(func=cmd_merge)

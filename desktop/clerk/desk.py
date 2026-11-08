@@ -27,7 +27,7 @@ ROLE = ("你是超级助手的行政人员，用户的前台和行政。用大�
         "问进度必须先查，不能凭记忆。"
         "问这个项目是什么、怎么用时，先读项目说明；没有或不够，再调用 read_project_docs 读项目自带资料，只按资料回答。"
         "项目说明还没写时，读完资料后可以调用 propose_profile 起草。不知道的项不要编，先问用户。"
-        "你不能改代码、运行命令、推送或合并。"
+        "你不能改代码、运行命令、推送或把改动放进项目。"
         "用户明确要改产品或写代码时，先问清楚，再调用 propose_task。"
         "用户明确要改团队分工（调度员、写测试、写代码、复查用谁）时，先问清楚，再调用 propose_team_change。"
         "不要私自做工具连通检测；需要的话提醒用户去「设置」里点「检测」。"
@@ -63,6 +63,7 @@ class _Conversation:
         self.cond = threading.Condition()
         self.busy = False
         self.turn = 0
+        self.deleted = False   # 删掉后，还在路上的回答和标题都不再写
 
     def emit(self, event: dict) -> None:
         with self.cond:
@@ -137,6 +138,8 @@ class ClerkDesk:
             spare.replace(folder / INDEX)
 
     def _record(self, conv: _Conversation, role: str, text: str) -> None:
+        if conv.deleted:
+            return
         folder = self._folder(conv.project)
         folder.mkdir(parents=True, exist_ok=True)
         line = json.dumps({"role": role, "text": text, "time": time.time()}, ensure_ascii=False)
@@ -168,22 +171,79 @@ class ClerkDesk:
             kind = "user" if role == "user" else "message"
             conv.emit({"type": kind, "text": payload, "item": f"h{len(conv.events)}", "history": True})
         with self._lock:
+            if not create and not path.exists():  # 读的时候被删了：不能放回内存，否则之后的通知会把文件写回来
+                return None
             return self._open.setdefault(key, conv)
+
+    def _card_conversations(self, project: str) -> set:
+        """卡片自己的对话。编号由卡片算出来，索引坏了也认得出。"""
+        cards = Path(project) / ".collab" / "cards"
+        if not cards.is_dir():
+            return set()
+        return {clerk_tasks.card_conversation_id(item.name) for item in cards.iterdir()}
 
     # ---------- 给页面用 ----------
 
     def list(self, project: str) -> dict:
         current = self._focus.get(str(project))
+        pending = clerk_tasks.conversations_with_open(project)
+        of_cards = self._card_conversations(project)
         threads = []
+        with self._lock:
+            opened = dict(self._open)
         for cid, entry in self._load_index(project).items():
             if isinstance(entry, dict) and _ID_SHAPE.fullmatch(cid) and entry.get("title") \
                     and (self._folder(project) / f"{cid}.jsonl").exists():
-                if entry.get("card"):
+                if entry.get("card") or cid in of_cards:
                     continue
-                threads.append({"id": cid, "title": entry["title"], "updated": entry.get("updated") or 0,
-                                "current": cid == current})
+                conv = opened.get((str(project), cid))
+                threads.append({
+                    "id": cid, "title": entry["title"], "updated": entry.get("updated") or 0,
+                    "current": cid == current,
+                    "busy": bool(conv and conv.busy),
+                    "pending": cid in pending,
+                })
         threads.sort(key=lambda item: item["updated"], reverse=True)
         return {"threads": threads, "current": current, "cached": False}
+
+    def delete(self, project: str, cid: str) -> None:
+        """删掉一段主对话。顺序：作废提议 → 移出内存 → 删文件 → 最后改索引。"""
+        gone = LookupError("这段对话已经不在了")
+        if not _ID_SHAPE.fullmatch(cid or ""):
+            raise gone
+        path = self._folder(project) / f"{cid}.jsonl"
+        if not path.exists():
+            raise gone
+        if self._index_entry(project, cid).get("card") or cid in self._card_conversations(project):
+            raise gone
+        key = (str(project), cid)
+        with self._lock:
+            conv = self._open.get(key)
+            busy = bool(conv and conv.busy)
+        if busy:
+            raise RuntimeError("这段对话还在回复，等说完或先点停止再删")
+        clerk_tasks.cancel_open(project, cid)
+        with self._lock:  # 移出内存和删文件要一起：中间不能有人重新打开它
+            conv = self._open.get(key)
+            if conv is not None and conv.busy:
+                raise RuntimeError("这段对话还在回复，等说完或先点停止再删")
+            try:
+                path.unlink()
+            except OSError as exc:
+                raise RuntimeError("没能删掉这段对话，请检查文件夹权限。") from exc
+            if conv is not None:
+                conv.deleted = True
+            self._open.pop(key, None)
+            if self._focus.get(str(project)) == cid:
+                self._focus[str(project)] = None
+            index = self._load_index(project)
+            if cid in index:
+                index.pop(cid, None)
+                folder = self._folder(project)
+                folder.mkdir(parents=True, exist_ok=True)
+                spare = folder / (INDEX + ".tmp")
+                spare.write_text(json.dumps(index, ensure_ascii=False), encoding="utf-8")
+                spare.replace(folder / INDEX)
 
     def focus(self, project: str, cid: str) -> None:
         self._focus[str(project)] = cid or None
@@ -272,6 +332,7 @@ class ClerkDesk:
         """打开这张卡自己的对话。重复打开还是同一段，不把旧进展再播一遍。"""
         from collab.flow import read_flow
         from collab.phase import card_phase
+        from desktop.view import _title
         cdir = Path(project) / ".collab" / "cards" / card_id
         if not (cdir / "状态.json").is_file():
             raise LookupError("没有这张卡片")
@@ -279,11 +340,7 @@ class ClerkDesk:
         req = cdir / "需求卡.md"
         if req.is_file():
             need = req.read_text(encoding="utf-8")
-        title = card_id
-        for line in need.splitlines():
-            if line.startswith("# "):
-                title = line[2:].strip() or card_id
-                break
+        title = _title(cdir, card_id)
         cid = hashlib.md5(("card:" + card_id).encode()).hexdigest()
         folder = self._folder(project)
         folder.mkdir(parents=True, exist_ok=True)
@@ -486,4 +543,5 @@ class ClerkDesk:
         except ModelError:
             return
         if title:
-            self._save_index(conv.project, conv.id, title=self._short(title))
+            if not conv.deleted:
+                self._save_index(conv.project, conv.id, title=self._short(title))

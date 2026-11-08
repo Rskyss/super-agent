@@ -50,7 +50,7 @@ class ReportTest(WatchCase):
     def test_each_outcome_has_its_words(self):
         cdir = self.make_card(state="待验收", source=self.cid, reported="running", title="甲")
         self.watcher.tick(self.project)
-        self.assertIn("「甲」做完了，等你验收。", self.said())
+        self.assertIn("「甲」做完了，等你确认。", self.said())
         cdir = self.make_card("CARD-002", state="需Claude介入", source=self.cid, reported="running", title="乙")
         record(cdir, "转人工", src="程序", dst="调度员", summary="测试一直不过")
         self.watcher.tick(self.project)

@@ -4,6 +4,7 @@
   FAKE_CODEX_DB     存对话的文件（让“接着上次的对话”能测）
   FAKE_CODEX_IMAGE  “画图”时报出的图片路径
   FAKE_CODEX_DELAY  回话前等几秒
+  FAKE_CODEX_NO_DELETE  装作老版本：没有删除对话的能力
 按用户消息里的字决定怎么回：含“画”→画图；含“运行”→先问允许吗；含“数”→一直数到被停止；含“读”→读文件；
 含“崩”→直接退出（测连接断了）；其他→简单回一句。
 """
@@ -161,8 +162,12 @@ def thread_obj(tid, data, with_turns):
                     break
         if preview:
             break
-    return {"id": tid, "cwd": data["cwd"], "turns": data["turns"] if with_turns else [],
+    made = {"id": tid, "cwd": data["cwd"], "turns": data["turns"] if with_turns else [],
             "preview": preview, "updatedAt": int(data.get("updated") or time.time()), "status": "idle"}
+    made["originator"] = data.get("originator", "super-agent")  # 真实 Codex 都带来源：是开这段对话的客户端
+    if data.get("path"):
+        made["path"] = data["path"]
+    return made
 
 
 def main():
@@ -183,7 +188,9 @@ def main():
             hits.sort(key=lambda x: x[1]["updated"], reverse=True)
             out({"id": rid, "result": {"data": [thread_obj(t, d, False) for t, d in hits[:params.get("limit") or 50]]}})
         elif method == "thread/start":
-            tid = f"t{len(db['threads']) + 1}"
+            number = max(len(db["threads"]), db.get("last", 0)) + 1  # 和真实 Codex 一样：删过的编号不再用
+            db["last"] = number
+            tid = f"t{number}"
             db["threads"][tid] = {"cwd": params.get("cwd"), "turns": [], "updated": time.time(),
                                   "instructions": params.get("developerInstructions"),
                                   "reviewer": params.get("approvalsReviewer"),
@@ -204,6 +211,16 @@ def main():
                 held_threads.add(tid)
                 save(db)
                 out({"id": rid, "result": {"thread": thread_obj(tid, t, True)}})
+        elif method == "thread/delete":
+            tid = params["threadId"]
+            if os.environ.get("FAKE_CODEX_NO_DELETE"):  # 老版本 Codex 没有这个能力
+                out({"id": rid, "error": {"code": -32601, "message": f"method not found: {method}"}})
+            elif not (db["threads"].get(tid) or {}).get("turns"):  # 和真实 Codex 一样：没存档的删不了
+                out({"id": rid, "error": {"code": -32600, "message": f"no rollout found for thread id {tid}"}})
+            else:
+                del db["threads"][tid]
+                save(db)
+                out({"id": rid, "result": {}})
         elif method == "thread/read":
             out({"id": rid, "result": {"thread": thread_obj(params["threadId"], db["threads"][params["threadId"]], True)}})
         elif method == "turn/start":

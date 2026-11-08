@@ -222,7 +222,7 @@ class FromTheWindow(MergeCase):
         self.prepared("sleep 1")
         self.assertEqual(self.act("accept")[0], 200)
         phase = wait_until(lambda: self.phase() if self.phase()["code"] == "merging" else None, 5, "没有显示合并中")
-        self.assertEqual((phase["label"], phase["needs_you"], phase["actions"]), ("合并中", False, []))
+        self.assertEqual((phase["label"], phase["needs_you"], phase["actions"]), ("正在放进项目", False, []))
         self.assertEqual(self.act("accept")[0], 409)
         wait_until(lambda: self.state() == "已合并", 20, "没有合并完")
 
@@ -231,7 +231,7 @@ class FromTheWindow(MergeCase):
         self.mark("merge", "CARD-999", os.getpid())
         status, answer = self.act("accept")
         self.assertEqual(status, 409)
-        self.assertIn("正在合并", answer["error"])
+        self.assertIn("正在放进项目", answer["error"])
 
     def test_killed_merge_is_not_restarted(self):
         self.prepared()
@@ -254,16 +254,16 @@ class FromTheWindow(MergeCase):
         cdir = self.make_card(state="已合并", source=CONV, reported="merging", title="甲")
         said = Said()
         TaskWatcher(said).tick(self.project)
-        self.assertEqual(said.lines, ["「甲」已合并。"])
+        self.assertEqual(said.lines, ["「甲」已放进项目。"])
         (cdir / "状态.json").write_text(json.dumps({"card_id": "CARD-001", "state": "待验收", "rework": 0}), encoding="utf-8")
         record(cdir, "合并失败", src="程序", dst="你", summary="有冲突")
         TaskWatcher(said).tick(self.project)
-        self.assertEqual(said.lines[-1], "「甲」合并没成功：有冲突。")
+        self.assertEqual(said.lines[-1], "「甲」没能放进项目：有冲突。")
 
     @needs_node()
     def test_button_words(self):
         done = run_node("const P = require(" + json.dumps(str(STATIC / "panel.js")) + ");" + """
           const b = P.actionButtons({ actions: ['accept', 'revise'], branch: 'main' }, true);
-          if (b[0].label !== '验收通过，合并到 main' || b[1].label !== '还要修改') throw new Error(JSON.stringify(b));
+          if (b[0].label !== '确认没问题，放进项目' || b[1].label !== '不满意，继续改') throw new Error(JSON.stringify(b));
         """)
         self.assertEqual(done.returncode, 0, done.stderr)

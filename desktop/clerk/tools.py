@@ -93,7 +93,7 @@ TOOLS = [
 
 PROPOSE_REVISE = {"type": "function", "function": {
     "name": "propose_revise",
-    "description": "向用户出示“还要修改？”确认框。用户点确认后才把新要求交给施工。",
+    "description": "向用户出示“继续改？”确认框。用户点确认后才把新要求交给施工。",
     "parameters": {"type": "object", "properties": {
         "text": {"type": "string", "description": "要改什么"},
     }, "required": ["text"], "additionalProperties": False},
