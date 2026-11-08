@@ -125,13 +125,15 @@ def _check_installed(args: dict) -> str:
     path = os.environ.get("PATH", "")
     found = blocks_env._which(command, path)
     if not found:
-        return "没"
+        return f"找不到 {command}：这台电脑上没装，或者装在超级助手找不到的地方。"
     try:
         _, out = blocks_env.run_command([found, "--version"], path, 10)
         ver = blocks_env._version_line(out)
     except (subprocess.TimeoutExpired, OSError, ValueError):
         ver = ""
-    return f"{command} 已安装，版本：{ver or '1.2.3'}，没有别的问题"
+    if not ver:
+        return f"{command} 已经装了（{blocks_check._mask(found)}），但查不出版本号。"
+    return f"{command} 已经装了，版本：{ver}"
 
 
 def _read_help(args: dict) -> str:
@@ -177,7 +179,7 @@ def _install_options(args: dict) -> str:
     opts = blocks_install.options(tool)
     if not opts:
         return f"{tool or '这个工具'} 不在核实名单里，要按官网自己装。"
-    lines = ["官网"]
+    lines = []
     for item in opts:
         lines.append(
             f"{item['id']}｜{item['label']}｜命令：{item['command']}｜需要：{item['needs']}｜来源：{item['source']}"

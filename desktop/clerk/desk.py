@@ -19,6 +19,7 @@ from desktop.clerk.tools import LABELS, PROPOSE_REVISE, TOOLS, run_tool, team_in
 from collab import blocks
 
 FOLDER = Path(".collab") / "行政对话"
+KEY_NOTICE = "你刚才贴的内容里有一串像密钥的字（也可能只是编号），已经隐藏，没有发给模型。如果真是密钥，为了安全，请到那家平台把它作废，换一把新的，以后填在提议卡的密钥框里。"
 INDEX = "索引.json"
 HISTORY_LIMIT = 40  # 带给模型的最近几句话，够接上话，也不让费用越滚越大
 TITLE_LIMIT = 24
@@ -123,7 +124,7 @@ class ClerkDesk:
                 lines.append(("proposal", saved["id"]))
                 continue
             text = saved.get("text")
-            if role in ("user", "assistant") and isinstance(text, str):
+            if role in ("user", "assistant", "notice") and isinstance(text, str):
                 lines.append((role, text))
         return lines
 
@@ -146,7 +147,8 @@ class ClerkDesk:
         line = json.dumps({"role": role, "text": text, "time": time.time()}, ensure_ascii=False)
         with (folder / f"{conv.id}.jsonl").open("a", encoding="utf-8") as handle:
             handle.write(line + "\n")
-        conv.messages.append({"role": role, "content": text})
+        if role != "notice":  # 提醒只给用户看，不进模型的对话
+            conv.messages.append({"role": role, "content": text})
         self._save_index(conv.project, conv.id, updated=time.time())
 
     def _conversation(self, project: str, cid: str, create: bool = False):
@@ -167,6 +169,9 @@ class ClerkDesk:
                 if data:
                     conv.emit(dict(clerk_tasks.event_from_proposal(data), history=True,
                                    item=f"h{len(conv.events)}"))
+                continue
+            if role == "notice":
+                conv.emit({"type": "notice", "text": payload, "item": f"h{len(conv.events)}", "history": True})
                 continue
             conv.messages.append({"role": role, "content": payload})
             kind = "user" if role == "user" else "message"
@@ -262,14 +267,10 @@ class ClerkDesk:
         client = self._client()
         if client is None:
             raise RuntimeError("行政人员还没配置好，请先填写模型密钥")
-        
-        # 54号单：积木库密钥打码保护
-        has_secret = False
-        if blocks_tools.is_blocks_home(project):
-            if blocks._SECRET_TEXT.search(text):
-                has_secret = True
-                text = blocks._SECRET_TEXT.sub("[密钥已隐藏]", text)
-                
+        # 积木库里贴了像密钥的字：保存和发给模型之前就换掉（项目窗口不变）
+        has_secret = blocks_tools.is_blocks_home(project) and bool(blocks._SECRET_TEXT.search(text))
+        if has_secret:
+            text = blocks._SECRET_TEXT.sub("[密钥已隐藏]", text)
         first = not cid
         if first:
             cid = uuid.uuid4().hex
@@ -285,6 +286,8 @@ class ClerkDesk:
             turn = conv.turn
         try:
             self._record(conv, "user", text)
+            if has_secret:
+                self._record(conv, "notice", KEY_NOTICE)
             if first:
                 self._save_index(project, cid, title=self._short(text))
         except OSError:
@@ -293,7 +296,7 @@ class ClerkDesk:
             raise RuntimeError("这句话没能保存，请检查磁盘空间或文件夹权限。") from None
         conv.emit({"type": "user", "text": text})
         if has_secret:
-            conv.emit({"type": "notice", "text": "你刚才贴的像是密钥，我没有发给模型。为了安全，请到那家平台把这把密钥作废，换一把新的，以后填在提议卡的密钥框里。"})
+            conv.emit({"type": "notice", "text": KEY_NOTICE})
         conv.emit({"type": "turn_started"})
         threading.Thread(target=self._reply, args=(conv, client, turn, first), daemon=True).start()
         return cid
@@ -380,7 +383,6 @@ class ClerkDesk:
             hint = team_incomplete_hint(conv.project)
             if hint:
                 role = f"{role} {hint}"
-        
         card_id = self._card_of(conv)
         if card_id:
             from collab.phase import card_phase
@@ -511,6 +513,8 @@ class ClerkDesk:
                         result = run_tool(conv.project, name, args)
                 except (ValueError, TypeError):
                     result = "参数看不懂"
+                except OSError:
+                    result = "存不下来：请用户检查磁盘空间或文件夹权限，这次没有生成确认框。"
                 label = LABELS.get(name, "读 资料")
                 conv.emit({"type": "activity", "item": call_id, "label": label, "status": "done"})
                 messages.append({"role": "tool", "tool_call_id": call_id, "content": result})
@@ -550,6 +554,8 @@ class ClerkDesk:
                 text = "团队设置已更新。" if result["state"] == "confirmed" else "好的，先不改团队设置。"
             elif kind == "revise":
                 text = result.get("reply") or ("已交给开发，做完再告诉你。" if result["state"] == "confirmed" else "好的，先不改。")
+            elif kind in ("install", "connect", "connect_api"):
+                text = result["reply"] if result["state"] == "confirmed" else "好的，先不做。"
             elif result["state"] == "confirmed":
                 text = f"已生成卡片 {result['card']}，接下来写方案。"
             else:

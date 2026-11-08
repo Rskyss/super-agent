@@ -31,7 +31,12 @@ _COMMAND = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 _PLACEHOLDER = re.compile(r"\{([^{}]*)\}")
 _SECRET_TEXT = re.compile(r"sk-[A-Za-z0-9_-]{16,}|AIza[0-9A-Za-z_-]{30,}|gh[pousr]_[A-Za-z0-9]{30,}"
                           r"|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16}|(?i:bearer)\s+(?=\S*\d)[A-Za-z0-9._~+/=-]{20,}"
-                          r"|(?i:x-api-key|authorization)\s*:\s*(?:(?i:bearer)\s+)?\S{6,}|[A-Za-z_]*(?i:api_key|_token|_secret)\s*=\s*\S{6,}")
+                          r"|(?i:x-api-key|authorization)\s*:\s*(?:(?i:bearer)\s+)?\S{6,}"
+                          r"|[A-Za-z_]{0,40}(?i:api[_-]?key|_token|_secret)\s*[:=]\s*\S{6,}"
+                          # 国内平台：腾讯云 AKID、智谱 32位.16位、火山方舟 UUID、百度千帆 bce-v3；还有 JWT 令牌
+                          r"|AKID[A-Za-z0-9]{13,40}|\b[0-9a-f]{32}\.[A-Za-z0-9]{16}\b"
+                          r"|\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b|bce-v3/[A-Za-z0-9/_-]{20,}"
+                          r"|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}")
 _MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,99}")  # 模型名：不能以横线开头，免得被当成开关
 _SECRET_NAME_EXACT = {"key", "auth"}
 _SECRET_NAME_PARTS = ("apikey", "secret", "password", "passwd", "authorization", "accesskey", "privatekey")

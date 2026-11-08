@@ -48,7 +48,7 @@ class BlocksCase(ProjectCase):
     def call(self, name, args, text="好的"):
         self.client.steps = [{"tool_calls": [tool_call(name, args)]}, {"text": text}]
         cid, events = self.talk("帮我办")
-        return cid, events, self.tool_results(1)
+        return cid, events, self.tool_results(len(self.client.calls) - 1)  # 同一个测试里调多次，取最后这一轮
 
 
 class ModeTest(BlocksCase):
@@ -175,7 +175,7 @@ class ConnectCliTest(BlocksCase):
         self.assertEqual(prop["name"], "Codex")
         answer = clerk_tasks.decide(str(self.home), cid, prop["id"], "confirm")
         self.assertEqual(answer["kind"], "connect")
-        self.assertEqual(answer["card"]["command"], "codex")
+        self.assertEqual(answer["block"]["command"], "codex")
         self.assertIsNone(answer["approved"], "核实过的不用确认串")
 
     def test_custom_card_shows_full_command(self):
@@ -188,7 +188,7 @@ class ConnectCliTest(BlocksCase):
         self.assertIn(str(self.bin / "demo-cli"), prop["preview"], "没核实的要亮出完整命令和完整路径")
         self.assertIn("新建一个文件", prop["preview"])
         answer = clerk_tasks.decide(str(self.home), cid, prop["id"], "confirm")
-        self.assertEqual(answer["card"]["source"], "clerk", "行政起草的卡不能自称内置")
+        self.assertEqual(answer["block"]["source"], "clerk", "行政起草的卡不能自称内置")
         self.assertEqual(answer["approved"], prop["preview"], "确认的就是给用户看的那一串")
 
     def test_dangerous_card_refused(self):
@@ -197,13 +197,8 @@ class ConnectCliTest(BlocksCase):
         self.assertEqual(self.proposals(events), [])
         self.assertIn("bash", results[0])
 
-    def test_three_failures_stop(self):
-        for _ in range(3):
-            blocks.add_record("demo", {"type": "check", "ok": False, "reason": "没建出文件"}, root=self.home)
-        card = {"id": "demo", "kind": "cli", "name": "演示", "command": "demo-cli", "run": ["-p", "{prompt}"]}
-        _, events, results = self.call("propose_connect_cli", {"card": card})
-        self.assertEqual(self.proposals(events), [])
-        self.assertIn("3 次", results[0])
+    # “连续 3 次就停”按一段对话算（复查后改，原来按编号算，换编号能绕过、预置的会永久锁死），
+    # 测试在 test_blocks_clerk_fixes.ThreeStrikesFixes
 
     def test_success_resets_failure_count(self):
         for ok in (False, False, False, True):
@@ -221,7 +216,7 @@ class ConnectApiTest(BlocksCase):
         prop = self.proposals(events)[0]
         self.assertEqual(prop["kind"], "connect_api")
         answer = clerk_tasks.decide(str(self.home), cid, prop["id"], "confirm")
-        card = answer["card"]
+        card = answer["block"]
         self.assertEqual(card["kind"], "llm_api")
         self.assertEqual(card["base_url"], TENCENT_BASE_URL)
         self.assertEqual(card["key_account"], "tencent")
