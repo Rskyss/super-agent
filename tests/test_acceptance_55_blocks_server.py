@@ -278,7 +278,10 @@ class ScanTest(BlocksCase):
         items = {i["label"]: i for i in result["items"]}
         self.assertIn("Node", items)
         self.assertIn("agy", items)
-        self.assertNotEqual(items["agy"]["status"], "有", "终端里有、超级助手找不到的要单独标出来：说明用上了终端的路径")
+        # 验收后改（Claude，2026-11-08）：体检前把终端的路径补进超级助手，终端里装的工具直接就能找到，不用重开
+        self.assertEqual(items["agy"]["status"], "有", "用上了终端的路径")
+        self.assertEqual(items["agy"]["version"], "1.0")
+        self.assertIn(str(terminal), os.environ["PATH"])
 
     def test_unknown_job(self):
         self.assertEqual(self.bget("/api/blocks/job", id="nothing")[0], 404)

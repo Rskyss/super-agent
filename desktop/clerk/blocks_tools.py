@@ -89,9 +89,11 @@ def role_text() -> str:
 
 
 def is_blocks_home(project) -> bool:
+    if not project or not isinstance(project, (str, Path)):
+        return False  # 空路径会被当成当前文件夹
     try:
         return Path(project).expanduser().resolve() == blocks.home().expanduser().resolve()
-    except OSError:
+    except (OSError, ValueError):  # 带 \0 这类畸形路径
         return False
 
 

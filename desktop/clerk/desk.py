@@ -19,6 +19,7 @@ from desktop.clerk.tools import LABELS, PROPOSE_REVISE, TOOLS, run_tool, team_in
 from collab import blocks
 
 FOLDER = Path(".collab") / "行政对话"
+_AUTH_HEADER = re.compile(r"(?i)(bearer|authorization:)\s+[A-Za-z0-9._~+/=-]{12,}")
 KEY_NOTICE = "你刚才贴的内容里有一串像密钥的字（也可能只是编号），已经隐藏，没有发给模型。如果真是密钥，为了安全，请到那家平台把它作废，换一把新的，以后填在提议卡的密钥框里。"
 INDEX = "索引.json"
 HISTORY_LIMIT = 40  # 带给模型的最近几句话，够接上话，也不让费用越滚越大
@@ -401,10 +402,22 @@ class ClerkDesk:
         with conv.cond:
             return conv.turn == turn
 
+    @staticmethod
+    def _scrub(conv: _Conversation, client, text):
+        """积木库里：模型连接的报错、回话先去掉密钥再显示、再存（报错里可能带着请求头）。项目窗口不变。"""
+        if not text or not blocks_tools.is_blocks_home(conv.project):
+            return text
+        key = getattr(client, "api_key", "") or ""
+        if isinstance(key, str) and key:
+            text = text.replace(key, "[已隐藏]")
+        # 只去掉这次连接的密钥原文和请求头写法；行政教人配工具的正常说明（export XX_API_KEY=…）不能被弄坏
+        return _AUTH_HEADER.sub(r"\1 [已隐藏]", text)
+
     def _reply(self, conv: _Conversation, client, turn: int, first: bool) -> None:
         holder = {"item": uuid.uuid4().hex}
 
         def on_text(piece: str) -> None:
+            piece = self._scrub(conv, client, piece)
             with conv.cond:
                 if conv.turn != turn:
                     raise _Stopped
@@ -412,7 +425,7 @@ class ClerkDesk:
             conv.emit({"type": "delta", "item": holder["item"], "text": piece})
 
         def seal(text: str) -> None:
-            words = (text or "").strip()
+            words = self._scrub(conv, client, (text or "").strip())
             if not words:
                 return
             with conv.cond:
@@ -431,6 +444,7 @@ class ClerkDesk:
             failure, reply = str(exc), exc.partial
         except Exception:  # 回话线程不能悄悄死掉，否则页面一直转
             failure, reply = "行政这次没回复成功，请再试一次。", "".join(conv.partial)
+        failure, reply = self._scrub(conv, client, failure), self._scrub(conv, client, reply)
         with conv.cond:
             if conv.turn != turn:
                 return

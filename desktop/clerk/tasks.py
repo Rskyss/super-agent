@@ -60,11 +60,18 @@ def _apply_team_change(project: str, role: str, tool: str) -> None:
     load_team(project)
 
 
+_PID = re.compile(r"[A-Za-z0-9_-]{1,64}")  # 程序生成的编号；带路径的（../）一律不认，免得读写资料夹外面的文件
+
+
 def _path(project: str, pid: str) -> Path:
+    if not isinstance(pid, str) or not _PID.fullmatch(pid):
+        raise LookupError("找不到这个提议")
     return _folder(project) / f"{pid}.json"
 
 
 def load_proposal(project: str, pid: str) -> Optional[dict]:
+    if not isinstance(pid, str) or not _PID.fullmatch(pid):
+        return None
     path = _path(project, pid)
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
