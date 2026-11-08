@@ -82,7 +82,7 @@ class EnvFixes(unittest.TestCase):
         marker = self.base / "child.pid"
         script(self.app, "slow", f'/bin/sleep 30 & echo $! > "{marker}"; exec /bin/sleep 30')
         with self.assertRaises(subprocess.TimeoutExpired):
-            blocks_env.run_command([str(self.app / "slow")], str(self.app), 0.5)
+            blocks_env.run_command([str(self.app / "slow")], str(self.app), 1.5)  # 0.5 秒在电脑忙时来不及写出编号
         pid = int(marker.read_text().strip())
         time.sleep(0.2)
         with self.assertRaises(ProcessLookupError):

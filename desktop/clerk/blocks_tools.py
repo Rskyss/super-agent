@@ -151,8 +151,8 @@ def _read_help(args: dict) -> str:
         return f"运行 {command} --help 超时。"
     except (OSError, ValueError) as exc:
         return f"运行 {command} --help 出错：{exc}"
-    cleaned = blocks_check._mask(out or "").strip()
-    return (cleaned[:_HELP_LIMIT] if cleaned else f"{command} --help 没有输出内容。")
+    cleaned = blocks_check._mask_cut(out or "", _HELP_LIMIT).strip()  # 先打码再截断，超长输出也不卡
+    return cleaned or f"{command} --help 没有输出内容。"
 
 
 def _list_blocks(project) -> str:

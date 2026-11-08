@@ -13,8 +13,10 @@ import shutil
 import signal
 import subprocess
 import tempfile
+from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+from pathlib import Path
 
 from collab import blocks
 
@@ -27,9 +29,11 @@ PREREQS = (
 )
 TOOL_WHY = "接进基础层的工具"
 VERSION_LIMIT = 80
+LINE_SCAN = 500
 
 
-_EMAIL = re.compile(r"[\w.+-]+@[\w-]+(\.[\w-]+)+")
+# 每段都有上限：没有上限时，一长串字母会让打码越跑越慢（20 万字要几分钟）
+_EMAIL = re.compile(r"[\w.+-]{1,64}@[\w-]{1,63}(?:\.[\w-]{1,63})+")
 _VERSIONISH = re.compile(r"\d+\.\d+")
 
 
@@ -40,14 +44,43 @@ def _kill_group(pid) -> None:
         pass
 
 
+def remove_folder(folder) -> None:
+    """删临时文件夹，删不掉也不报错：工具留下打不开的子文件夹，先把权限改回来再删；
+    另开一组的后台小程序还在往里写时，可能留下空文件夹，不影响结果。"""
+    folder = Path(folder)
+    shutil.rmtree(folder, ignore_errors=True)
+    if folder.exists():
+        for dirpath, dirnames, _ in os.walk(folder):
+            for d in dirnames:
+                target = os.path.join(dirpath, d)
+                if os.path.islink(target):
+                    continue  # 不顺着链接去改外面文件夹的权限
+                try:
+                    os.chmod(target, 0o700)
+                except OSError:
+                    pass
+        shutil.rmtree(folder, ignore_errors=True)
+
+
+@contextmanager
+def scratch_folder(prefix):
+    """新建一个空文件夹给工具当当前文件夹，用完就删。"""
+    folder = tempfile.mkdtemp(prefix=prefix)
+    try:
+        yield folder
+    finally:
+        remove_folder(folder)
+
+
 def run_command(args, path, timeout):
     """按参数列表运行（不经过 shell），返回（退出码，标准输出和错误输出合在一起的文字）。超时抛 TimeoutExpired。
 
     输出写进临时文件而不是管道：工具在后台留下的小程序占着管道时，不用干等到限时。
-    子程序单独成组，结束（或超时）时整组关掉，不留后台小程序。"""
-    with tempfile.TemporaryFile() as out:
+    子程序单独成组，结束（或超时）时整组关掉，不留后台小程序。
+    在新建的空文件夹里跑，跑完就删：工具不会把文件写进超级助手所在的文件夹，也读不到那里的设置。"""
+    with tempfile.TemporaryFile() as out, scratch_folder("积木库-") as folder:
         proc = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
-                                env=dict(os.environ, PATH=path or ""), start_new_session=True)
+                                env=dict(os.environ, PATH=path or ""), start_new_session=True, cwd=folder)
         try:
             code = proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
@@ -72,7 +105,7 @@ def _which(command, path):
 
 def _version_line(text: str) -> str:
     """挑像版本号的那一行（警告、提示常在前面），邮箱一律去掉。"""
-    lines = [l.strip() for l in (text or "").splitlines() if l.strip()]
+    lines = [l.strip()[:LINE_SCAN] for l in (text or "").splitlines() if l.strip()]  # 每行先截短，超长的一行不卡
     pick = next((l for l in lines if _VERSIONISH.search(l) and "@" not in l), None) \
         or next((l for l in lines if _VERSIONISH.search(l)), None) or (lines[0] if lines else "")
     return blocks._SECRET_TEXT.sub("[已隐藏]", _EMAIL.sub("[已隐藏]", pick))[:VERSION_LIMIT]

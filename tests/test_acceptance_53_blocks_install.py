@@ -85,12 +85,12 @@ class RunTest(RunCase):
     def test_success_and_found(self):
         self.fake_npm(f'printf "#!/bin/sh\\necho codex-cli 9.9.9\\n" > "{self.bin}/codex"; /bin/chmod +x "{self.bin}/codex"; '
                       'echo "added 1 package"')
-        lines = []
-        result = self.install(on_output=lines.append)
+        result = self.install()
         self.assertTrue(result["ok"], result)
         self.assertEqual(result["status"], "ok")
         self.assertTrue(result["found"])
-        self.assertIn("added 1 package", "\n".join(lines))
+        # 第四轮复查后：页面隔一会儿取最后几行，不再把每一行推给页面
+        self.assertIn("added 1 package", blocks_install.output_tail())
         self.assertEqual(self.ran.read_text().split(), ["install", "-g", "@openai/codex"])
 
     def test_installed_but_not_found(self):
@@ -163,21 +163,16 @@ class RunTest(RunCase):
         self.assertNotIn("sk-abcdefghijklmnopqrstuvwxyz", text)
         self.assertNotIn("output", last)
 
-    def test_output_callback_masks_secrets(self):
+    def test_output_tail_masks_secrets(self):
         self.fake_npm('echo "token sk-abcdefghijklmnopqrstuvwxyz"; exit 0')
-        lines = []
-        self.install(on_output=lines.append)
-        self.assertNotIn("sk-abcdefghijklmnopqrstuvwxyz", "\n".join(lines))
+        self.install()
+        self.assertNotIn("sk-abcdefghijklmnopqrstuvwxyz", "\n".join(blocks_install.output_tail()))
 
-    def test_runs_absolute_path_and_extra_env(self):
+    def test_runs_absolute_path_and_prefix(self):
+        # 53 号单复查后：额外环境设置能跑任意代码，去掉，只留装进指定文件夹的 prefix（见 test_blocks_install_fixes）
         self.fake_npm('echo "prefix=$npm_config_prefix" >> "' + str(self.base / "env.txt") + '"; exit 0')
-        self.install(env_extra={"npm_config_prefix": str(self.base / "prefix")})
+        self.install(prefix=str(self.base / "prefix"))
         self.assertIn(str(self.base / "prefix"), (self.base / "env.txt").read_text())
-
-    def test_env_extra_cannot_change_path(self):
-        self.fake_npm("exit 0")
-        with self.assertRaises(BlockError):
-            self.install(env_extra={"PATH": "/tmp"})
 
     def test_one_install_at_a_time(self):
         self.fake_npm("/bin/sleep 2; exit 0")

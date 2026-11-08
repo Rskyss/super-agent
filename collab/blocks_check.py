@@ -11,7 +11,6 @@ import functools
 import re
 import shlex
 import os
-import shutil
 import subprocess
 import tempfile
 import threading
@@ -22,6 +21,7 @@ from collab import blocks
 from collab.agents import QuietTimeout, watched_runner
 from collab.blocks import BlockError
 from collab.blocks_env import _EMAIL, _clean_path, _which
+from collab.blocks_env import remove_folder as _remove
 from collab.providers import find as find_provider
 
 DEFAULT_TIMEOUT = 180
@@ -66,6 +66,20 @@ def _mask(text: str, secret: str = "") -> str:
     return blocks._SECRET_TEXT.sub("[已隐藏]", text)
 
 
+def _mask_cut(text: str, limit: int) -> str:
+    """先打码再截断：截断在前会把半截密钥漏出来。多打码一截；截过的，最后那个不完整的词也去掉
+    （打码会让字变少，原来切在边上的半截密钥会被拉进显示范围）。截过的结尾加“…”。"""
+    text = text or ""
+    cut = len(text) > limit + 200
+    shown = _mask(text[:limit + 200])
+    if len(shown) > limit - 1:
+        shown, cut = shown[:limit - 1], True
+    if not cut:
+        return shown
+    # 密钥都是英文字符：只去掉末尾那串英文字符（汉字不动），再标一个省略号说明截过
+    return re.sub(r"[!-~]+$", "", shown).rstrip() + "…"
+
+
 def _explain(output: str, command: str, name: str):
     """积木库自己的失败说法：(原因, 怎么办)。不提项目里的配置文件，改法一律跟行政说。"""
     raw = output or ""
@@ -88,22 +102,6 @@ def _explain(output: str, command: str, name: str):
     lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
     tail = lines[-1][:120] if lines else "没有输出"
     return "命令跑完了，但没建出文件", f"看看这家工具在自动模式下能不能写文件。它最后说：{tail}"
-
-
-def _remove(folder: Path) -> None:
-    """删检测用的临时文件夹；工具留下打不开的子文件夹，先把权限改回来再删。"""
-    shutil.rmtree(folder, ignore_errors=True)
-    if folder.exists():
-        for dirpath, dirnames, _ in os.walk(folder):
-            for d in dirnames:
-                target = os.path.join(dirpath, d)
-                if os.path.islink(target):
-                    continue  # 不顺着链接去改外面文件夹的权限
-                try:
-                    os.chmod(target, 0o700)
-                except OSError:
-                    pass
-        shutil.rmtree(folder, ignore_errors=True)
 
 
 def _probe_args(card, lookup):
