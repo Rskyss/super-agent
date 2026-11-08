@@ -1,0 +1,413 @@
+/* 积木库页面样式。依赖 theme.css，页面里不写死色值。 */
+body {
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.problem {
+  color: var(--bad);
+  padding: 24px 32px;
+  margin: 0;
+  font-size: var(--fs-md);
+}
+
+[hidden] {
+  display: none !important;
+}
+
+/* 绑定页 */
+.bind-wrap {
+  height: 100%;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  overflow-y: auto;
+}
+
+.bind-card {
+  width: 100%;
+  max-width: 480px;
+  background: var(--bg-raised);
+  box-shadow: var(--shadow-2), inset 0 0 0 1px var(--hair);
+  border-radius: var(--r-lg);
+  padding: 24px;
+}
+
+.bind-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.bind-head h1 {
+  margin: 0;
+  font-size: var(--fs-xl);
+  font-weight: 600;
+}
+
+.bind-note {
+  margin: 0 0 20px;
+  font-size: var(--fs-sm);
+  color: var(--dim);
+}
+
+.field {
+  margin-bottom: 12px;
+}
+
+.field label {
+  display: block;
+  font-size: var(--fs-sm);
+  color: var(--dim);
+  margin-bottom: 4px;
+}
+
+select, input {
+  font: inherit;
+  font-size: var(--fs-base);
+  height: 32px;
+  color: var(--text);
+  background-color: var(--surface);
+  border: 0;
+  box-shadow: inset 0 0 0 1px var(--hair);
+  border-radius: var(--r-md);
+  padding: 0 10px;
+  width: 100%;
+  min-width: 0;
+  transition: box-shadow var(--t-fast) var(--ease), background-color var(--t-fast) var(--ease);
+}
+
+select:hover:not(:disabled), input:hover:not(:disabled) {
+  background-color: var(--surface-2);
+  box-shadow: inset 0 0 0 1px var(--hair-2);
+}
+
+select:disabled, input:disabled {
+  color: var(--faint);
+  opacity: 0.6;
+}
+
+.bind-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 20px;
+  flex-wrap: wrap;
+}
+
+.btn {
+  font-size: var(--fs-base);
+  border-radius: var(--r-md);
+  padding: 6px 16px;
+  cursor: default;
+  border: 0;
+  box-shadow: inset 0 0 0 1px var(--hair-2);
+  background: transparent;
+  color: var(--text);
+  transition: background var(--t-fast) var(--ease), filter var(--t-fast) var(--ease);
+}
+
+.btn:hover:not(:disabled) {
+  background: var(--surface-2);
+}
+
+.btn.primary {
+  background: var(--accent);
+  box-shadow: var(--shadow-1);
+  color: var(--on-accent);
+  font-weight: 500;
+}
+
+.btn.primary:hover:not(:disabled) {
+  background: var(--accent);
+  filter: brightness(1.08);
+}
+
+.btn.ghost {
+  box-shadow: none;
+  color: var(--dim);
+  padding: 4px 10px;
+}
+
+.btn.ghost:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--surface);
+}
+
+.btn.small {
+  padding: 4px 12px;
+  font-size: var(--fs-sm);
+}
+
+.btn:disabled {
+  opacity: 0.4;
+}
+
+.bind-result {
+  font-size: var(--fs-sm);
+  color: var(--dim);
+  flex: 1 1 100%;
+}
+
+.bind-result.ok {
+  color: var(--ok);
+}
+
+.bind-result.bad {
+  color: var(--bad);
+}
+
+/* 主视图布局 */
+.main-layout {
+  height: 100%;
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr);
+}
+
+.side {
+  background: var(--bg-side);
+  border-right: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  padding: 12px 8px;
+  gap: 16px;
+}
+
+.side-section {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.side-chat {
+  flex: 1 1 50%;
+}
+
+.side-blocks {
+  flex: 1 1 50%;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+
+.sec-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 10px 6px;
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  color: var(--faint);
+}
+
+.newchat {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 10px;
+  font-size: var(--fs-base);
+  text-align: left;
+  color: var(--dim);
+  background: none;
+  border: 0;
+  border-radius: var(--r-md);
+  cursor: default;
+  transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
+}
+
+.newchat:hover {
+  background: var(--surface);
+  color: var(--text);
+}
+
+.threads, .blocks-list {
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+  padding-top: 4px;
+}
+
+.row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
+  border-radius: var(--r-md);
+}
+
+.row:hover, .row:focus-within {
+  background: var(--surface);
+}
+
+.thread {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  padding: 6px 10px;
+  font-size: var(--fs-sm);
+  text-align: left;
+  color: var(--dim);
+  background: none;
+  border: 0;
+  border-radius: var(--r-md);
+  cursor: default;
+}
+
+.thread:hover, .thread.on {
+  color: var(--text);
+}
+
+.thread.on {
+  background: var(--surface-2);
+}
+
+.thread.on .tt {
+  font-weight: 500;
+}
+
+.thread .tt {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rowact {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  color: var(--dim);
+  background: none;
+  border: 0;
+  border-radius: var(--r-sm);
+  cursor: default;
+  opacity: 0;
+  transition: opacity var(--t-fast) var(--ease), color var(--t-fast) var(--ease), background var(--t-fast) var(--ease);
+}
+
+.row:hover .rowact, .row:focus-within .rowact {
+  opacity: 1;
+}
+
+.rowact:hover {
+  color: var(--text);
+  background: var(--surface-2);
+}
+
+/* 基础层每一块 */
+.block-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: 7px 10px;
+  border-radius: var(--r-md);
+  text-align: left;
+  background: none;
+  border: 0;
+  cursor: default;
+  transition: background var(--t-fast) var(--ease);
+}
+
+.block-item:hover {
+  background: var(--surface);
+}
+
+.block-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+}
+
+.block-name {
+  font-size: var(--fs-base);
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.block-kind {
+  font-size: var(--fs-xs);
+  color: var(--faint);
+  flex: none;
+}
+
+.block-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs-sm);
+  color: var(--dim);
+}
+
+.dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--surface-3);
+  flex: none;
+}
+
+.dot.ok {
+  background: var(--ok);
+}
+
+.dot.bad {
+  background: var(--bad);
+}
+
+.dot.idle {
+  background: var(--surface-3);
+}
+
+.empty {
+  padding: 8px 10px;
+  font-size: var(--fs-sm);
+  color: var(--dim);
+}
+
+/* 中间聊天舞台 */
+.stage {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  height: 100%;
+  background: var(--bg);
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.topbar-title {
+  font-size: var(--fs-base);
+  font-weight: 500;
+  color: var(--dim);
+}
+
+.chat-frame {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: var(--bg);
+}

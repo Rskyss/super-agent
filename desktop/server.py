@@ -408,7 +408,9 @@ class Handler(BaseHTTPRequestHandler):
                 except (KeyError, ValueError):
                     account = ""
             self._json({"setting": setting, "key_account": account, "connected": self.server.blocks_clerk is not None,
-                        "installing": blocks_install.installing() or bool(self.server.blocks_installing)})
+                        "installing": blocks_install.installing() or bool(self.server.blocks_installing),
+                        "home": home,
+                        "providers": [{"id": p["id"], "name": p["name"], "base_url": p.get("base_url", ""), "models": p["models"]} for p in PROVIDERS]})
         elif path == "/api/blocks/list":
             items, broken = [], []
             for card in blocks.list_cards(home):
