@@ -14,8 +14,9 @@ import uuid
 from pathlib import Path
 
 from desktop.clerk.client import ModelError
-from desktop.clerk import tasks as clerk_tasks
+from desktop.clerk import blocks_tools, tasks as clerk_tasks
 from desktop.clerk.tools import LABELS, PROPOSE_REVISE, TOOLS, run_tool, team_incomplete_hint
+from collab import blocks
 
 FOLDER = Path(".collab") / "行政对话"
 INDEX = "索引.json"
@@ -261,6 +262,14 @@ class ClerkDesk:
         client = self._client()
         if client is None:
             raise RuntimeError("行政人员还没配置好，请先填写模型密钥")
+        
+        # 54号单：积木库密钥打码保护
+        has_secret = False
+        if blocks_tools.is_blocks_home(project):
+            if blocks._SECRET_TEXT.search(text):
+                has_secret = True
+                text = blocks._SECRET_TEXT.sub("[密钥已隐藏]", text)
+                
         first = not cid
         if first:
             cid = uuid.uuid4().hex
@@ -283,6 +292,8 @@ class ClerkDesk:
                 conv.busy = False
             raise RuntimeError("这句话没能保存，请检查磁盘空间或文件夹权限。") from None
         conv.emit({"type": "user", "text": text})
+        if has_secret:
+            conv.emit({"type": "notice", "text": "你刚才贴的像是密钥，我没有发给模型。为了安全，请到那家平台把这把密钥作废，换一把新的，以后填在提议卡的密钥框里。"})
         conv.emit({"type": "turn_started"})
         threading.Thread(target=self._reply, args=(conv, client, turn, first), daemon=True).start()
         return cid
@@ -322,6 +333,8 @@ class ClerkDesk:
         return str(self._index_entry(conv.project, conv.id).get("card") or "")
 
     def _tools_for(self, conv: _Conversation) -> list:
+        if blocks_tools.is_blocks_home(conv.project):
+            return blocks_tools.TOOLS
         if not self._card_of(conv):
             return TOOLS
         kept = [tool for tool in TOOLS
@@ -360,10 +373,14 @@ class ClerkDesk:
         }
 
     def _prompt(self, conv: _Conversation) -> list:
-        role = ROLE.format(name=Path(conv.project).name)
-        hint = team_incomplete_hint(conv.project)
-        if hint:
-            role = f"{role} {hint}"
+        if blocks_tools.is_blocks_home(conv.project):
+            role = blocks_tools.role_text()
+        else:
+            role = ROLE.format(name=Path(conv.project).name)
+            hint = team_incomplete_hint(conv.project)
+            if hint:
+                role = f"{role} {hint}"
+        
         card_id = self._card_of(conv)
         if card_id:
             from collab.phase import card_phase
@@ -482,6 +499,14 @@ class ClerkDesk:
                         result = clerk_tasks.propose_profile(conv, args)
                     elif name == "propose_revise":
                         result = clerk_tasks.propose_revise(conv, args)
+                    elif name == "propose_install":
+                        result = clerk_tasks.propose_install(conv, args)
+                    elif name == "propose_connect_cli":
+                        result = clerk_tasks.propose_connect_cli(conv, args)
+                    elif name == "propose_connect_api":
+                        result = clerk_tasks.propose_connect_api(conv, args)
+                    elif blocks_tools.is_blocks_home(conv.project):
+                        result = blocks_tools.run(conv.project, name, args)
                     else:
                         result = run_tool(conv.project, name, args)
                 except (ValueError, TypeError):

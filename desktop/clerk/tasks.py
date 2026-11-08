@@ -21,6 +21,10 @@ from collab.merge import merge_unfinished, sync_copy
 from collab.phase import card_phase, process_is_alive, process_start
 from collab.tasks import TaskError, new_card, revise_card
 from collab.workspace import PROFILE_TEMPLATE, has_blanks, profile_path
+import re
+from collab import blocks, blocks_check, blocks_install
+from collab.blocks import BlockError
+from collab.providers import find as find_provider
 
 COLLAB_PACKAGE = Path(__file__).resolve().parent.parent.parent / "collab"
 
@@ -138,6 +142,120 @@ def propose(conv, arguments: dict) -> str:
         event = {k: data[k] for k in ("id", "kind", "title", "do", "not_do", "done_when", "state", "card")}
         conv.emit(dict(event, type="proposal"))
     return "已向用户出示确认框，等用户点确认或先不做。还没建卡。"
+
+
+def propose_install(conv, args: dict) -> str:
+    """模型调用 propose_install：校验 install_id 并生成提议。"""
+    install_id = str(args.get("install_id") or "").strip()
+    if install_id not in blocks_install.INSTALLS:
+        return "安装方案编号不对，请参考核实名单。"
+    with _lock:
+        for old in _open_in_conversation(conv.project, conv.id):
+            old["state"] = "replaced"
+            _save(conv.project, old)
+            conv.emit({"type": "proposal_done", "id": old["id"], "state": "replaced", "card": old.get("card") or ""})
+        pid = uuid.uuid4().hex
+        data = {
+            "id": pid, "conversation": conv.id, "kind": "install",
+            "install": install_id, "state": "open", "time": time.time(),
+        }
+        data.update(blocks_install.describe(install_id))
+        _save(conv.project, data)
+        _append_proposal_line(conv, pid)
+        conv.emit(event_from_proposal(data))
+    return "已向用户出示确认框，等用户点确认或先不做。"
+
+
+def propose_connect_cli(conv, args: dict) -> str:
+    """模型调用 propose_connect_cli：校验接法卡并生成提议。"""
+    template = args.get("template")
+    card = args.get("card")
+    if template:
+        try:
+            card = blocks.builtin_card(template)
+        except BlockError as e:
+            return str(e)
+    elif card:
+        try:
+            card = blocks.validate_card(card)
+            card["source"] = "clerk"
+        except BlockError as e:
+            return str(e)
+    else:
+        return "需提供 template 或 card。"
+    # 检查失败次数：最近一次通过之后连续失败次数
+    recs = [r for r in blocks.records(card["id"], root=conv.project) if r.get("type") == "check"]
+    consecutive_fails = 0
+    for r in reversed(recs):
+        if r.get("ok"):
+            break
+        consecutive_fails += 1
+    if consecutive_fails >= 3:
+        return "该工具检测连续 3 次失败，请检查接法或工具配置。"
+    
+    with _lock:
+        for old in _open_in_conversation(conv.project, conv.id):
+            old["state"] = "replaced"
+            _save(conv.project, old)
+            conv.emit({"type": "proposal_done", "id": old["id"], "state": "replaced", "card": old.get("card") or ""})
+        pid = uuid.uuid4().hex
+        data = {
+            "id": pid, "conversation": conv.id, "kind": "connect",
+            "card": card, "name": card["name"], "verified": blocks.is_verified(card),
+            "state": "open", "time": time.time(),
+        }
+        if not data["verified"]:
+            data["preview"] = blocks_check.preview(card)
+        _save(conv.project, data)
+        _append_proposal_line(conv, pid)
+        conv.emit(event_from_proposal(data))
+    return "已向用户出示确认框，等用户点确认或先不做。"
+
+
+def propose_connect_api(conv, args: dict) -> str:
+    """模型调用 propose_connect_api：校验并生成提议。"""
+    provider = str(args.get("provider") or "").strip()
+    model = str(args.get("model") or "").strip()
+    name = str(args.get("name") or "").strip()
+    base_url = str(args.get("base_url") or "").strip()
+    
+    # 隐藏密钥检查
+    if blocks._has_secret(args):
+        return "输入里检测到疑似密钥，请在密钥框中填写。"
+    
+    p_info = find_provider(provider)
+    if not p_info:
+        return "没有这家服务商。"
+    
+    if provider == "other" and not (base_url and base_url.startswith("https://")):
+        return "地址不对，需 https:// 开头。"
+    
+    cid = re.sub(r'[^a-z0-9-]', '-', f"{provider}-{model}".lower())[:40].strip("-")
+    card = {
+        "id": cid, "kind": "llm_api", "name": name, "provider": provider,
+        "base_url": base_url or p_info["base_url"], "model": model,
+        "key_account": provider
+    }
+    try:
+        card = blocks.validate_card(card)
+    except BlockError as e:
+        return str(e)
+        
+    with _lock:
+        for old in _open_in_conversation(conv.project, conv.id):
+            old["state"] = "replaced"
+            _save(conv.project, old)
+            conv.emit({"type": "proposal_done", "id": old["id"], "state": "replaced", "card": old.get("card") or ""})
+        pid = uuid.uuid4().hex
+        data = {
+            "id": pid, "conversation": conv.id, "kind": "connect_api",
+            "card": card, "name": name, "provider": provider, "model": model,
+            "state": "open", "time": time.time(),
+        }
+        _save(conv.project, data)
+        _append_proposal_line(conv, pid)
+        conv.emit(event_from_proposal(data))
+    return "已向用户出示确认框，等用户点确认或先不做。"
 
 
 def propose_team_change(conv, arguments: dict) -> str:
@@ -313,14 +431,14 @@ def decide(project: str, conversation: str, pid: str, decision: str) -> dict:
                 if data.get("kind") in ("team", "profile"):
                     return {"ok": True, "card": "", "state": "confirmed", "repeat": True, "kind": data["kind"]}
                 if data.get("card"):
-                    return {"ok": True, "card": data["card"], "state": "confirmed", "repeat": True, "kind": "task"}
+                    return {"ok": True, "card": data.get("card") if isinstance(data["card"], str) else data["card"].get("id"), "state": "confirmed", "repeat": True, "kind": data.get("kind") or "task"}
             raise RuntimeError("这个提议已经处理过了")
         if decision == "cancel":
             data["state"] = "cancelled"
             _save(project, data)
             if data.get("kind") == "revise":
                 _take_pending(project, str(data.get("card") or ""), int(data.get("pending") or 0))
-            return {"ok": True, "card": data.get("card") or "", "state": "cancelled", "repeat": False,
+            return {"ok": True, "card": str(data.get("card") or ""), "state": "cancelled", "repeat": False,
                     "kind": data.get("kind") or "task", "reply": "好的，先不改。"}
         kind = data.get("kind") or "task"
         if kind == "profile":
@@ -363,6 +481,21 @@ def decide(project: str, conversation: str, pid: str, decision: str) -> dict:
             data["state"] = "confirmed"
             _save(project, data)
             return {"ok": True, "card": "", "state": "confirmed", "repeat": False, "kind": "team"}
+        
+        # 新增三种 kind 的处理
+        if kind in ("install", "connect", "connect_api"):
+            data["state"] = "confirmed"
+            _save(project, data)
+            return {
+                "ok": True,
+                "card": data.get("card"),
+                "state": "confirmed",
+                "repeat": False,
+                "kind": kind,
+                "install": data.get("install"),
+                "approved": data.get("preview")
+            }
+        
         try:
             card = new_card(project, data["title"], data["do"], data["not_do"], data["done_when"],
                             conversation=conversation)
@@ -394,6 +527,10 @@ def event_from_proposal(data: dict) -> dict:
         base["tool"] = data.get("tool") or ""
         if "before" in data:
             base["before"] = data["before"]
+    elif kind in ("install", "connect", "connect_api"):
+        for k in ("install", "label", "command", "source", "needs", "minutes", "card", "name", "verified", "preview", "provider", "model"):
+            if k in data:
+                base[k] = data[k]
     else:
         base["title"] = data.get("title") or ""
         base["do"] = data.get("do") or ""
