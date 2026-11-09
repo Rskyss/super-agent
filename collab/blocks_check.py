@@ -80,6 +80,20 @@ def _mask_cut(text: str, limit: int) -> str:
     return re.sub(r"[!-~]+$", "", shown).rstrip() + "…"
 
 
+QUOTA_REASON = "额度用完或被限流"
+# 能放进基础层的“额度不足”只认很明确的说法（第四轮复查：单独的 insufficient、单独的 429 会把参数写错、
+# 权限不够、磁盘配额满这类真故障放进去）；宽的那组只用来写失败原因
+_QUOTA_CLEAR = re.compile(
+    r"credits?\s+balance|balance\s+is\s+too\s+low|out\s+of\s+credits?|(?<!disk\s)quota\s+exceeded"
+    r"|exceeded\s+(?:your\s+)?(?:current\s+)?quota|(?<![-\w])usage\s+limit|(?<![-\w])rate\s+limit|too\s+many\s+requests"
+    r"|resource_exhausted[^\n]{0,40}(?:\b429\b|quota)", re.IGNORECASE)
+
+
+def is_quota(output: str) -> bool:
+    """工具的输出是不是很明确地在说额度、余额不够或被限流"""
+    return bool(_QUOTA_CLEAR.search(output or ""))
+
+
 def _explain(output: str, command: str, name: str):
     """积木库自己的失败说法：(原因, 怎么办)。不提项目里的配置文件，改法一律跟行政说。"""
     raw = output or ""
@@ -93,9 +107,10 @@ def _explain(output: str, command: str, name: str):
     if any(k in text for k in ("not logged", "please log in", "please login", "unauthorized",
                                "not authenticated", "authentication failed", "please sign in", "codex login")):
         return "没登录", f"在终端里运行一次 {command}，按提示登录后再检测一次"
-    if any(k in text for k in ("quota", "rate limit", "usage limit", "insufficient", "out of credit")) \
+    if any(k in text for k in ("quota", "rate limit", "usage limit", "insufficient", "out of credit",
+                               "balance is too low", "resource_exhausted", "resource exhausted")) \
             or re.search(r"\b429\b", text):
-        return "额度用完或被限流", "等额度恢复后再检测一次"
+        return QUOTA_REASON, "等额度恢复后再检测一次"
     if "model" in text and any(k in text for k in ("not found", "invalid", "unknown", "does not exist",
                                                    "not supported")):
         return "模型名不对", "跟行政说换一个这家支持的模型名"
@@ -181,7 +196,9 @@ def check_cli(card, root=None, approved=None, runner=None, timeout=DEFAULT_TIMEO
             # 工具说成功了却没建文件：不去猜输出里的字眼，免得把“已登录”之类的话当成原因
             reason, how = (_explain("", card["command"], card["name"]) if code == 0
                            else _explain(output, card["command"], card["name"]))
-            result = {"ok": False, "status": "fail", "reason": _mask(reason), "how": _mask(how)}
+            # 只是额度不足：工具装好了、能连上服务，算接上了（用户 2026-11-09 定，模型和额度归能力层）
+            status = "quota" if reason == QUOTA_REASON and code != 0 and is_quota(output) else "fail"
+            result = {"ok": False, "status": status, "reason": _mask(reason), "how": _mask(how)}
         result.update(seconds=seconds, verified=verified)
         return _save(card["id"], result, root, record)
 
@@ -241,8 +258,9 @@ def check_api(card, api_key, root=None, need_tools=False, client_factory=None, r
             message = str(exc) if getattr(exc, "__module__", "").startswith("desktop.clerk") else "连接出错"
             if "代码 400" in message:  # 400 多半是模型名或参数不对，等多久都不会好
                 message = "模型名或参数不对（服务商返回代码 400）：跟行政说换一个这家支持的模型名"
-            result = {"ok": False, "status": "fail", "reason": _mask(message, key) or "连接出错",
-                      "how": "按提示改好后再检测一次"}
+            quota = "额度用完" in message  # desktop.clerk.client 对 429 的说法：密钥对、能连上，只是没额度
+            result = {"ok": False, "status": "quota" if quota else "fail", "reason": _mask(message, key) or "连接出错",
+                      "how": "等额度恢复后再检测一次" if quota else "按提示改好后再检测一次"}
         result["reason"] = _mask(result["reason"], key)
         result["how"] = _mask(result["how"], key)
         result.update(seconds=round(time.time() - started, 1), tools=tools)

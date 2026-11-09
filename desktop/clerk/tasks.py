@@ -160,6 +160,17 @@ _STRIKES = 3  # 一段对话里行政起草的接法卡连续检测不通过几�
 _HTTPS_URL = re.compile(r"https://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[^\s]*)?")
 
 
+def open_proposals(project: str, conversation: str) -> list:
+    """这段对话里还没处理的提议（行政的对话程序只能通过这里查，不自己翻提议文件夹）"""
+    return _open_in_conversation(project, conversation)
+
+
+def card_label(data: dict) -> str:
+    """提议卡在对行政说话时叫什么：接入卡用名字，安装卡用 label（“用 npm 装 Codex”），任务卡用标题"""
+    return str(data.get("name") or data.get("label") or (data.get("block") or {}).get("name")
+               or data.get("title") or "一张卡")
+
+
 def _publish_block(conv, data: dict) -> str:
     """积木库的三种提议共用：先存新提议，再把旧的标成被替换；新的存不上时旧的不动。
     接法卡放在 block 字段；card 字段在提议里只表示项目窗口的任务卡编号，这里永远是空的。"""
@@ -175,7 +186,13 @@ def _publish_block(conv, data: dict) -> str:
                        "card": old.get("card") if isinstance(old.get("card"), str) else ""})
         _append_proposal_line(conv, pid)
         conv.emit(event_from_proposal(data))
-    return "已向用户出示确认框，等用户点确认或先不做。用户确认之前，不能说已经办好。"
+    reply = "已向用户出示确认框，等用户点确认或先不做。用户确认之前，不能说已经办好。"
+    voided = "、".join(f"「{card_label(old)}」" for old in olds)
+    if voided:  # 同一段对话一次只留一张没处理的卡：行政不知道的话会说“两张都能点”（第 9 项走查发现）
+        reply += f"这段对话里上面没处理的{voided}已经失效、点不了了；用户还要它，就再出一次。"
+    if data.get("replaces"):  # 行政看不到卡上的字：会替换哪一块要在这里告诉它
+        reply += f"这张卡会替换基础层里的「{data['replaces']}」，检测通过放进去后旧的那块就没了。"
+    return reply
 
 
 def _saved_block(project: str, block_id: str) -> Optional[dict]:

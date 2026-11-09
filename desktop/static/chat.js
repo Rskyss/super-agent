@@ -279,6 +279,10 @@ var ChatCore = (function () {
     if (!job.done) return { state: "running", text: job.kind === "install" ? "正在安装…" : "正在检测…", lines: job.kind === "install" ? (job.tail || []) : [], canSave: false };
     if (job.error) return { state: "fail", text: job.error, lines: job.tail || [], canSave: false };
     var res = job.result || {};
+    if (job.kind !== "install" && res.status === "quota") {  // 只是额度不足：算接上了，可以放进基础层
+      var short = "能连上，但额度不足：" + (res.reason || "") + (res.how ? "。" + res.how : "");
+      return { state: "warn", text: job.saved ? short + " · 已放进基础层" : short + "。可以先放进基础层", lines: [], canSave: !job.saved };
+    }
     if (!res.ok) {
       var why = res.reason ? res.reason + "。" + (res.how || "") : (res.how || "没成功，原因没查出来，跟行政说一声");
       return { state: "fail", text: why, lines: job.tail || [], canSave: false };
@@ -377,8 +381,9 @@ if (typeof document !== "undefined") (function () {
           }
           rec.saved = !!d.saved;
           rec.view = ChatCore.jobView(d);
-          if (d.done && rec.view.state !== "ok") delete proposalKeys[pid];
-          if (d.done && rec.view.state !== "ok" && usedSavedKey[pid] && ChatCore.keyProblem(d.result && d.result.reason) &&
+          // 额度不足（warn）时手填的密钥要留着：放进基础层时交给 Mac 窗口存进钥匙串（第四轮复查）
+          if (d.done && rec.view.state !== "ok" && rec.view.state !== "warn") delete proposalKeys[pid];
+          if (d.done && rec.view.state === "fail" && usedSavedKey[pid] && ChatCore.keyProblem(d.result && d.result.reason) &&
               rec.view.text.indexOf(SAVED_FAILED) === -1) {
             rec.view.text = String(rec.view.text || "").replace(/[。.\s]+$/, "") + "。" + SAVED_FAILED;
           }
@@ -809,6 +814,7 @@ if (typeof document !== "undefined") (function () {
                               (savedAccounts || []).indexOf(d.key_account) < 0);
           if (rec.view) {
             rec.view.canSave = false;
+            rec.view.text = rec.view.text.replace("。可以先放进基础层", "");  // 额度不足的放进去后不再劝“可以先放进”
             if (rec.view.text.indexOf("已放进基础层") === -1) rec.view.text += " · 已放进基础层";
           }
           touchProposal(pid);
@@ -1078,6 +1084,8 @@ if (typeof document !== "undefined") (function () {
     $("whoFace").textContent = "行";
     $("who").textContent = "行政";
     $("input").placeholder = clerkPlaceholder;
+    $("input").setAttribute("aria-label", "给行政的消息");  // 读屏软件念的名字跟着变
+    if ($("chatMain")) $("chatMain").setAttribute("aria-label", "和行政的对话");
     fetch("/api/clerk/list?" + new URLSearchParams({ project: project, token: token }).toString())
       .then(function (r) { return r.json(); })
       .then(function (d) {

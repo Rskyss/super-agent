@@ -11,6 +11,7 @@
 .prop-result { font-size: var(--fs-sm); margin: 8px 0; color: var(--dim); }
 .prop-result.ok { color: var(--ok); }
 .prop-result.fail { color: var(--bad); }
+.prop-result.warn { color: var(--accent); }
 .chat { height: 100%; display: grid; grid-template-rows: auto minmax(0, 1fr) auto auto; }
 .chat-head { display: flex; align-items: center; gap: 8px; padding: 2px 12px 8px 20px; min-height: 40px; flex-wrap: wrap; }
 #cardHead, #cardInfo { flex: 1 0 100%; }

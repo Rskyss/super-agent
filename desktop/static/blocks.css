@@ -381,6 +381,10 @@ select:disabled, input:disabled {
   background: var(--bad);
 }
 
+.dot.warn {
+  background: var(--accent);
+}
+
 .dot.idle {
   background: var(--surface-3);
 }
@@ -466,6 +470,7 @@ select:disabled, input:disabled {
 .detail-status.ok { color: var(--ok); }
 .detail-status.bad { color: var(--bad); }
 .detail-status.idle { color: var(--dim); }
+.detail-status.warn { color: var(--accent); }
 .detail-warn { color: var(--bad); font-weight: 500; margin: 0 0 12px; }
 
 #detailRows { margin-bottom: 24px; }
@@ -498,6 +503,7 @@ code.detail-value { font-family: var(--font-mono); color: var(--text); }
 .detail-result:empty { display: none; }
 .detail-result.fail { background: var(--bad-soft); color: var(--bad); }
 .detail-result.ok { background: var(--ok-soft); color: var(--ok); }
+.detail-result.warn { background: var(--accent-soft); color: var(--accent); }
 .detail-result.running { background: var(--surface-2); color: var(--dim); }
 .detail-result.lost { background: var(--surface-2); color: var(--dim); }
 

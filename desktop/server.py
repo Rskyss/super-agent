@@ -80,6 +80,11 @@ _MAX_BODY = 1024 * 1024  # 聊天消息最多 1MB，够用了
 _CARD_ID = re.compile(r"^[A-Za-z0-9_-]+$")
 _BLOCK_KINDS = ("install", "connect", "connect_api")
 _JOB_LIMIT = 100         # 积木库做完的后台任务最多留这么多
+def _blocks_connected(result: dict) -> bool:
+    """检测通过，或只是额度不足（能连上，所选模型没额度；用户 2026-11-09 定也算接上了）"""
+    return bool(result.get("ok")) or result.get("status") == "quota"
+
+
 _SAVED_ACCOUNT = re.compile(r"tencent|bailian|other:[a-z0-9.-]{1,253}")  # 和 Mac 窗口 BlocksWindow.isValidAccount 一样
 _TERMINAL_TTL = 60       # 终端路径一分钟内只读一次
 
@@ -373,9 +378,10 @@ class Handler(BaseHTTPRequestHandler):
         with self.server.blocks_lock:
             jobs = self.server.blocks_jobs
             jobs[job_id] = job
-            # 检测通过、还没放进基础层的留着，等用户点
+            # 检测通过（或只是额度不足）、还没放进基础层的留着，等用户点
             finished = [k for k, v in jobs.items()
-                        if v["done"] and not (v.get("card") and (v["result"] or {}).get("ok") and not v.get("saved"))]
+                        if v["done"] and not (v.get("card") and _blocks_connected((v["result"] or {}))
+                                              and not v.get("saved"))]
             dropped = set(finished[:max(0, len(jobs) - _JOB_LIMIT)])
             for k in dropped:
                 del jobs[k]
@@ -454,7 +460,8 @@ class Handler(BaseHTTPRequestHandler):
                 last = blocks.last_record(card["id"], home, type="check")
                 items.append({"id": card["id"], "name": card["name"], "kind": card["kind"],
                               "verified": blocks.is_verified(card),
-                              "status": "never" if not last else ("ok" if last.get("ok") else "fail"),
+                              "status": "never" if not last else ("ok" if last.get("ok") else
+                                                                    ("quota" if last.get("status") == "quota" else "fail")),
                               "reason": (last or {}).get("reason") or "", "time": (last or {}).get("time") or "",
                               "seconds": (last or {}).get("seconds") or 0})
             self._json({"blocks": items, "broken": broken})
@@ -637,7 +644,7 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"error": "没有这个任务"}, 404)
             return
         card = job.get("card")
-        if job["kind"] != "check" or not card or not job["done"] or not (job["result"] or {}).get("ok"):
+        if job["kind"] != "check" or not card or not job["done"] or not _blocks_connected(job["result"] or {}):
             self._json({"error": "检测还没通过，不能放进基础层"}, 409)
             return
         with self.server.blocks_lock:  # 查编号和写入之间不能被别的保存插进来

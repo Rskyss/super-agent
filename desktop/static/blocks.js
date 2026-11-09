@@ -73,12 +73,14 @@ var BlocksCore = {
   statusText: function (block) {
     var st = block && block.status;
     if (st === "ok") return "能用";
+    if (st === "quota") return "额度不足";
     if (st === "fail") return "不能用";
     return "没检测过";
   },
   statusClass: function (block) {
     var st = block && block.status;
     if (st === "ok") return "ok";
+    if (st === "quota") return "warn";
     if (st === "fail") return "bad";
     return "idle";
   },
@@ -154,6 +156,7 @@ var BlocksCore = {
     var status = { cls: "idle", text: "没检测过" };
     if (d.last_check) {
       if (d.last_check.ok) status = { cls: "ok", text: "能用" };
+      else if (d.last_check.status === "quota") status = { cls: "warn", text: "额度不足：工具能连上，" + d.last_check.reason + (d.last_check.how ? "。" + d.last_check.how : "") };
       else status = { cls: "bad", text: "不能用：" + d.last_check.reason + (d.last_check.how ? "。" + d.last_check.how : "") };
     }
     var needsKey = card.kind === "llm_api";
@@ -176,6 +179,7 @@ var BlocksCore = {
     if (job.error) return { state: "fail", text: job.error };
     if (job.result && job.result.ok) return { state: "ok", text: "检测通过 · " + job.result.seconds + " 秒" };
     var res = job.result || {};
+    if (res.status === "quota") return { state: "warn", text: "能连上，但额度不足：" + (res.reason || "") + (res.how ? "。" + res.how : "") };
     var text = (res.reason || "") + (res.how ? (res.reason ? "。" : "") + res.how : "");
     if (!text) text = "没成功，原因没查出来，跟行政说一声";
     return { state: "fail", text: text };
@@ -651,8 +655,8 @@ if (typeof document !== "undefined") (function () {
         var v = BlocksCore.checkView(job);
         $("detailResult").textContent = v.text;
         $("detailResult").className = "detail-result " + v.state;
-        if (job.done && v.state === "ok") detailWantNew = false;  // 新填的通过了：存进钥匙串后这里显示“已保存”
-        if (job.done && v.state !== "ok" && usedSaved && BlocksCore.keyProblem(job.result && job.result.reason)) {
+        if (job.done && (v.state === "ok" || v.state === "warn")) detailWantNew = false;  // 新填的通过了：存进钥匙串后这里显示“已保存”
+        if (job.done && v.state === "fail" && usedSaved && BlocksCore.keyProblem(job.result && job.result.reason)) {
           detailWantNew = true;  // 存的那把没通过：说原因，展开输入框
           $("detailResult").textContent = withSavedFailed(v.text);
         }
@@ -660,7 +664,7 @@ if (typeof document !== "undefined") (function () {
         if (job.done) {
           $("detailCheck").disabled = false;
           $("detailRemove").disabled = false;
-          if (v.state === "ok" && currentDetail && currentDetail.card.kind === "llm_api" && pendingKey) {
+          if ((v.state === "ok" || v.state === "warn") && currentDetail && currentDetail.card.kind === "llm_api" && pendingKey) {
             saveKeyToMac(currentDetail.key_account, pendingKey);
           }
           pendingKey = "";

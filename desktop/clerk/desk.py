@@ -25,6 +25,53 @@ INDEX = "索引.json"
 HISTORY_LIMIT = 40  # 带给模型的最近几句话，够接上话，也不让费用越滚越大
 TITLE_LIMIT = 24
 MAX_TOOL_ROUNDS = 5
+
+# 行政说“提议卡/确认框已经弹出来了”这一类话（第 9 项整体验收：模型有时没调用出卡的工具却这么说）
+_CARD = r"(?:提议卡|接法卡|确认框|确认卡)"
+_DONE = (r"(?:弹出来了|弹出了|已经?弹出|出来了|出好了|已经?发出|已经?发送|已经?给出|已经?生成|已经?显示|已经?出示"
+         r"|已经出了|已出(?![现错结]))")
+_CLAIM_AFTER = re.compile(_CARD + r"([^。！？\n]{0,15}?)" + _DONE)  # “提议卡已经弹出来了”
+_CLAIM_BEFORE = re.compile(r"(?:已经?[^。！？\n]{0,4}?(?:弹出|出示|生成|发(?![现过])|出(?![现错过结]))"
+                           r"|(?:给你|为你)(?:弹出|出示|出|生成|发)了)"
+                           r"了?[一个张份]{0,2}[^。！？\n]{0,4}?" + _CARD  # “我已经给你出了一张提议卡”“给你出了接法卡”
+                           + r"|已经?把" + _CARD + r"(?:发给你|给你|发你)了")  # “我已经把接法卡发给你了”
+_NOT_CARD_ITSELF = re.compile(r"结果|命令|检测|里的|内容")  # “接法卡的检测结果出来了”说的不是卡
+_IF_BEFORE = re.compile(r"(?:如果|要是|一旦|等到)[^，,。！？\n]{0,6}$")  # “如果确认框出来了”（不跨逗号）
+_ASKING = re.compile(r"吗|？|\?|要不要|可以|之前|能不能")  # “要我给你出一张接法卡吗？”是在问，不是说出了
+_WAIT_THEN = re.compile(r"等[^，,；;]*再")  # “等确认框弹出了再点”
+_PAREN = re.compile(r"（[^）]*）|\([^)]*\)")  # “提议卡（含检测命令）已经弹出来了”：括号里的不算
+_LATER_AFTER = re.compile(r"^(?:以后|之后|后)")  # “确认框出来了以后”
+_CLAIM_REMINDER = ("（这是系统提示，不是用户说的）你刚才说已经出了提议卡或确认框，但这一轮你没有调用任何 propose_ 开头的工具，"
+                   "用户什么卡都看不到。要出卡就现在调用对应的工具；不需要出卡，就如实告诉用户刚才没有出卡。")
+_CARD_SHOWN = "已向用户出示确认框"  # 出卡工具成功时回给模型的话（clerk_tasks._publish_block 等）
+
+
+def claims_card(text: str) -> bool:
+    """回话里是不是说了“卡已经出了”（说检测结果、命令内容，或“如果/等…出来了以后”都不算）"""
+    # 按半句看（逗号也切开）：“提议卡已经弹出来了，你可以点确认”后半句的“可以”不该让前半句算成在问（第三轮复查）
+    for sentence in re.findall(r"[^，,；;。！？!?\n]+[，,；;。！？!?]?", _PAREN.sub("", text or "")):
+        if _ASKING.search(sentence) or _WAIT_THEN.search(sentence):
+            continue
+        for pattern in (_CLAIM_AFTER, _CLAIM_BEFORE):
+            for found in pattern.finditer(sentence):
+                if pattern is _CLAIM_AFTER and _NOT_CARD_ITSELF.search(found.group(1)):
+                    continue
+                if _IF_BEFORE.search(sentence[:found.start()]):
+                    continue
+                if _LATER_AFTER.match(sentence[found.end():found.end() + 2]):
+                    continue
+                return True
+    return False
+
+
+def _claim_reminder(open_cards: list) -> str:
+    """上面还有没处理的卡时，点名那张：说的是它就照实说在上面，说的是新卡就现在出"""
+    if not open_cards:
+        return _CLAIM_REMINDER
+    names = "、".join(f"「{clerk_tasks.card_label(c)}」"
+                     for c in open_cards[:3])
+    return (f"（这是系统提示，不是用户说的）你刚才说出了提议卡或确认框，但这一轮你没有调用任何 propose_ 开头的工具。"
+            f"上面还有没处理的卡：{names}。你说的如果是上面这张，就照实告诉用户它在上面；说的是新的卡，就现在调用对应的工具。")
 ROLE = ("你是超级助手的行政人员，用户的前台和行政。用大白话简短回答，不说技术术语。"
         "你能查项目说明、台账、卡片和团队设置；也能查本机 PATH 里有没有装 Codex、Cursor（agent 命令）、agy，只查不运行。"
         "问进度必须先查，不能凭记忆。"
@@ -466,6 +513,10 @@ class ClerkDesk:
         allowed = self._tools_for(conv)
         names = {tool.get("function", {}).get("name") for tool in allowed}
         parts = []
+        proposed = reminded = False  # 这一轮出过卡没有；“说出了卡却没出”提醒过没有（只提醒一次）
+        # 只在积木库里提醒：项目窗口卡片对话里的修改提议是一轮结束才出框，提醒会让同一条修改记两遍（复查发现）
+        can_propose = blocks_tools.is_blocks_home(conv.project) and any(
+            str(n or "").startswith("propose_") for n in names)
         for round_no in range(MAX_TOOL_ROUNDS + 1):
             if not self._alive(conv, turn):
                 raise _Stopped
@@ -483,6 +534,13 @@ class ClerkDesk:
             if reply.strip():
                 parts.append(reply.strip())
             calls = answer.get("tool_calls") or []
+            if (use_tools and not calls and can_propose and not proposed and not reminded
+                    and round_no < MAX_TOOL_ROUNDS - 1 and claims_card(reply)):
+                reminded = True  # 说出了卡、这一轮却没出：提醒它一次，真出卡或如实说没出；上面有没处理的卡就点名
+                messages.append({"role": "assistant", "content": reply})
+                messages.append({"role": "user", "content": _claim_reminder(
+                    clerk_tasks.open_proposals(conv.project, conv.id))})
+                continue
             if not use_tools or not calls:
                 return "\n".join(parts) if parts else reply
             if any(str(call.get("name") or "").startswith("propose_") for call in calls):
@@ -531,6 +589,8 @@ class ClerkDesk:
                     result = "参数看不懂"
                 except OSError:
                     result = "存不下来：请用户检查磁盘空间或文件夹权限，这次没有生成确认框。"
+                if name.startswith("propose_") and str(result).startswith(_CARD_SHOWN):
+                    proposed = True  # 真出了卡才算；出卡工具返回错误（缺字段、不合格）不算
                 label = LABELS.get(name, "读 资料")
                 conv.emit({"type": "activity", "item": call_id, "label": label, "status": "done"})
                 messages.append({"role": "tool", "tool_call_id": call_id, "content": result})

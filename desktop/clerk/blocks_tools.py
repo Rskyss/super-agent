@@ -170,7 +170,8 @@ def _list_blocks(project) -> str:
         if last is None:
             status = "没检测过"
         else:
-            status = f"{'能用' if last.get('ok') else '不能用'}（{last.get('reason') or ''}）"
+            word = "能用" if last.get("ok") else ("额度不足（能连上）" if last.get("status") == "quota" else "不能用")
+            status = f"{word}（{last.get('reason') or ''}）"
         kind = "CLI" if card.get("kind") == "cli" else "大模型 API"
         lines.append(f"{card['name']}（{card['id']}）｜{kind}｜{status}")
     return "\n".join(lines)
