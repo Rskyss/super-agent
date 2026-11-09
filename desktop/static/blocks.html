@@ -69,7 +69,42 @@
       <span class="topbar-title">积木库</span>
       <button type="button" class="btn small" id="settingsBtn">行政设置</button>
     </header>
+    <section class="health-card" id="healthCard" hidden>
+      <div class="health-bar">
+        <span class="health-line" id="healthLine"></span>
+        <div class="health-actions">
+          <button class="btn ghost small" id="healthToggle" type="button">展开</button>
+          <button class="btn small" id="healthRecheck" type="button">重新检查</button>
+        </div>
+      </div>
+      <div class="health-rows" id="healthRows" hidden></div>
+    </section>
     <iframe class="chat-frame" id="chatFrame" title="积木库行政对话"></iframe>
+    <section class="block-detail" id="blockDetail" hidden>
+      <div class="detail-inner">
+        <div class="detail-top">
+          <button class="btn ghost small" id="detailBack" type="button">← 返回聊天</button>
+        </div>
+        <h2 id="detailTitle"></h2>
+        <div class="detail-status" id="detailStatus"></div>
+        <p class="detail-warn" id="detailWarn" hidden></p>
+        <div class="detail-rows" id="detailRows"></div>
+        <pre class="detail-preview" id="detailPreview" hidden></pre>
+        <div class="detail-key-box" id="detailKeyBox" hidden>
+          <input id="detailKey" type="password" placeholder="填入 API 密钥" autocomplete="off">
+          <small>密钥只填在这里，别贴在聊天里</small>
+        </div>
+        <div class="detail-actions">
+          <button class="btn primary" id="detailCheck" type="button">检测</button>
+          <button class="btn" id="detailRemove" type="button">移出基础层</button>
+        </div>
+        <div class="detail-result" id="detailResult"></div>
+        <details class="detail-card" id="detailCard">
+          <summary>接法卡全文</summary>
+          <pre></pre>
+        </details>
+      </div>
+    </section>
   </main>
 </div>
 
