@@ -101,3 +101,7 @@ cd desktop/mac && swift build
 58 号单，交给 Gemini 的话：
 
 > 读 `docs/积木库/施工单/README.md` 和 `docs/积木库/施工单/58-体检卡和基础层详情.md`，严格按它施工。确认当前在 `blocks` 分支、工作区是干净的。只做 58 号单：只改 `desktop/static/blocks.html`、`desktop/static/blocks.js`、`desktop/static/blocks.css`；`chat.*`、`nav.*`、`panel.*`、`team.*`、`desktop/server.py`、`collab/`、`desktop/clerk/` 和任何测试都不要改。做完先跑 `python3 -m unittest discover -s tests -p 'test_acceptance_58_*.py'`，再跑全量 `python3 -m unittest discover -s tests`，都过了再提交一次（标题 `施工单 58：体检卡和基础层详情`），把回执写进 `docs/积木库/施工单/回执.md` 并一起提交，然后停下。测试不合理就停下告诉我，不准改测试，也不准为了过测试写特殊判断。不要推送，施工中别在项目文件夹里留下试验文件。
+
+59 号单，交给 Gemini 的话：
+
+> 读 `docs/积木库/施工单/README.md` 和 `docs/积木库/施工单/59-积木库窗口.md`，严格按它施工。确认当前在 `blocks` 分支、工作区是干净的。只做 59 号单：只新建 `desktop/mac/Sources/SuperAgent/BlocksWindow.swift`，只改 `desktop/mac/Sources/SuperAgent/main.swift`、`desktop/static/nav.html`、`nav.js`、`nav.css`；`blocks.*`、`chat.*`、`panel.*`、`team.*`、`desktop/server.py`、`collab/`、`desktop/clerk/` 和任何测试都不要改。做完先跑 `python3 -m unittest discover -s tests -p 'test_acceptance_59_*.py'`，再跑 `desktop/mac/build.sh` 确认编译打包通过，再跑全量 `python3 -m unittest discover -s tests`，都过了再提交一次（标题 `施工单 59：积木库窗口`），把回执写进 `docs/积木库/施工单/回执.md` 并一起提交，然后停下。不要打开真实窗口去试（会弹钥匙串授权），走查由 Claude 做。测试不合理就停下告诉我，不准改测试，也不准为了过测试写特殊判断。不要推送，施工中别在项目文件夹里留下试验文件。
