@@ -106,7 +106,7 @@ var BlocksCore = {
     if (card.kind === "cli") {
       rows.push({ label: "命令", text: card.command, code: true });
       rows.push({ label: "版本", text: scanItem ? scanItem.version || "还没查到" : "还没查到" });
-      rows.push({ label: "登录", text: scanItem ? (scanItem.login || (scanItem.login === null ? "查不了" : "还没查到")) : "还没查到" });
+      rows.push({ label: "登录", text: scanItem ? (scanItem.login || "查不了") : "还没查到" });
       rows.push({ label: "来源", text: d.verified ? "预置接法，核实过" : "行政起草，没核实" });
     } else {
       var provs = { tencent: "腾讯云", bailian: "阿里百炼", other: "其他" };
@@ -174,7 +174,7 @@ if (typeof document !== "undefined") (function () {
   var threads = [], deleted = {}, locks = {}, pendingThread = null, threadKey = "", blocksKey = "";
   var threadTimer = null, blocksTimer = null;
   var lastScan = null, scanBlocks = [], scanBroken = [], scanRunning = false, manualExpand = null, scanError = "";
-  var activeBlock = null, currentDetail = null, checkTimer = null, pendingKey = "";
+  var activeBlock = null, currentDetail = null, checkTimer = null, pendingKey = "", checkGen = 0;
   var TRASH = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"></path><path d="M8 6V4h8v2"></path><path d="M19 6l-1 14H6L5 6"></path><path d="M10 11v6M14 11v6"></path></svg>';
 
   function $(id) { return document.getElementById(id); }
@@ -409,6 +409,7 @@ if (typeof document !== "undefined") (function () {
   });
 
   function clearCheckState() {
+    checkGen++;  // 换块、离开详情：路上还没回来的检测请求和查询一律作废
     if (checkTimer) { clearTimeout(checkTimer); checkTimer = null; }
     pendingKey = "";
     $("detailCheck").disabled = false;
@@ -418,8 +419,11 @@ if (typeof document !== "undefined") (function () {
   function openDetail(id, keepResult) {
     if (!keepResult) {
       clearCheckState();
+      currentDetail = null;  // 新详情回来前不留上一块的内容，免得点到上一块的按钮
       $("detailResult").textContent = "";
-      $("detailResult").className = "";
+      $("detailResult").className = "detail-result";
+      $("detailTitle").textContent = "正在读取…";
+      ["detailStatus", "detailWarn", "detailRows", "detailPreview", "detailKeyBox", "detailCheck", "detailRemove", "detailCard"].forEach(function (k) { $(k).hidden = true; });
     }
     $("healthCard").hidden = true;
     $("chatFrame").hidden = true;
@@ -446,7 +450,8 @@ if (typeof document !== "undefined") (function () {
         lbl.className = "detail-label";
         lbl.textContent = r.label;
         rowDiv.appendChild(lbl);
-        var val = document.createElement(r.code ? "code" : "p");
+        var val = document.createElement(r.code ? "code" : "span");
+        val.className = "detail-value";
         val.textContent = r.text;
         rowDiv.appendChild(val);
         rowsEl.appendChild(rowDiv);
@@ -459,10 +464,10 @@ if (typeof document !== "undefined") (function () {
       $("detailRemove").hidden = false;
       $("detailCard").hidden = false;
       $("detailCard").querySelector("pre").textContent = v.cardText;
-    }).catch(function () {
+    }).catch(function (err) {
       if (activeBlock !== id) return;
       currentDetail = null;
-      $("detailTitle").textContent = "基础层里没有这一块了";
+      $("detailTitle").textContent = err && err.status === 404 ? "基础层里没有这一块了" : "详情没取到：" + err.message;
       ["detailStatus", "detailWarn", "detailRows", "detailPreview", "detailKeyBox", "detailCheck", "detailRemove", "detailCard"].forEach(function (k) { $(k).hidden = true; });
     });
   }
@@ -520,10 +525,13 @@ if (typeof document !== "undefined") (function () {
     $("detailRemove").disabled = true;
     $("detailResult").textContent = "正在检测…";
     $("detailResult").className = "detail-result running";
+    var gen = checkGen;
     postJson("/api/blocks/check", payload).then(function (d) {
+      if (gen !== checkGen) return;
       $("detailKey").value = "";
       followCheck(d.job, card.id);
     }).catch(function (err) {
+      if (gen !== checkGen) return;
       pendingKey = "";
       $("detailResult").textContent = err.message;
       $("detailResult").className = "detail-result fail";
@@ -534,10 +542,11 @@ if (typeof document !== "undefined") (function () {
 
   function followCheck(jobId, cardId) {
     if (checkTimer) { clearTimeout(checkTimer); checkTimer = null; }
+    var gen = checkGen;
     var poll = function () {
-      if (activeBlock !== cardId) return;
+      if (gen !== checkGen || activeBlock !== cardId) return;
       getJson("/api/blocks/job", { id: jobId }).then(function (job) {
-        if (activeBlock !== cardId) return;
+        if (gen !== checkGen || activeBlock !== cardId) return;
         var v = BlocksCore.checkView(job);
         $("detailResult").textContent = v.text;
         $("detailResult").className = "detail-result " + v.state;
@@ -554,7 +563,7 @@ if (typeof document !== "undefined") (function () {
           checkTimer = setTimeout(poll, 1000);
         }
       }).catch(function (err) {
-        if (activeBlock !== cardId) return;
+        if (gen !== checkGen || activeBlock !== cardId) return;
         if (err && err.status === 404) {
           var lost = BlocksCore.checkView(null);
           $("detailResult").textContent = lost.text;
@@ -765,15 +774,18 @@ if (typeof document !== "undefined") (function () {
     rowsEl.innerHTML = "";
     v.rows.forEach(function (r) {
       var div = document.createElement("div");
-      div.className = "health-row" + (r.ok ? " ok" : " bad");
-      var span1 = document.createElement("span");
-      span1.textContent = (r.ok ? "✓ " : "✕ ") + r.label + " " + r.text;
-      div.appendChild(span1);
-      if (!r.ok) {
-        div.appendChild(document.createElement("br"));
-        var span2 = document.createElement("span");
-        span2.textContent = r.why + "：" + r.fix;
-        div.appendChild(span2);
+      div.className = "health-row";
+      var mark = document.createElement("span");
+      mark.className = "health-mark " + (r.ok ? "ok" : "bad");
+      mark.textContent = r.ok ? "✓" : "✕";
+      div.appendChild(mark);
+      div.appendChild(document.createTextNode(r.label + "  " + r.text));
+      var note = [r.why, r.fix].filter(Boolean).join("：");
+      if (!r.ok && note) {
+        var noteEl = document.createElement("div");
+        noteEl.className = "health-note";
+        noteEl.textContent = note;
+        div.appendChild(noteEl);
       }
       rowsEl.appendChild(div);
     });
