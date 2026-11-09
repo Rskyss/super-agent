@@ -9,13 +9,37 @@ var BlocksCore = {
     if (!state.connected) return "reconnect";
     return "main";
   },
-  bindRequest: function (form, providers) {
+  /** 钥匙串账号名：和本机服务 account_for、Mac 窗口同一套；“其他”按地址的主机名分开，地址不对给空 */
+  accountFor: function (provider, baseUrl) {
+    var p = String(provider || "").trim();
+    if (p === "tencent" || p === "bailian") return p;
+    if (p !== "other") return "";
+    try {
+      var u = new URL(String(baseUrl || "").trim());
+      if ((u.protocol !== "https:" && u.protocol !== "http:") || !u.hostname) return "";
+      return "other:" + u.hostname.toLowerCase();
+    } catch (_) {
+      return "";
+    }
+  },
+  /** 没通过的原因是不是出在密钥本身（不对、失效、额度用完）：只有这时才劝“换一把”，模型名错、网断了不怪密钥 */
+  keyProblem: function (reason) {
+    return /密钥|额度/.test(String(reason || ""));
+  },
+  /** saved：钥匙串里已有密钥的账号；这一家有、密钥又没填，就用存的那把（请求里不带密钥） */
+  bindRequest: function (form, providers, saved) {
     form = form || {};
     var prov = String(form.provider || "").trim();
     var model = String(form.model || "").trim();
     var key = String(form.api_key || "").trim();
     var base = String(form.base_url || "").trim();
-    if (!key) return { ok: false, error: "请先填写 API 密钥" };
+    var account = BlocksCore.accountFor(prov, base);
+    var useSaved = !key && Array.isArray(saved) && !!account && saved.indexOf(account) >= 0;
+    var done = function (body) {
+      if (!useSaved) body.api_key = key;
+      return { ok: true, body: body, useSaved: useSaved };
+    };
+    if (!key && !useSaved) return { ok: false, error: "请先填写 API 密钥" };
     if (!model) return { ok: false, error: "请填写模型名称" };
     var list = Array.isArray(providers) ? providers : [];
     var item = null;
@@ -26,9 +50,9 @@ var BlocksCore = {
     if (prov === "other") {
       if (!base) return { ok: false, error: "请填写服务地址" };
       if (base.indexOf("https://") !== 0) return { ok: false, error: "服务地址必须以 https:// 开头" };
-      return { ok: true, body: { provider: prov, model: model, api_key: key, base_url: base } };
+      return done({ provider: prov, model: model, base_url: base });
     }
-    return { ok: true, body: { provider: prov, model: model, api_key: key } };
+    return done({ provider: prov, model: model });
   },
   modelChoices: function (providers, id) {
     var list = Array.isArray(providers) ? providers : [];
@@ -41,7 +65,7 @@ var BlocksCore = {
     if (result && result.ok) return "绑定好了";
     var reason = result && result.reason ? String(result.reason).trim() : "";
     var how = result && result.how ? String(result.how).trim() : "";
-    if (reason && how) return reason + "。" + how;
+    if (reason && how) return reason.replace(/[。.]+$/, "") + "。" + how;  // 原因自带句号时不叠成两个
     if (reason) return reason;
     if (how) return how;
     return "绑定没通过，请检查服务商、模型和密钥后再试";
@@ -182,6 +206,67 @@ if (typeof document !== "undefined") (function () {
   var threadTimer = null, blocksTimer = null;
   var lastScan = null, scanBlocks = [], scanBroken = [], scanRunning = false, manualExpand = null, scanError = "";
   var activeBlock = null, currentDetail = null, checkTimer = null, pendingKey = "", checkGen = 0;
+  // 60 号单：钥匙串里有这一家的密钥时显示“已保存的密钥 / 换一把”；点了“换一把”或存的没通过才露输入框
+  var bindWantNew = false, detailWantNew = false, usedSaved = false;
+  var SAVED_FAILED = "存的这把没通过，可以换一把";
+
+  function withSavedFailed(text) { return String(text || "").replace(/[。.\s]+$/, "") + "。" + SAVED_FAILED; }
+
+  function savedAccounts() { return (state && state.saved_accounts) || []; }
+
+  function hasSaved(account) { return !!account && savedAccounts().indexOf(account) >= 0; }
+
+  function bindAccount() {
+    if (currentView === "reconnect") return (state && state.key_account) || "";
+    return BlocksCore.accountFor($("bindProvider").value, $("bindAddress").value);
+  }
+
+  /** 输入框里已经填了字的不藏 */
+  function syncBindKey() {
+    var showSaved = hasSaved(bindAccount()) && !bindWantNew && !$("bindKey").value;
+    $("bindSaved").hidden = !showSaved;
+    $("bindKey").hidden = showSaved;
+  }
+
+  function syncDetailKey() {
+    var card = currentDetail && currentDetail.card;
+    var isApi = !!card && card.kind === "llm_api";
+    var showSaved = isApi && hasSaved(currentDetail.key_account || card.key_account) && !detailWantNew && !$("detailKey").value;
+    $("detailSaved").hidden = !showSaved;
+    $("detailKey").hidden = showSaved;
+    $("detailKeyTip").hidden = showSaved;
+  }
+
+  $("bindNewKey").addEventListener("click", function () {
+    bindWantNew = true;
+    syncBindKey();
+    $("bindKey").focus();
+  });
+
+  $("detailNewKey").addEventListener("click", function () {
+    detailWantNew = true;
+    syncDetailKey();
+    $("detailKey").focus();
+  });
+
+  $("bindAddress").addEventListener("input", function () {
+    bindWantNew = false;  // 换了地址就是另一家：重新判断有没有存的
+    syncBindKey();
+  });
+
+  /** Mac 窗口把钥匙串交给本机服务后调这里：重新取一次有哪些已保存，重画密钥行 */
+  window.blocksKeysChanged = function () {
+    getJson("/api/blocks/state").then(function (d) {
+      if (!state || !d) return;
+      state.saved_accounts = d.saved_accounts || [];
+      if (!$("bindWrap").hidden) syncBindKey();
+      if (currentDetail) syncDetailKey();
+    }).catch(function () {});
+    try {  // 聊天页嵌在里面、同源：它的提议卡也跟着变
+      var chatWin = $("chatFrame").contentWindow;
+      if (chatWin && chatWin.chatKeysChanged) chatWin.chatKeysChanged();
+    } catch (_) {}
+  };
   var TRASH = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"></path><path d="M8 6V4h8v2"></path><path d="M19 6l-1 14H6L5 6"></path><path d="M10 11v6M14 11v6"></path></svg>';
 
   function $(id) { return document.getElementById(id); }
@@ -280,6 +365,7 @@ if (typeof document !== "undefined") (function () {
     $("mainLayout").hidden = true;
     setBindFeedback("", "");
     $("bindKey").value = "";
+    bindWantNew = false;
     $("bindBack").hidden = !returnTo;
 
     var setting = state && state.setting;
@@ -303,6 +389,7 @@ if (typeof document !== "undefined") (function () {
       $("bindAddress").disabled = false;
       $("bindChange").hidden = true;
     }
+    syncBindKey();
   }
 
   function showMainView() {
@@ -419,6 +506,7 @@ if (typeof document !== "undefined") (function () {
     checkGen++;  // 换块、离开详情：路上还没回来的检测请求和查询一律作废
     if (checkTimer) { clearTimeout(checkTimer); checkTimer = null; }
     pendingKey = "";
+    usedSaved = false;
     $("detailCheck").disabled = false;
     $("detailRemove").disabled = false;
   }
@@ -427,6 +515,7 @@ if (typeof document !== "undefined") (function () {
     if (!keepResult) {
       clearCheckState();
       currentDetail = null;  // 新详情回来前不留上一块的内容，免得点到上一块的按钮
+      detailWantNew = false;
       $("detailResult").textContent = "";
       $("detailResult").className = "detail-result";
       $("detailTitle").textContent = "正在读取…";
@@ -466,6 +555,7 @@ if (typeof document !== "undefined") (function () {
       $("detailPreview").textContent = v.preview;
       $("detailPreview").hidden = !v.preview;
       $("detailKeyBox").hidden = !v.needsKey;
+      syncDetailKey();
       $("detailCheck").textContent = v.checkText;
       $("detailCheck").hidden = false;
       $("detailRemove").hidden = false;
@@ -515,15 +605,19 @@ if (typeof document !== "undefined") (function () {
     if (!currentDetail) return;
     var card = currentDetail.card;
     var payload = { id: card.id };
+    usedSaved = false;
     if (card.kind === "llm_api") {
       var k = $("detailKey").value.trim();
-      if (!k) {
+      if (!k && !$("detailSaved").hidden) {
+        usedSaved = true;  // 用钥匙串里存的那把：请求里不带密钥
+      } else if (!k) {
         $("detailResult").textContent = "请先在密钥框里填好密钥";
         $("detailResult").className = "detail-result fail";
         return;
+      } else {
+        payload.api_key = k;
+        pendingKey = k;
       }
-      payload.api_key = k;
-      pendingKey = k;
     } else if (!currentDetail.verified) {
       var scanItem = (lastScan && lastScan.items || []).find(function (it) { return it.name === card.id; }) || null;
       payload.approved = BlocksCore.detailView(currentDetail, scanItem).preview;
@@ -557,6 +651,12 @@ if (typeof document !== "undefined") (function () {
         var v = BlocksCore.checkView(job);
         $("detailResult").textContent = v.text;
         $("detailResult").className = "detail-result " + v.state;
+        if (job.done && v.state === "ok") detailWantNew = false;  // 新填的通过了：存进钥匙串后这里显示“已保存”
+        if (job.done && v.state !== "ok" && usedSaved && BlocksCore.keyProblem(job.result && job.result.reason)) {
+          detailWantNew = true;  // 存的那把没通过：说原因，展开输入框
+          $("detailResult").textContent = withSavedFailed(v.text);
+        }
+        if (job.done) usedSaved = false;
         if (job.done) {
           $("detailCheck").disabled = false;
           $("detailRemove").disabled = false;
@@ -640,6 +740,8 @@ if (typeof document !== "undefined") (function () {
   $("bindProvider").addEventListener("change", function () {
     syncProviderFields(false);
     setBindFeedback("", "");
+    bindWantNew = false;
+    syncBindKey();
   });
 
   $("bindChange").addEventListener("click", function () {
@@ -684,24 +786,25 @@ if (typeof document !== "undefined") (function () {
       base_url: $("bindAddress").value,
       api_key: $("bindKey").value,
     };
-    var check = BlocksCore.bindRequest(form, providers);
+    var check = BlocksCore.bindRequest(form, providers, $("bindSaved").hidden ? [] : savedAccounts());
     if (!check.ok) {
       setBindFeedback(check.error, "bad");
       return;
     }
-    var rawKey = check.body.api_key;
+    var rawKey = check.body.api_key || "";
+    var withSaved = check.useSaved;
     setChecking(true);
     setBindFeedback("", "");
 
     var isReconnect = currentView === "reconnect";
     var url = isReconnect ? "/api/blocks/connect" : "/api/blocks/bind";
-    var payload = isReconnect ? { api_key: rawKey, check: true } : check.body;
+    var payload = isReconnect ? (withSaved ? { check: true } : { api_key: rawKey, check: true }) : check.body;
 
     postJson(url, payload).then(function (res) {
       setChecking(false);
       if (res && res.ok) {
         var account = res.key_account || (state && state.key_account) || "";
-        saveKeyToMac(account, rawKey);
+        if (rawKey) saveKeyToMac(account, rawKey);
         $("bindKey").value = "";
         state.connected = true;
         if (!isReconnect) {
@@ -714,6 +817,10 @@ if (typeof document !== "undefined") (function () {
         }
         setBindFeedback(BlocksCore.bindResultText(res), "ok");
         showMainView();
+      } else if (withSaved && BlocksCore.keyProblem(res && res.reason)) {
+        bindWantNew = true;  // 存的那把没通过：说原因，展开输入框
+        syncBindKey();
+        setBindFeedback(withSavedFailed((res && res.reason) || BlocksCore.bindResultText(res)), "bad");  // 只说原因，再说换一把
       } else {
         setBindFeedback(BlocksCore.bindResultText(res), "bad");
       }

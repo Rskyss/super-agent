@@ -34,6 +34,7 @@
     <div class="field">
       <label for="bindKey">API 密钥</label>
       <input type="password" id="bindKey" placeholder="填入 API 密钥" autocomplete="off" aria-label="API 密钥">
+      <div class="saved-key" id="bindSaved" hidden><span>已保存的密钥</span><button type="button" id="bindNewKey">换一把</button></div>
     </div>
 
     <div class="bind-actions">
@@ -91,8 +92,9 @@
         <div class="detail-rows" id="detailRows"></div>
         <pre class="detail-preview" id="detailPreview" hidden></pre>
         <div class="detail-key-box" id="detailKeyBox" hidden>
+          <div class="saved-key" id="detailSaved" hidden><span>已保存的密钥</span><button type="button" id="detailNewKey">换一把</button></div>
           <input id="detailKey" type="password" placeholder="填入 API 密钥" autocomplete="off">
-          <small>密钥只填在这里，别贴在聊天里</small>
+          <small id="detailKeyTip">密钥只填在这里，别贴在聊天里</small>
         </div>
         <div class="detail-actions">
           <button class="btn primary" id="detailCheck" type="button">检测</button>

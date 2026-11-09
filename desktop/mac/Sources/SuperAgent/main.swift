@@ -145,6 +145,9 @@ var clerkPrefs: UserDefaults {
 }
 
 enum ClerkKey {
+    /// 存、删密钥之后发：积木库窗口开着就把钥匙串整份再交给本机服务（60 号单）
+    static let changed = Notification.Name("SuperAgentClerkKeysChanged")
+
     static var service: String {
         let tests = ["--clerk-try", "--clerk-ui-test", "--clerk-key-file", "--walk", "--snapshot"]  // 自测绝不碰用户的钥匙串
         return "local.superagent.clerk" + (tests.contains { CommandLine.arguments.contains($0) } ? ".selftest" : "")
@@ -173,17 +176,40 @@ enum ClerkKey {
     }
 
     @discardableResult static func save(_ key: String, account: String) -> Bool {
-        if let file = testFile(account) { return (try? key.write(to: file, atomically: true, encoding: .utf8)) != nil }
-        SecItemDelete(query(account: account) as CFDictionary)
-        var item = query(account: account)
-        item[kSecValueData as String] = Data(key.utf8)
-        item[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlocked
-        return SecItemAdd(item as CFDictionary, nil) == errSecSuccess
+        let ok: Bool
+        if let file = testFile(account) {
+            ok = (try? key.write(to: file, atomically: true, encoding: .utf8)) != nil
+        } else {
+            SecItemDelete(query(account: account) as CFDictionary)
+            var item = query(account: account)
+            item[kSecValueData as String] = Data(key.utf8)
+            item[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlocked
+            ok = SecItemAdd(item as CFDictionary, nil) == errSecSuccess
+        }
+        if ok { NotificationCenter.default.post(name: ClerkKey.changed, object: nil) }  // 存成了才通知
+        return ok
     }
 
     static func delete(account: String) {
-        if let file = testFile(account) { try? FileManager.default.removeItem(at: file); return }
-        SecItemDelete(query(account: account) as CFDictionary)
+        if let file = testFile(account) {
+            try? FileManager.default.removeItem(at: file)
+        } else {
+            SecItemDelete(query(account: account) as CFDictionary)
+        }
+        NotificationCenter.default.post(name: ClerkKey.changed, object: nil)
+    }
+
+    /// 钥匙串里本应用存过的所有账号名：只取名字不取密钥；走查用临时文件夹时列文件夹里的文件
+    static func accounts() -> [String] {
+        if let dir = argValue("--clerk-key-dir") {  // 和 testFile 一样认 --clerk-key-dir
+            return ((try? FileManager.default.contentsOfDirectory(atPath: dir)) ?? []).sorted()
+        }
+        let request: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
+                                      kSecReturnAttributes as String: true, kSecMatchLimit as String: kSecMatchLimitAll]
+        var found: CFTypeRef?
+        guard SecItemCopyMatching(request as CFDictionary, &found) == errSecSuccess,
+              let items = found as? [[String: Any]] else { return [] }
+        return items.compactMap { $0[kSecAttrAccount as String] as? String }.sorted()
     }
 
     /// 旧账号 api-key 有密钥时，按旧地址归到对应账号，存好再删旧的。

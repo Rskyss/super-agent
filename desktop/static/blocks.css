@@ -477,6 +477,11 @@ code.detail-value { font-family: var(--font-mono); color: var(--text); }
 .detail-preview { background: var(--bg-side); padding: 12px; border-radius: var(--r-md); font-family: var(--font-mono); margin: 0 0 16px; font-size: var(--fs-sm); white-space: pre-wrap; word-break: break-all; }
 #detailKeyBox { margin-bottom: 16px; }
 #detailKeyBox input { width: 100%; max-width: 300px; }
+/* 钥匙串里有这一家的密钥：代替输入框显示（60 号单） */
+.saved-key { display: flex; align-items: center; justify-content: space-between; gap: 8px; height: 32px; padding: 0 4px 0 10px; font-size: var(--fs-base); color: var(--dim); background-color: var(--surface); box-shadow: inset 0 0 0 1px var(--hair); border-radius: var(--r-md); }
+#detailKeyBox .saved-key { max-width: 300px; }
+.saved-key button { flex: none; height: 26px; padding: 0 8px; color: var(--dim); background: none; border: 0; border-radius: var(--r-md); cursor: default; transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease); }
+.saved-key button:hover { background: rgba(255, 255, 255, .07); color: var(--text); }
 
 .detail-actions {
   display: flex;

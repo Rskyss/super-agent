@@ -80,6 +80,7 @@ _MAX_BODY = 1024 * 1024  # 聊天消息最多 1MB，够用了
 _CARD_ID = re.compile(r"^[A-Za-z0-9_-]+$")
 _BLOCK_KINDS = ("install", "connect", "connect_api")
 _JOB_LIMIT = 100         # 积木库做完的后台任务最多留这么多
+_SAVED_ACCOUNT = re.compile(r"tencent|bailian|other:[a-z0-9.-]{1,253}")  # 和 Mac 窗口 BlocksWindow.isValidAccount 一样
 _TERMINAL_TTL = 60       # 终端路径一分钟内只读一次
 
 
@@ -308,6 +309,38 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---------- 积木库 ----------
 
+    def _blocks_key(self, body: dict, account: str, provider: str, base_url: str) -> str:
+        """页面带了密钥用带的；没带就用 Mac 窗口从钥匙串交来的那把（60 号单），都没有给空。
+        存的只在“账号和地址对得上”时才用：认得的服务商只能发到它自己的地址，“其他”按主机名分账号。
+        卡片或行政设置被改过、对不上就当没存，免得点一下检测就把这家的密钥发到别处。"""
+        given = str(body.get("api_key") or "").strip()
+        if given:
+            return given
+        try:
+            if not account or account_for(provider, base_url) != account:
+                return ""
+        except ValueError:
+            return ""
+        fixed = str((find_provider(provider) or {}).get("base_url") or "")
+        if fixed and base_url.rstrip("/") != fixed.rstrip("/"):
+            return ""
+        return self.server.blocks_saved_keys.get(account, "")
+
+    def _blocks_take_keys(self, body: dict) -> None:
+        """Mac 窗口交来钥匙串里的整份密钥：只记在内存里，整份替换；不合格的那条丢掉，不回显。"""
+        keys = body.get("keys")
+        if not isinstance(keys, dict):
+            self._json({"error": "格式不对"}, 400)
+            return
+        clean = {}
+        for account, key in keys.items():
+            key = key.strip() if isinstance(key, str) else ""
+            if (isinstance(account, str) and _SAVED_ACCOUNT.fullmatch(account) and key and len(key) <= 500
+                    and "\n" not in key and "\r" not in key):
+                clean[account] = key
+        self.server.blocks_saved_keys = clean
+        self._json({"ok": True, "count": len(clean)})
+
     def _blocks_home(self) -> str:
         """积木库资料夹只由程序定，页面传的不认；第一次用到时建好资料夹本身。"""
         home = blocks.home()
@@ -408,6 +441,7 @@ class Handler(BaseHTTPRequestHandler):
                 except (KeyError, ValueError):
                     account = ""
             self._json({"setting": setting, "key_account": account, "connected": self.server.blocks_clerk is not None,
+                        "saved_accounts": sorted(self.server.blocks_saved_keys),
                         "installing": blocks_install.installing() or bool(self.server.blocks_installing),
                         "home": home,
                         "providers": [{"id": p["id"], "name": p["name"], "base_url": p.get("base_url", ""), "models": p["models"]} for p in PROVIDERS]})
@@ -474,16 +508,25 @@ class Handler(BaseHTTPRequestHandler):
         home = self._blocks_home()
         if path == "/api/blocks/bind":
             self._blocks_bind(home, body)
+        elif path == "/api/blocks/keys":
+            self._blocks_take_keys(body)
         elif path == "/api/blocks/connect":
-            key = str(body.get("api_key") or "").strip()
+            setting = load_clerk(home)
+            base_url = ""
+            account = ""
+            if setting:
+                base_url = setting.get("base_url") or (find_provider(setting["provider"]) or {}).get("base_url", "")
+                try:
+                    account = account_for(setting["provider"], base_url)
+                except (KeyError, ValueError):
+                    account = ""
+            key = self._blocks_key(body, account, (setting or {}).get("provider", ""), base_url)
             if not key:
                 self._json({"error": "没有密钥"}, 400)
                 return
-            setting = load_clerk(home)
             if not setting:
                 self._json({"error": "还没绑定行政"}, 409)
                 return
-            base_url = setting.get("base_url") or (find_provider(setting["provider"]) or {}).get("base_url", "")
             if body.get("check") is True:  # 用户手填的密钥先发一句试试；窗口从钥匙串自动重连的不测，不多花额度
                 try:
                     card = {"id": "connect-" + uuid.uuid4().hex[:8], "kind": "llm_api", "name": "行政",
@@ -535,7 +578,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"error": "基础层里没有这一块"}, 404)
                 return
             approved = body.get("approved")
-            api_key = str(body.get("api_key") or "").strip()
+            api_key = (self._blocks_key(body, card.get("key_account", ""), card.get("provider", ""),
+                                        card.get("base_url", "")) if card["kind"] == "llm_api" else "")
             if card["kind"] == "cli" and not blocks.is_verified(card) and not isinstance(approved, str):
                 self._json({"error": "这块的接法没核实过：先把完整命令给用户看，用户确认后再检测"}, 400)
                 return
@@ -552,19 +596,21 @@ class Handler(BaseHTTPRequestHandler):
     def _blocks_bind(self, home: str, body: dict) -> None:
         provider = str(body.get("provider") or "").strip()
         model = str(body.get("model") or "").strip()
-        key = str(body.get("api_key") or "").strip()
         item = find_provider(provider) if provider else None
+        # 认得的服务商用它自己的地址，页面传的不理：密钥不能被发到别处
+        base_url = str((item or {}).get("base_url") or body.get("base_url") or "").strip()
+        try:
+            account = account_for(provider, base_url) if item is not None else ""
+        except ValueError:
+            account = ""
+        key = self._blocks_key(body, account, provider, base_url)
         if not key or not model or item is None:
             self._json({"error": "要选服务商、填模型和密钥"}, 400)
             return
-        # 认得的服务商用它自己的地址，页面传的不理：密钥不能被发到别处
-        base_url = str(item.get("base_url") or body.get("base_url") or "").strip()
         if not base_url.startswith("https://"):
             self._json({"error": "地址不对，要以 https:// 开头"}, 400)
             return
-        try:
-            account = account_for(provider, base_url)
-        except ValueError:
+        if not account:
             self._json({"error": "地址不对"}, 400)
             return
         card = {"id": "bind-" + uuid.uuid4().hex[:8], "kind": "llm_api", "name": "行政", "provider": provider,
@@ -607,9 +653,12 @@ class Handler(BaseHTTPRequestHandler):
         """积木库的提议卡：确认后真的去安装或检测。整段排队做，两次确认同时到也不会乱。"""
         server, desk = self.server, self.server.desk
         pid, decision = str(body.get("id") or ""), str(body.get("decision") or "")
-        api_key = str(body.get("api_key") or "").strip()
         with server.blocks_confirm_lock:
             proposal = clerk_tasks.load_proposal(project, pid)
+            block = (proposal or {}).get("block") or {}
+            api_key = (self._blocks_key(body, str(block.get("key_account") or ""), str(block.get("provider") or ""),
+                                        str(block.get("base_url") or ""))
+                       if (proposal or {}).get("kind") == "connect_api" else "")
             if decision == "confirm" and proposal and proposal.get("state") == "open":
                 if proposal.get("kind") == "connect_api" and not api_key:
                     self._json({"error": "请先在密钥框里填好密钥"}, 400)
@@ -1118,6 +1167,7 @@ def make_server(port: int = 0, token=None, hub=None) -> ThreadingHTTPServer:
     server.hub = hub if hub is not None else ChatHub()
     server.clerk = None           # 行政人员的模型连接，密钥只在内存里
     server.blocks_clerk = None    # 积木库行政的模型连接
+    server.blocks_saved_keys = {}  # Mac 窗口从钥匙串交来的密钥：账号 -> 密钥，只在内存里（60 号单）
     server.blocks_client_factory = None
     server.terminal_path = terminal_path
     server.blocks_jobs = {}            # 积木库后台任务：编号 -> 状态

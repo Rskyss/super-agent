@@ -19,10 +19,45 @@ final class BlocksWindow: NSObject, NSWindowDelegate, WKScriptMessageHandler, WK
     weak var app: AppDelegate?
     private var window: NSWindow?
     private var web: WKWebView?
+    private var gaveKeys = false  // 这次运行里交过密钥给本机服务
     private var generation = 0  // 每次加载、关窗口、服务停了都加一；慢的旧请求回来对不上号就不管
 
     init(app: AppDelegate) {
         self.app = app
+        super.init()
+        // 项目窗口或积木库存、删了密钥：开着就再交一次整份，再叫页面重新取“已保存”
+        NotificationCenter.default.addObserver(self, selector: #selector(keysChanged(_:)), name: ClerkKey.changed, object: nil)
+    }
+
+    /// 这次运行里交过密钥（积木库开过），钥匙串一变就再交整份，关着也交：本机服务里的始终和钥匙串一样，
+    /// 删掉的马上没了。从没开过积木库就不交（用户 2026-11-09 定：打开时才交）
+    @objc private func keysChanged(_ note: Notification) {
+        guard gaveKeys, let app = app, let port = app.port else { return }
+        let mine = generation
+        syncKeys(port: port, token: app.chatToken) { [weak self] in
+            guard let self = self, self.generation == mine, self.isOpen else { return }
+            self.web?.evaluateJavaScript("window.blocksKeysChanged && window.blocksKeysChanged()", completionHandler: nil)
+        }
+    }
+
+    /// 把钥匙串里本应用存的密钥（账号名合法的）整份交给本机服务，只记在内存里（60 号单，用户 2026-11-09 定）。
+    /// 密钥只在这次请求里用；成没成都接着往下走
+    func syncKeys(port: Int, token: String, then: @escaping @MainActor @Sendable () -> Void) {
+        gaveKeys = true
+        var keys: [String: String] = [:]
+        for account in ClerkKey.accounts() where Self.isValidAccount(account) {
+            if let key = ClerkKey.read(account: account), !key.isEmpty { keys[account] = key }
+        }
+        guard let url = URL(string: "http://127.0.0.1:\(port)/api/blocks/keys") else { return then() }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(token, forHTTPHeaderField: "X-Chat-Token")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: ["keys": keys])
+        request.timeoutInterval = 10
+        URLSession.shared.dataTask(with: request) { _, _, _ in
+            DispatchQueue.main.async { then() }
+        }.resume()
     }
 
     var isVisible: Bool { window?.isVisible == true }
@@ -78,28 +113,33 @@ final class BlocksWindow: NSObject, NSWindowDelegate, WKScriptMessageHandler, WK
         guard let stateURL = URL(string: base + "/api/blocks/state?token=" + token) else { return page() }
         var ask = URLRequest(url: stateURL)
         ask.timeoutInterval = 10
-        URLSession.shared.dataTask(with: ask) { [weak self] data, _, _ in
-            let state = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
-            let account = state.flatMap { s -> String? in
-                guard s["setting"] is [String: Any], s["connected"] as? Bool == false else { return nil }
-                return s["key_account"] as? String
-            } ?? ""
-            DispatchQueue.main.async { [weak self] in
-                guard let self = self, self.generation == mine else { return }
-                guard !account.isEmpty, let key = ClerkKey.read(account: account), !key.isEmpty,
-                      let url = URL(string: base + "/api/blocks/connect") else { return page() }
-                // 自动重连不带 check：不发测试话，不多花额度（55、56 号单约定）
-                var request = URLRequest(url: url)
-                request.httpMethod = "POST"
-                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                request.setValue(token, forHTTPHeaderField: "X-Chat-Token")
-                request.httpBody = try? JSONSerialization.data(withJSONObject: ["api_key": key])
-                request.timeoutInterval = 40
-                URLSession.shared.dataTask(with: request) { _, _, _ in  // 成没成都往下走，页面自己会显示
-                    DispatchQueue.main.async { page() }
-                }.resume()
-            }
-        }.resume()
+        // 先把钥匙串交给本机服务（60 号单），页面一打开就知道哪些存过；再走 59 号单的自动重连：
+        // 行政没连上、钥匙串里有这家的密钥就先连上（不发测试话），成没成都加载页面
+        syncKeys(port: port, token: token) { [weak self] in
+            guard let self = self, self.generation == mine else { return }
+            URLSession.shared.dataTask(with: ask) { [weak self] data, _, _ in
+                let state = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+                let account = state.flatMap { s -> String? in
+                    guard s["setting"] is [String: Any], s["connected"] as? Bool == false else { return nil }
+                    return s["key_account"] as? String
+                } ?? ""
+                DispatchQueue.main.async { [weak self] in
+                    guard let self = self, self.generation == mine else { return }
+                    guard !account.isEmpty, let key = ClerkKey.read(account: account), !key.isEmpty,
+                          let url = URL(string: base + "/api/blocks/connect") else { return page() }
+                    // 自动重连不带 check：不发测试话，不多花额度（55、56 号单约定）
+                    var request = URLRequest(url: url)
+                    request.httpMethod = "POST"
+                    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                    request.setValue(token, forHTTPHeaderField: "X-Chat-Token")
+                    request.httpBody = try? JSONSerialization.data(withJSONObject: ["api_key": key])
+                    request.timeoutInterval = 40
+                    URLSession.shared.dataTask(with: request) { _, _, _ in  // 成没成都往下走，页面自己会显示
+                        DispatchQueue.main.async { page() }
+                    }.resume()
+                }
+            }.resume()
+        }
     }
 
     static let stoppedWords = "本机服务停了，可以用菜单「面板 → 刷新右栏」再试一次。"

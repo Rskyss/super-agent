@@ -233,6 +233,11 @@ var ChatCore = (function () {
     return ["install", "connect", "connect_api"].indexOf(kind) !== -1;
   }
 
+  /** 没通过的原因是不是出在密钥本身：只有这时才劝“换一把”（和 BlocksCore.keyProblem 同一个判断） */
+  function keyProblem(reason) {
+    return /密钥|额度/.test(String(reason || ""));
+  }
+
   function blockCard(b) {
     var info = b.info || {};
     if (b.proposalKind === "install") {
@@ -255,7 +260,8 @@ var ChatCore = (function () {
       var prov = { tencent: "腾讯云", bailian: "阿里百炼", other: "其他" }[info.provider] || info.provider;
       var rows = [{ label: "服务商", text: prov }, { label: "模型", text: info.model }, { label: "地址", text: info.block.base_url }];
       if (info.replaces) rows.push({ label: "会替换", text: "基础层里的「" + info.replaces + "」" });
-      return { title: "接进基础层：" + info.name, rows: rows, needsKey: true, confirmText: "检测", warn: "" };
+      return { title: "接进基础层：" + info.name, rows: rows, needsKey: true, confirmText: "检测", warn: "",
+               keyAccount: (info.block && info.block.key_account) || "" };
     }
     return { title: b.title, rows: ChatCore.cardInfoRows(b), needsKey: false, confirmText: "确认" };
   }
@@ -281,7 +287,7 @@ var ChatCore = (function () {
     return { state: "ok", text: (job.saved ? "检测通过 · " + res.seconds + " 秒 · 已放进基础层" : "检测通过 · " + res.seconds + " 秒"), lines: [], canSave: !job.saved };
   }
 
-  return { esc: esc, md: md, Model: Model, actsSummary: actsSummary, usageText: usageText, modelFrom: modelFrom, needsOpen: needsOpen, cardInfoRows: cardInfoRows, afterThreadDeleted: afterThreadDeleted, isBlockKind: isBlockKind, blockCard: blockCard, blockDoneTitle: blockDoneTitle, jobView: jobView };
+  return { esc: esc, md: md, Model: Model, actsSummary: actsSummary, usageText: usageText, modelFrom: modelFrom, needsOpen: needsOpen, cardInfoRows: cardInfoRows, afterThreadDeleted: afterThreadDeleted, isBlockKind: isBlockKind, keyProblem: keyProblem, blockCard: blockCard, blockDoneTitle: blockDoneTitle, jobView: jobView };
 })();
 
 if (typeof module !== "undefined") module.exports = ChatCore;
@@ -314,6 +320,28 @@ if (typeof document !== "undefined") (function () {
   var proposalJobs = {};
   var proposalKeys = {};
   var confirming = {};  // 确认请求还没回话的提议：这时服务器还没登记任务，不按提议去查
+  // 60 号单：钥匙串里有这一家的密钥时，提议卡显示“已保存的密钥 / 换一把”
+  var savedAccounts = null, savedLoading = false, keyWanted = {}, usedSavedKey = {};
+  var SAVED_FAILED = "存的这把没通过，可以换一把：跟行政说重新提议，在新的提议卡上点“换一把”填新的";
+
+  function loadSavedAccounts() {
+    if (savedLoading) return;
+    savedLoading = true;
+    fetch("/api/blocks/state?" + new URLSearchParams({ token: token }).toString())
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (d) {
+        savedLoading = false;
+        savedAccounts = (d && d.saved_accounts) || [];
+        model.blocks.forEach(function (b) {
+          if (b.kind === "proposal" && b.proposalKind === "connect_api" && b.state === "open") model._touch(b);
+        });
+        render();
+      })
+      .catch(function () { savedLoading = false; savedAccounts = savedAccounts || []; });
+  }
+
+  /** 积木库页面在 Mac 窗口交完钥匙串后调这里 */
+  window.chatKeysChanged = loadSavedAccounts;
 
   function findProposal(pid) {
     for (var i = 0; i < model.blocks.length; i++) {
@@ -350,6 +378,10 @@ if (typeof document !== "undefined") (function () {
           rec.saved = !!d.saved;
           rec.view = ChatCore.jobView(d);
           if (d.done && rec.view.state !== "ok") delete proposalKeys[pid];
+          if (d.done && rec.view.state !== "ok" && usedSavedKey[pid] && ChatCore.keyProblem(d.result && d.result.reason) &&
+              rec.view.text.indexOf(SAVED_FAILED) === -1) {
+            rec.view.text = String(rec.view.text || "").replace(/[。.\s]+$/, "") + "。" + SAVED_FAILED;
+          }
           touchProposal(pid);
           if (!d.done) {
             setTimeout(tick, 1000);
@@ -498,7 +530,24 @@ if (typeof document !== "undefined") (function () {
             d.appendChild(p);
             rowsEl.appendChild(d);
           });
-          if (bc.needsKey) {
+          if (bc.needsKey && savedAccounts === null) loadSavedAccounts();
+          var useSaved = bc.needsKey && !keyWanted[b.id] && !!bc.keyAccount && (savedAccounts || []).indexOf(bc.keyAccount) >= 0;
+          if (useSaved) {
+            var savedBox = document.createElement("div");
+            savedBox.className = "prop-key";
+            var savedRow = document.createElement("div");
+            savedRow.className = "saved-key";
+            var savedText = document.createElement("span");
+            savedText.textContent = "已保存的密钥";
+            var newBtn = document.createElement("button");
+            newBtn.type = "button";
+            newBtn.setAttribute("data-new-key", b.id);
+            newBtn.textContent = "换一把";
+            savedRow.appendChild(savedText);
+            savedRow.appendChild(newBtn);
+            savedBox.appendChild(savedRow);
+            rowsEl.after(savedBox);
+          } else if (bc.needsKey) {
             var keyBox = document.createElement("div");
             keyBox.className = "prop-key";
             var inp = document.createElement("input");
@@ -688,6 +737,15 @@ if (typeof document !== "undefined") (function () {
         .catch(function (err) { showError(err.message); card.querySelectorAll("button").forEach(function (b) { b.disabled = false; }); });
       return;
     }
+    var newKey = t.closest("[data-new-key]");
+    if (newKey) {
+      var nkPid = newKey.getAttribute("data-new-key");
+      keyWanted[nkPid] = true;
+      touchProposal(nkPid);
+      var nkBox = document.querySelector('[data-proposal="' + nkPid.replace(/["\\]/g, "") + '"] .prop-key input');
+      if (nkBox) nkBox.focus();
+      return;
+    }
     var prop = t.closest("[data-prop]");
     if (prop) {
       var box = prop.closest("[data-proposal]");
@@ -700,6 +758,7 @@ if (typeof document !== "undefined") (function () {
       };
       var keyInp = box.querySelector(".prop-key input");
       var keyVal = "";
+      usedSavedKey[pid] = decision === "confirm" && !keyInp && !!box.querySelector(".saved-key");
       if (decision === "confirm" && keyInp) {
         keyVal = keyInp.value.trim();
         if (!keyVal) {
@@ -745,7 +804,9 @@ if (typeof document !== "undefined") (function () {
         if (rec) {
           rec.saved = true;
           rec.saveError = "";
-          rec.keyMissing = !!(d && d.key_account && !key);
+          // 用存的那把、或钥匙串里本来就有这一家：不算没带上（页面重新加载后也认）
+          rec.keyMissing = !!(d && d.key_account && !key && !usedSavedKey[pid] &&
+                              (savedAccounts || []).indexOf(d.key_account) < 0);
           if (rec.view) {
             rec.view.canSave = false;
             if (rec.view.text.indexOf("已放进基础层") === -1) rec.view.text += " · 已放进基础层";
