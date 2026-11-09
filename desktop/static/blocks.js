@@ -70,9 +70,13 @@ var BlocksCore = {
       return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
     });
   },
+  threadTitle: function (title) {
+    return String(title || "").replace(/（[^）]*）$/, "") || "对话";
+  },
   deleteConfirm: function (thread) {
-    var title = (thread && thread.title) ? String(thread.title) : "这段对话";
-    return "删除对话“" + title + "”？删除后找不回来。";
+    var words = "删除对话“" + BlocksCore.threadTitle(thread && thread.title) + "”？删除后找不回来。";
+    if (thread && thread.pending) words += "里面还有一个没确认的提议，会一起作废。";
+    return words;
   },
 };
 
@@ -84,7 +88,8 @@ if (typeof document !== "undefined") (function () {
   var token = params.get("token") || "";
   var state = null;
   var currentView = "bind";
-  var canReturnToMain = false;
+  var returnTo = "";  // 绑定卡上的“返回”回哪：main（聊天）、reconnect（重新连上）或不显示
+  var checking = false, loopsOn = false, threadsLoaded = false, blocksLoaded = false;
   var frameLoadedHome = "";
   var threads = [], deleted = {}, locks = {}, pendingThread = null, threadKey = "", blocksKey = "";
   var threadTimer = null, blocksTimer = null;
@@ -175,13 +180,14 @@ if (typeof document !== "undefined") (function () {
     res.className = "bind-result" + (tone ? " " + tone : "");
   }
 
-  function showBindCard(mode) {
+  function showBindCard(mode, back) {
     currentView = mode;
+    returnTo = back || "";
     $("bindWrap").hidden = false;
     $("mainLayout").hidden = true;
     setBindFeedback("", "");
     $("bindKey").value = "";
-    $("bindBack").hidden = !canReturnToMain;
+    $("bindBack").hidden = !returnTo;
 
     var setting = state && state.setting;
     if (mode === "reconnect" && setting) {
@@ -195,7 +201,7 @@ if (typeof document !== "undefined") (function () {
       $("bindAddress").disabled = true;
       $("bindChange").hidden = false;
     } else {
-      $("bindTitle").textContent = "先绑定一个大模型，它会当你的行政";
+      $("bindTitle").textContent = setting ? "行政设置：换服务商、模型或密钥" : "先绑定一个大模型，它会当你的行政";
       populateProviders(state ? state.providers : [], setting && setting.provider);
       if (setting && setting.model) $("bindModel").value = setting.model;
       if (setting && setting.base_url && setting.provider === "other") $("bindAddress").value = setting.base_url;
@@ -208,7 +214,7 @@ if (typeof document !== "undefined") (function () {
 
   function showMainView() {
     currentView = "main";
-    canReturnToMain = true;
+    $("bindKey").value = "";
     $("bindWrap").hidden = true;
     $("mainLayout").hidden = false;
     var home = (state && state.home) || "";
@@ -229,14 +235,10 @@ if (typeof document !== "undefined") (function () {
     }
   }
 
-  function threadTitle(title) {
-    return String(title || "").replace(/（[^）]*）$/, "") || "对话";
-  }
-
   function drawThreads() {
     var shown = (threads || []).filter(function (t) { return !deleted[t.id]; });
     var key = JSON.stringify(shown.map(function (t) {
-      return [t.id, t.title, !!t.current, !!t.busy, t.deletable];
+      return [t.id, t.title, !!t.current, !!t.busy, !!t.pending, t.deletable];
     }));
     if (key === threadKey) return;
     threadKey = key;
@@ -247,7 +249,7 @@ if (typeof document !== "undefined") (function () {
     $("threads").innerHTML = shown.map(function (t) {
       var on = !!t.current;
       var row = '<div class="row"><button class="thread' + (on ? " on" : "") + '" type="button" data-thread="' + BlocksCore.esc(t.id) + '">' +
-        '<span class="tt">' + BlocksCore.esc(threadTitle(t.title)) + "</span></button>";
+        '<span class="tt">' + BlocksCore.esc(BlocksCore.threadTitle(t.title)) + "</span></button>";
       if (t.deletable !== false && !t.busy) {
         row += '<button class="rowact" type="button" data-delete="' + BlocksCore.esc(t.id) + '" aria-label="删除这段对话" title="删除这段对话">' + TRASH + "</button>";
       }
@@ -265,8 +267,11 @@ if (typeof document !== "undefined") (function () {
         list = list.map(function (t) { return Object.assign({}, t, { current: t.id === pendingThread }); });
       }
       threads = list;
+      threadsLoaded = true;
       drawThreads();
-    }).catch(function () {});
+    }).catch(function () {
+      if (!threadsLoaded) $("threads").innerHTML = '<div class="empty">没连上本机服务，请稍后再试</div>';
+    });
   }
 
   function drawBlocks(data) {
@@ -300,11 +305,20 @@ if (typeof document !== "undefined") (function () {
   function fetchBlocks() {
     if (!state || currentView !== "main") return Promise.resolve();
     return getJson("/api/blocks/list").then(function (d) {
+      blocksLoaded = true;
       drawBlocks(d);
-    }).catch(function () {});
+    }).catch(function () {
+      if (!blocksLoaded) $("blocksList").innerHTML = '<div class="empty">没连上本机服务，请稍后再试</div>';
+    });
   }
 
   function startLoops() {
+    if (loopsOn) {
+      fetchThreads();
+      fetchBlocks();
+      return;
+    }
+    loopsOn = true;
     if (!threadTimer) {
       var runThreads = function () {
         fetchThreads().then(function () {
@@ -333,20 +347,29 @@ if (typeof document !== "undefined") (function () {
   });
 
   $("bindChange").addEventListener("click", function () {
-    showBindCard("bind");
+    if (!checking) showBindCard("bind", "reconnect");
   });
 
   $("bindBack").addEventListener("click", function () {
-    if (canReturnToMain) showMainView();
+    if (checking) return;
+    if (returnTo === "main") showMainView();
+    else if (returnTo === "reconnect") showBindCard("reconnect");
   });
 
   $("settingsBtn").addEventListener("click", function () {
-    showBindCard("bind");
+    showBindCard("bind", "main");
   });
 
+  function setChecking(on) {
+    checking = on;
+    $("bindCheck").disabled = on;
+    $("bindCheck").textContent = on ? "检测中…" : "检测";
+    $("bindBack").disabled = on;
+    $("bindChange").disabled = on;
+  }
+
   $("bindCheck").addEventListener("click", function () {
-    var btn = $("bindCheck");
-    if (btn.disabled) return;
+    if (checking) return;
     var providers = (state && state.providers) || [];
     var form = {
       provider: $("bindProvider").value,
@@ -360,17 +383,15 @@ if (typeof document !== "undefined") (function () {
       return;
     }
     var rawKey = check.body.api_key;
-    btn.disabled = true;
-    btn.textContent = "检测中…";
+    setChecking(true);
     setBindFeedback("", "");
 
     var isReconnect = currentView === "reconnect";
     var url = isReconnect ? "/api/blocks/connect" : "/api/blocks/bind";
-    var payload = isReconnect ? { api_key: rawKey } : check.body;
+    var payload = isReconnect ? { api_key: rawKey, check: true } : check.body;
 
     postJson(url, payload).then(function (res) {
-      btn.disabled = false;
-      btn.textContent = "检测";
+      setChecking(false);
       if (res && res.ok) {
         var account = res.key_account || (state && state.key_account) || "";
         saveKeyToMac(account, rawKey);
@@ -390,8 +411,7 @@ if (typeof document !== "undefined") (function () {
         setBindFeedback(BlocksCore.bindResultText(res), "bad");
       }
     }).catch(function (err) {
-      btn.disabled = false;
-      btn.textContent = "检测";
+      setChecking(false);
       setBindFeedback(err.message || "没连上本机服务，请稍后再试", "bad");
     });
   });

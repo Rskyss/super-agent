@@ -481,6 +481,19 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"error": "还没绑定行政"}, 409)
                 return
             base_url = setting.get("base_url") or (find_provider(setting["provider"]) or {}).get("base_url", "")
+            if body.get("check") is True:  # 用户手填的密钥先发一句试试；窗口从钥匙串自动重连的不测，不多花额度
+                try:
+                    card = {"id": "connect-" + uuid.uuid4().hex[:8], "kind": "llm_api", "name": "行政",
+                            "provider": setting["provider"], "base_url": base_url, "model": setting["model"],
+                            "key_account": account_for(setting["provider"], base_url)}
+                    result = blocks_check.check_api(card, key, record=False,
+                                                    client_factory=self.server.blocks_client_factory)
+                except Exception as exc:  # noqa: BLE001
+                    result = {"ok": False, "reason": blocks_check._mask(str(exc), key) or "检测出错"}
+                if not result.get("ok"):
+                    self._json({"ok": False, "reason": result.get("reason") or "",
+                                "how": result.get("how") or "检查密钥，再试一次"})
+                    return
             try:
                 client = self._blocks_client(setting["provider"], base_url, setting["model"], key)
             except Exception:  # noqa: BLE001 — 原文可能带着密钥
