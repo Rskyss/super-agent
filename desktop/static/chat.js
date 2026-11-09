@@ -120,13 +120,21 @@ var ChatCore = (function () {
         }
         break;
       case "proposal":
-        this._push({
-          kind: "proposal", id: ev.id, proposalKind: ev.kind || "task",
+        var pkind = ev.kind || "task";
+        var pblock = {
+          kind: "proposal", id: ev.id, proposalKind: pkind,
           title: ev.title || "", do: ev.do || "", not_do: ev.not_do || "", done_when: ev.done_when || "",
           role: ev.role || "", tool: ev.tool || "", before: ev.before != null ? ev.before : "",
           profile: ev.profile || "", text: ev.text || "",
           state: ev.state || "open", card: ev.card || "",
-        });
+        };
+        if (isBlockKind(pkind)) {
+          pblock.info = {};
+          ["install", "tool", "label", "command", "source", "needs", "minutes", "block", "name", "verified", "preview", "replaces", "provider", "model"].forEach(function (k) {
+            if (ev[k] != null) pblock.info[k] = ev[k];
+          });
+        }
+        this._push(pblock);
         break;
       case "proposal_done":
         for (i = this.blocks.length - 1; i >= 0; i--) {
@@ -220,7 +228,57 @@ var ChatCore = (function () {
     }
     return { clearMain: false, open: state.current === id ? "fresh" : null };
   }
-  return { esc: esc, md: md, Model: Model, actsSummary: actsSummary, usageText: usageText, modelFrom: modelFrom, needsOpen: needsOpen, cardInfoRows: cardInfoRows, afterThreadDeleted: afterThreadDeleted };
+
+  function isBlockKind(kind) {
+    return ["install", "connect", "connect_api"].indexOf(kind) !== -1;
+  }
+
+  function blockCard(b) {
+    var info = b.info || {};
+    if (b.proposalKind === "install") {
+      var rows = [
+        { label: "来源", text: info.source },
+        { label: "会执行的命令", text: info.command, code: true },
+        { label: "大概要多久", text: "约 " + info.minutes + " 分钟" }
+      ];
+      if (info.needs) rows.push({ label: "要先有", text: info.needs === "npm" ? "npm（装 Node 时自带）" : (info.needs === "brew" ? "Homebrew" : info.needs) });
+      return { title: info.label, rows: rows, needsKey: false, confirmText: "确认安装", warn: "" };
+    }
+    if (b.proposalKind === "connect") {
+      var warn = info.verified ? "" : "未核实，有风险：确认前看清要运行的完整命令";
+      var rows = [];
+      if (!info.verified) rows.push({ label: "要运行的完整命令", text: info.preview, code: true });
+      if (info.replaces) rows.push({ label: "会替换", text: "基础层里的「" + info.replaces + "」" });
+      return { title: info.name, rows: rows, needsKey: false, confirmText: info.verified ? "确认并检测" : "看过了，确认检测", warn: warn };
+    }
+    if (b.proposalKind === "connect_api") {
+      var prov = { tencent: "腾讯云", bailian: "阿里百炼", other: "其他" }[info.provider] || info.provider;
+      var rows = [{ label: "服务商", text: prov }, { label: "模型", text: info.model }, { label: "地址", text: info.block.base_url }];
+      if (info.replaces) rows.push({ label: "会替换", text: "基础层里的「" + info.replaces + "」" });
+      return { title: info.name, rows: rows, needsKey: true, confirmText: "检测", warn: "" };
+    }
+    return { title: b.title, rows: ChatCore.cardInfoRows(b), needsKey: false, confirmText: "确认" };
+  }
+
+  function blockDoneTitle(b) {
+    if (b.state === "confirmed") {
+        if (b.proposalKind === "install") return "已确认安装：" + b.info.label;
+        if (b.proposalKind === "connect" || b.proposalKind === "connect_api") return "已确认接入：" + b.info.name;
+    }
+    return { cancelled: "好的，先不做。", replaced: "已换成新的提议" }[b.state] || b.title;
+  }
+
+  function jobView(job) {
+    if (!job) return { state: "lost", text: "这次的结果没留下来（超级助手重开过）。可以在左边基础层里看，或者跟行政说重新提议", lines: [], canSave: false };
+    if (!job.done) return { state: "running", text: job.kind === "install" ? "正在安装…" : "正在检测…", lines: job.kind === "install" ? (job.tail || []) : [], canSave: false };
+    if (job.error) return { state: "fail", text: job.error, lines: job.tail || [], canSave: false };
+    var res = job.result || {};
+    if (!res.ok) return { state: "fail", text: (res.reason || "") + (res.how ? "。" + res.how : (res.reason ? "。" : "没成功，原因没查出来，跟行政说一声")), lines: job.tail || [], canSave: false };
+    if (job.kind === "install") return { state: "ok", text: res.reason + "。跟行政说一声，它会接着帮你接进基础层", lines: job.tail || [], canSave: false };
+    return { state: "ok", text: (job.saved ? "检测通过 · " + res.seconds + " 秒 · 已放进基础层" : "检测通过 · " + res.seconds + " 秒"), lines: [], canSave: !job.saved };
+  }
+
+  return { esc: esc, md: md, Model: Model, actsSummary: actsSummary, usageText: usageText, modelFrom: modelFrom, needsOpen: needsOpen, cardInfoRows: cardInfoRows, afterThreadDeleted: afterThreadDeleted, isBlockKind: isBlockKind, blockCard: blockCard, blockDoneTitle: blockDoneTitle, jobView: jobView };
 })();
 
 if (typeof module !== "undefined") module.exports = ChatCore;
@@ -248,6 +306,88 @@ if (typeof document !== "undefined") (function () {
 
   function imageUrl(path) {
     return "/api/chat/image?" + new URLSearchParams({ project: project, path: path, token: token }).toString();
+  }
+
+  var proposalJobs = {};
+  var proposalKeys = {};
+
+  function touchProposal(pid) {
+    for (var i = 0; i < model.blocks.length; i++) {
+      if (model.blocks[i].kind === "proposal" && model.blocks[i].id === pid) {
+        model._touch(model.blocks[i]);
+      }
+    }
+    render();
+  }
+
+  function startJobPoll(pid, jobId) {
+    var rec = proposalJobs[pid] || (proposalJobs[pid] = { job: jobId, view: null, saved: false, timer: null });
+    rec.job = jobId;
+    if (rec.timer) return;
+    function tick() {
+      fetch("/api/blocks/job?" + new URLSearchParams({ id: jobId, token: token }).toString())
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (d) {
+          if (!d) {
+            rec.view = ChatCore.jobView(null);
+            rec.timer = null;
+            delete proposalKeys[pid];
+            touchProposal(pid);
+            return;
+          }
+          rec.saved = !!d.saved;
+          rec.view = ChatCore.jobView(d);
+          if (d.done && rec.view.state !== "ok") delete proposalKeys[pid];
+          touchProposal(pid);
+          if (!d.done) {
+            rec.timer = setTimeout(tick, 1000);
+          } else {
+            rec.timer = null;
+          }
+        })
+        .catch(function () {
+          rec.timer = null;
+        });
+    }
+    tick();
+  }
+
+  function ensureProposalJob(pid) {
+    if (proposalJobs[pid]) return;
+    var rec = proposalJobs[pid] = { job: "", view: null, saved: false, timer: null, asked: true };
+    fetch("/api/blocks/job?" + new URLSearchParams({ proposal: pid, token: token }).toString())
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (d) {
+        if (!d) {
+          rec.view = ChatCore.jobView(null);
+          touchProposal(pid);
+          return;
+        }
+        rec.job = d.job || "";
+        rec.saved = !!d.saved;
+        rec.view = ChatCore.jobView(d);
+        touchProposal(pid);
+        if (!d.done && rec.job) {
+          startJobPoll(pid, rec.job);
+        }
+      })
+      .catch(function () {
+        rec.view = ChatCore.jobView(null);
+        touchProposal(pid);
+      });
+  }
+
+  function passKeyToWindow(account, key) {
+    if (!account || !key) return;
+    var handler = null;
+    try {
+      if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.blocksKey) {
+        handler = window.webkit.messageHandlers.blocksKey;
+      } else if (window.parent && window.parent !== window && window.parent.webkit && window.parent.webkit.messageHandlers && window.parent.webkit.messageHandlers.blocksKey) {
+        handler = window.parent.webkit.messageHandlers.blocksKey;
+      }
+      if (handler) handler.postMessage({ account: account, key: key });
+    } catch (_) {}
   }
 
   function renderBlock(b, idx) {
@@ -299,70 +439,160 @@ if (typeof document !== "undefined") (function () {
         if (String(tool).indexOf("custom:") === 0) return "自定义命令";
         return ({ codex: "Codex", cursor: "Cursor", agy: "agy", none: "不复查" })[tool] || tool;
       }
-      var isTeam = b.proposalKind === "team", isProfile = b.proposalKind === "profile";
-      var isRevise = b.proposalKind === "revise";
-      var isRevise = b.proposalKind === "revise";
-      var result = isRevise ? {
-        confirmed: "已确认，开始修改。",
-        cancelled: "好的，先不改。",
-        replaced: "已换成新的说法",
-      } : isProfile ? {
-        confirmed: "项目说明已保存。",
-        cancelled: "好的，先不保存。",
-        replaced: "已换成新的提议",
-      } : isTeam ? {
-        confirmed: "团队设置已更新。",
-        cancelled: "好的，先不改团队设置。",
-        replaced: "已换成新的提议",
-      } : {
-        confirmed: b.card ? ("已生成卡片 " + b.card) : "已确认",
-        cancelled: "好的，先不做。",
-        replaced: "已换成新的提议",
-      };
-      result = result[b.state];
       el.className = "ask proposal" + (b.state === "open" ? "" : (b.state === "cancelled" ? " no" : " done"));
-      if (b.state === "open") {
-        el.innerHTML = "<h3></h3><div class=\"rows\"></div>" +
-          "<div class=\"btns\"><button class=\"btn primary\" data-prop=\"confirm\">确认</button>" +
-          "<button class=\"btn\" data-prop=\"cancel\">先不做</button></div>";
-        if (isRevise) {
-          el.querySelector("h3").textContent = "继续改？";
-          var note = document.createElement("p");
-          note.textContent = b.text || "";
-          el.querySelector(".rows").appendChild(note);
-        } else if (isProfile) {
-          el.querySelector("h3").textContent = "保存项目说明？";
-          var draft = document.createElement("div");
-          draft.innerHTML = "<span>内容</span><p></p>";
-          draft.querySelector("p").textContent = b.profile;
-          draft.querySelector("p").style.whiteSpace = "pre-wrap";
-          el.querySelector(".rows").appendChild(draft);
-        } else if (isTeam) {
-          el.querySelector("h3").textContent = "改团队设置？";
-          var row = document.createElement("div");
-          var beforeT = b.before === "" || b.before == null ? "还没选" : propToolLabel(b.before);
-          row.innerHTML = "<span></span><p></p>";
-          row.querySelector("span").textContent = propRoleLabel(b.role);
-          row.querySelector("p").textContent = beforeT + " → " + propToolLabel(b.tool);
-          el.querySelector(".rows").appendChild(row);
-        } else {
-          el.querySelector("h3").textContent = "变成任务？";
-          el.querySelector(".rows").innerHTML =
-            "<div><span>要做什么</span><p></p></div>" +
-            "<div><span>不做什么</span><p></p></div>" +
-            "<div><span>怎么算做完</span><p></p></div>";
-          var ps = el.querySelectorAll(".rows p");
-          ps[0].textContent = b.do; ps[1].textContent = b.not_do; ps[2].textContent = b.done_when;
-          if (b.title) {
-            var title = document.createElement("p");
-            title.className = "prop-title";
-            title.textContent = b.title;
-            el.querySelector("h3").after(title);
+      if (ChatCore.isBlockKind(b.proposalKind)) {
+        if (b.state === "open") {
+          var bc = ChatCore.blockCard(b);
+          el.innerHTML = "<h3></h3><div class=\"rows\"></div>" +
+            "<div class=\"btns\"><button class=\"btn primary\" data-prop=\"confirm\"></button>" +
+            "<button class=\"btn\" data-prop=\"cancel\">先不做</button></div>";
+          el.querySelector("h3").textContent = bc.title || "";
+          el.querySelector("[data-prop=\"confirm\"]").textContent = bc.confirmText || "确认";
+          if (bc.warn) {
+            var warnP = document.createElement("p");
+            warnP.className = "prop-warn";
+            warnP.textContent = bc.warn;
+            el.querySelector("h3").after(warnP);
           }
+          var rowsEl = el.querySelector(".rows");
+          bc.rows.forEach(function (r) {
+            var d = document.createElement("div");
+            var sp = document.createElement("span");
+            sp.textContent = r.label || "";
+            var p = document.createElement("p");
+            if (r.code) {
+              var cd = document.createElement("code");
+              cd.textContent = r.text || "";
+              p.appendChild(cd);
+            } else if (r.label === "来源" && /^https:\/\//.test(String(r.text || ""))) {
+              var a = document.createElement("a");
+              a.href = String(r.text);
+              a.target = "_blank";
+              a.rel = "noopener";
+              a.textContent = r.text;
+              p.appendChild(a);
+            } else {
+              p.textContent = r.text || "";
+            }
+            d.appendChild(sp);
+            d.appendChild(p);
+            rowsEl.appendChild(d);
+          });
+          if (bc.needsKey) {
+            var keyBox = document.createElement("div");
+            keyBox.className = "prop-key";
+            var inp = document.createElement("input");
+            inp.type = "password";
+            inp.setAttribute("autocomplete", "off");
+            inp.placeholder = "在这里填入 API 密钥";
+            var tip = document.createElement("small");
+            tip.textContent = "密钥只填在这里，别贴在聊天里";
+            keyBox.appendChild(inp);
+            keyBox.appendChild(tip);
+            rowsEl.after(keyBox);
+          }
+          var errP = document.createElement("p");
+          errP.className = "prop-result fail";
+          errP.hidden = true;
+          el.querySelector(".btns").before(errP);
+        } else if (b.state === "confirmed") {
+          el.innerHTML = "<h3></h3>";
+          el.querySelector("h3").textContent = ChatCore.blockDoneTitle(b);
+          ensureProposalJob(b.id);
+          var rec = proposalJobs[b.id];
+          var vw = rec && rec.view;
+          if (vw) {
+            if (vw.lines && vw.lines.length) {
+              var preOut = document.createElement("pre");
+              preOut.className = "prop-output";
+              preOut.textContent = vw.lines.slice(-50).join("\n");
+              el.appendChild(preOut);
+              setTimeout(function () { preOut.scrollTop = preOut.scrollHeight; }, 0);
+            }
+            var resP = document.createElement("p");
+            resP.className = "prop-result " + (vw.state || "");
+            resP.textContent = vw.text || "";
+            el.appendChild(resP);
+            if (vw.canSave) {
+              var btns = document.createElement("div");
+              btns.className = "btns";
+              var saveBtn = document.createElement("button");
+              saveBtn.className = "btn primary";
+              saveBtn.setAttribute("data-save-job", rec.job || "");
+              saveBtn.textContent = "放进基础层";
+              btns.appendChild(saveBtn);
+              el.appendChild(btns);
+            }
+          }
+        } else {
+          delete proposalKeys[b.id];
+          el.innerHTML = "<h3></h3>";
+          el.querySelector("h3").textContent = ChatCore.blockDoneTitle(b);
         }
       } else {
-        el.innerHTML = "<h3></h3>";
-        el.querySelector("h3").textContent = result || b.state;
+        var isTeam = b.proposalKind === "team", isProfile = b.proposalKind === "profile";
+        var isRevise = b.proposalKind === "revise";
+        var result = isRevise ? {
+          confirmed: "已确认，开始修改。",
+          cancelled: "好的，先不改。",
+          replaced: "已换成新的说法",
+        } : isProfile ? {
+          confirmed: "项目说明已保存。",
+          cancelled: "好的，先不保存。",
+          replaced: "已换成新的提议",
+        } : isTeam ? {
+          confirmed: "团队设置已更新。",
+          cancelled: "好的，先不改团队设置。",
+          replaced: "已换成新的提议",
+        } : {
+          confirmed: b.card ? ("已生成卡片 " + b.card) : "已确认",
+          cancelled: "好的，先不做。",
+          replaced: "已换成新的提议",
+        };
+        result = result[b.state];
+        if (b.state === "open") {
+          el.innerHTML = "<h3></h3><div class=\"rows\"></div>" +
+            "<div class=\"btns\"><button class=\"btn primary\" data-prop=\"confirm\">确认</button>" +
+            "<button class=\"btn\" data-prop=\"cancel\">先不做</button></div>";
+          if (isRevise) {
+            el.querySelector("h3").textContent = "继续改？";
+            var note = document.createElement("p");
+            note.textContent = b.text || "";
+            el.querySelector(".rows").appendChild(note);
+          } else if (isProfile) {
+            el.querySelector("h3").textContent = "保存项目说明？";
+            var draft = document.createElement("div");
+            draft.innerHTML = "<span>内容</span><p></p>";
+            draft.querySelector("p").textContent = b.profile;
+            draft.querySelector("p").style.whiteSpace = "pre-wrap";
+            el.querySelector(".rows").appendChild(draft);
+          } else if (isTeam) {
+            el.querySelector("h3").textContent = "改团队设置？";
+            var row = document.createElement("div");
+            var beforeT = b.before === "" || b.before == null ? "还没选" : propToolLabel(b.before);
+            row.innerHTML = "<span></span><p></p>";
+            row.querySelector("span").textContent = propRoleLabel(b.role);
+            row.querySelector("p").textContent = beforeT + " → " + propToolLabel(b.tool);
+            el.querySelector(".rows").appendChild(row);
+          } else {
+            el.querySelector("h3").textContent = "变成任务？";
+            el.querySelector(".rows").innerHTML =
+              "<div><span>要做什么</span><p></p></div>" +
+              "<div><span>不做什么</span><p></p></div>" +
+              "<div><span>怎么算做完</span><p></p></div>";
+            var ps = el.querySelectorAll(".rows p");
+            ps[0].textContent = b.do; ps[1].textContent = b.not_do; ps[2].textContent = b.done_when;
+            if (b.title) {
+              var title = document.createElement("p");
+              title.className = "prop-title";
+              title.textContent = b.title;
+              el.querySelector("h3").after(title);
+            }
+          }
+        } else {
+          el.innerHTML = "<h3></h3>";
+          el.querySelector("h3").textContent = result || b.state;
+        }
       }
       el.setAttribute("data-proposal", b.id);
     } else if (b.kind === "note") {
@@ -425,13 +655,67 @@ if (typeof document !== "undefined") (function () {
     var prop = t.closest("[data-prop]");
     if (prop) {
       var box = prop.closest("[data-proposal]");
+      var pid = box.getAttribute("data-proposal");
+      var decision = prop.getAttribute("data-prop");
       box.querySelectorAll("button").forEach(function (b) { b.disabled = true; });
-      api("/api/clerk/proposal", {
-        conversation: currentThread || "", id: box.getAttribute("data-proposal"),
-        decision: prop.getAttribute("data-prop"),
+      var body = {
+        conversation: currentThread || "", id: pid,
+        decision: decision,
+      };
+      var keyInp = box.querySelector(".prop-key input");
+      var keyVal = "";
+      if (decision === "confirm" && keyInp) {
+        keyVal = keyInp.value.trim();
+        if (!keyVal) {
+          var err = box.querySelector(".prop-result.fail");
+          err.textContent = "请先在密钥框里填好密钥";
+          err.hidden = false;
+          box.querySelectorAll("button").forEach(function (b) { b.disabled = false; });
+          return;
+        }
+        body.api_key = keyVal;
+      } else if (decision !== "confirm") {
+        delete proposalKeys[pid];
+      }
+      api("/api/clerk/proposal", body).then(function (d) {
+        if (keyInp) keyInp.value = "";
+        if (keyVal) proposalKeys[pid] = keyVal;
+        if (d && d.job) startJobPoll(pid, d.job);
       }).catch(function (err) {
         showError(err.message);
         box.querySelectorAll("button").forEach(function (b) { b.disabled = false; });
+      });
+      return;
+    }
+    var save = t.closest("[data-save-job]");
+    if (save) {
+      save.disabled = true;
+      save.textContent = "放进中…";
+      var box = save.closest("[data-proposal]");
+      var pid = box ? box.getAttribute("data-proposal") : "";
+      api("/api/blocks/save", { job: save.getAttribute("data-save-job") }).then(function (d) {
+        var key = proposalKeys[pid];
+        if (d && d.key_account && key) passKeyToWindow(d.key_account, key);
+        delete proposalKeys[pid];
+        var rec = proposalJobs[pid];
+        if (rec) {
+          rec.saved = true;
+          if (rec.view) {
+            rec.view.canSave = false;
+            if (rec.view.text.indexOf("已放进基础层") === -1) rec.view.text += " · 已放进基础层";
+          }
+          touchProposal(pid);
+        }
+      }).catch(function (err) {
+        var resEl = box ? box.querySelector(".prop-result") : null;
+        if (resEl) {
+          resEl.className = "prop-result fail";
+          resEl.textContent = err.message;
+        } else {
+          showError(err.message);
+        }
+        save.textContent = "放进基础层";
+        save.disabled = false;
       });
     }
   });

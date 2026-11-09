@@ -443,15 +443,18 @@ class Handler(BaseHTTPRequestHandler):
                         "last_check": blocks.last_record(card_id, home, type="check"),
                         "last_install": blocks.last_record(card_id, home, type="install")})
         elif path == "/api/blocks/job":
-            job = self.server.blocks_jobs.get(query.get("id", ""))
+            job_id = query.get("id", "")
+            if not job_id and query.get("proposal"):
+                job_id = self.server.blocks_proposal_jobs.get(query.get("proposal"), "")
+            job = self.server.blocks_jobs.get(job_id)
             if not job:
                 self._json({"error": "没有这个任务"}, 404)
                 return
-            answer = {"kind": job["kind"], "done": job["done"], "result": job["result"], "error": job["error"]}
+            answer = {"job": job_id, "kind": job["kind"], "done": job["done"], "result": job["result"], "error": job["error"], "saved": bool(job.get("saved"))}
             if job["kind"] == "install":
                 if "tail" in job:
                     answer["tail"] = list(job["tail"])
-                elif self.server.blocks_installing == query.get("id"):
+                elif self.server.blocks_installing == job_id:
                     answer["tail"] = blocks_install.output_tail()
                 else:
                     answer["tail"] = []

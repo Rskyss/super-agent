@@ -1,4 +1,12 @@
 /* 聊天页面：内容居中，调度员的话直接排版，只有你发的内容是气泡。依赖 theme.css */
+.prop-output { font: var(--fs-sm) var(--font-mono); background: var(--bg-side); border-radius: var(--r-md); padding: 10px 12px; margin: 6px 0 10px; max-height: 240px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; }
+.prop-warn { color: var(--accent); font-size: var(--fs-sm); margin: 0 0 10px; }
+.prop-key { display: flex; flex-direction: column; gap: 6px; margin: 0 0 12px; }
+.prop-key input { font: var(--fs-base) var(--font-mono); color: var(--text); background: var(--bg-side); border: 0; box-shadow: inset 0 0 0 1px var(--hair-2); border-radius: var(--r-md); padding: 7px 10px; width: 100%; }
+.prop-key small { font-size: var(--fs-sm); color: var(--dim); }
+.prop-result { font-size: var(--fs-sm); margin: 8px 0; color: var(--dim); }
+.prop-result.ok { color: var(--ok); }
+.prop-result.fail { color: var(--bad); }
 .chat { height: 100%; display: grid; grid-template-rows: auto minmax(0, 1fr) auto auto; }
 .chat-head { display: flex; align-items: center; gap: 8px; padding: 2px 12px 8px 20px; min-height: 40px; flex-wrap: wrap; }
 #cardHead, #cardInfo { flex: 1 0 100%; }
