@@ -78,9 +78,16 @@ var BlocksCore = {
     var items = scan.items || [];
     var blockMap = {};
     (blocks || []).forEach(function (b) { blockMap[b.id] = b; });
+    // 工具报版本常自带名字（“Homebrew 7.0.12”“git version 2.54.0”），前面已经写了名字，这里去掉免得重复
+    function shortVersion(v, label) {
+      v = String(v);
+      var name = String(label || "").toLowerCase() + " ";
+      if (name === " " || v.toLowerCase().indexOf(name) !== 0) return v;
+      return v.slice(name.length).replace(/^\s*version\s+/i, "").trim() || v;
+    }
     var rows = items.map(function (it) {
       var ok = it.status === "有" && it.login !== "没登录" && !it.note;
-      var text = it.status === "有" ? (it.version || "有") + (it.login === "已登录" ? " · 已登录" : (it.login === "没登录" ? " · 没登录" : "")) + (it.note ? " · " + it.note : "") : (it.status === "没有" ? "没有" : "装了，但超级助手找不到");
+      var text = it.status === "有" ? (it.version ? shortVersion(it.version, it.label) : "有") + (it.login === "已登录" ? " · 已登录" : (it.login === "没登录" ? " · 没登录" : "")) + (it.note ? " · " + it.note : "") : (it.status === "没有" ? "没有" : "装了，但超级助手找不到");
       var fix = it.fix || (it.note ? "跟行政说一声，它会帮你查" : "");
       return { name: it.name, label: it.label, ok: ok, text: text, fix: fix, why: it.why };
     });

@@ -9,6 +9,7 @@
 7. （复查）详情还在读取时仍显示上一块，点检测测的是上一块，新详情卡在“正在检测…”。点开就要清掉旧内容。
 8. （复查）离开又回到同一块时，路上那次查询回来会接着跟进旧任务；换块就作废旧的跟进。
 9. （复查）“正在检测…”“结果没留下来”的字要灰。
+10. （用户 2026-11-09）体检清单名字重复：“Homebrew Homebrew 7.0.12”“git git version 2.54.0”。版本开头是名字（和 version）就去掉。
 """
 import re
 import shutil
@@ -107,6 +108,30 @@ class LoginTextTest(unittest.TestCase):
             ' preview: "", key_account: "", last_check: null};'
             'var v = B.detailView(d, {name: "t", version: "1", login: ""});'
             'if (v.rows[3].text !== "查不了") { console.error(v.rows[3].text); process.exit(1); }'
+        ) % str(STATIC / "blocks.js")
+        proc = subprocess.run(["node", "-e", code], capture_output=True, text=True, timeout=30)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+
+
+class VersionTextTest(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("node"), "这台电脑没有 node")
+    def test_no_repeated_name(self):
+        code = (
+            'var B = require(%r);'
+            'function it(n, l, v, login) { return {name: n, label: l, kind: "tool", status: "有", version: v, login: login || null,'
+            ' why: "", note: "", fix: "", path: ""}; }'
+            'var rows = B.healthView({time: "", items: ['
+            ' it("brew", "Homebrew", "Homebrew 7.0.12"),'
+            ' it("git", "git", "git version 2.54.0 (Apple Git-157)"),'
+            ' it("codex", "Codex", "codex-cli 0.167.0", "已登录"),'
+            ' it("npm", "npm", "10.9.2"),'
+            ' it("x", "X", "X"),'
+            ' it("y", "Gitty", "git version 1.0"),'
+            ' it("z", "git", "git  version 3.0"),'
+            ' it("n", "N", 12)]}, []).rows.map(function (r) { return r.text; });'
+            'var want = ["7.0.12", "2.54.0 (Apple Git-157)", "codex-cli 0.167.0 · 已登录", "10.9.2", "X", "git version 1.0",'
+            ' "3.0", "12"];'
+            'if (JSON.stringify(rows) !== JSON.stringify(want)) { console.error(JSON.stringify(rows)); process.exit(1); }'
         ) % str(STATIC / "blocks.js")
         proc = subprocess.run(["node", "-e", code], capture_output=True, text=True, timeout=30)
         self.assertEqual(proc.returncode, 0, proc.stderr)
