@@ -256,6 +256,7 @@ if (typeof document !== "undefined") (function () {
     if (b) tell("superagent://card?id=" + encodeURIComponent(b.getAttribute("data-id")));
   });
   $("gear").addEventListener("click", function () { tell("superagent://settings"); });
+  $("blocksBtn").addEventListener("click", function () { tell("superagent://blocks"); });
   $("newChat").addEventListener("click", function () {
     pendingThread = null; threads = NavCore.markCurrent(threads, null); drawMarks();
     tell("superagent://new");

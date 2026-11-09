@@ -43,6 +43,7 @@
 //   --walk-list-look            只看左栏现在有什么，用来查重开软件后删掉的有没有回来
 //   --clerk-try <文件> [--clerk-base 地址]  用文件里的密钥走一次第一屏的测试和保存，结果写到“文件.result”
 //   --interrupt-answer <stay|leave>  调度员干活时切终端，代替用户回答提示
+//   --open-blocks               启动时顺手打开积木库窗口（走查截图用）
 import AppKit
 import Security
 import SwiftTerm
@@ -361,11 +362,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
     var serverOutput = ""
     var quitting = false    // 退出时是我们主动停掉数据服务，不算出错
     let chatToken = (0..<4).map { _ in String(format: "%08x", UInt32.random(in: .min ... .max)) }.joined()
+    lazy var blocks = BlocksWindow(app: self)  // 积木库窗口（BlocksWindow.swift）
 
     // MARK: 启动
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         buildMenu()
+        NotificationCenter.default.addObserver(self, selector: #selector(projectMenuWillAct(_:)),
+                                               name: NSMenu.willSendActionNotification, object: nil)
         guard let chosen = initialProject() else { NSApp.terminate(nil); return }
         project = chosen
         buildWindow()
@@ -379,10 +383,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
         showLeft(firstLeft(), opening: withOpening)
         if let dir = argValue("--snapshot") { scheduleSnapshot(into: dir) }
         if let file = argValue("--walk") { scheduleWalk(into: file) }
+        if CommandLine.arguments.contains("--open-blocks") { blocks.show() }
         NSApp.activate(ignoringOtherApps: true)
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+
+    /// 积木库开着时关项目窗口：只藏起来，对话和终端在后台照常跑，菜单“窗口 → 项目窗口”叫回来
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        guard sender === window, blocks.isOpen else { return true }
+        window.orderOut(nil)
+        return false
+    }
+
+    /// 积木库窗口关了：项目窗口也不在（藏着），两个都关了，退出
+    func blocksWindowClosed() {
+        if !window.isVisible && !window.isMiniaturized { NSApp.terminate(nil) }
+    }
 
     func applicationWillTerminate(_ notification: Notification) {
         quitting = true
@@ -729,6 +746,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
     @objc func toggleRight(_ sender: Any?) { setRightWanted(rightBox.isHidden) }
 
     func windowDidResize(_ notification: Notification) {
+        guard (notification.object as? NSWindow) === window else { return }
         window.contentView?.layoutSubtreeIfNeeded()   // 先让分隔视图拿到新宽度
         syncRight()
     }
@@ -1059,6 +1077,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
         // 隐藏的设置页发出的操作可能在切项目之后才到：不是当前项目的一律丢掉，否则 A 的选择会写进 B
         if url.host?.hasPrefix("clerk-") == true, value("project") != project.path { return }
         switch url.host {
+        case "blocks": blocks.show()
         case "saved":
             // 没接入的文件夹：调度员存在窗口自己的设置里
             if let who = value("dispatcher"), !who.isEmpty {
@@ -1285,6 +1304,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
         guard port == nil, let line = serverOutput.split(separator: "\n").first(where: { $0.hasPrefix("PORT=") }),
               let value = Int(line.dropFirst(5)) else { return }
         port = value
+        if blocks.isOpen { blocks.load(port: value, token: chatToken) }  // 服务重启换了端口，积木库跟着重连
         applyClerkSetting { [weak self] in  // 先按当前项目把行政连接交给本机服务，再打开聊天
             guard let self = self else { return }
             self.openAfterServer()
@@ -1811,6 +1831,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
                 ? "聊天连接停止了。可以用菜单「面板 → 刷新右栏」再试一次。"
                 : "聊天连接停止了。可以从菜单“对话 → 打开终端（高级）”继续。", background: "#17181b"), baseURL: nil)
         }
+        blocks.serverStopped()
     }
 
     /// 加载左栏和右栏（两边用同一份项目和选中状态）
@@ -1903,7 +1924,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
                                        ("打开终端（高级）", #selector(showTerminalView(_:)), "2")]))
         main.addItem(submenu("面板", [("刷新右栏", #selector(reloadPanel(_:)), "R"),
                                        ("收起或展开右栏", #selector(toggleRight(_:)), "\\")]))
-        main.addItem(submenu("窗口", [("最小化", #selector(NSWindow.performMiniaturize(_:)), "m")]))
+        main.addItem(submenu("窗口", [("最小化", #selector(NSWindow.performMiniaturize(_:)), "m"), ("积木库", #selector(openBlocks(_:)), ""), ("项目窗口", #selector(showProjectWindow(_:)), "")]))
         NSApp.mainMenu = main
     }
 
@@ -1916,6 +1937,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
         item.submenu = menu
         return item
     }
+
+    @objc func openBlocks(_ sender: Any?) { blocks.show() }
+
+    /// 项目窗口的菜单（文件、项目、对话、面板，含快捷键）只管项目窗口：积木库在前面或项目窗口藏着时，
+    /// 先把项目窗口叫到前面，用户看得到发生了什么，弹层也不会挂在看不见的窗口上（用户 2026-11-09 定）
+    @objc func projectMenuWillAct(_ note: Notification) {
+        guard let item = note.userInfo?["MenuItem"] as? NSMenuItem, window != nil, !window.isKeyWindow else { return }
+        var menu = item.menu
+        while let parent = menu?.supermenu, parent !== NSApp.mainMenu { menu = parent }
+        guard let title = menu?.title, ["文件", "项目", "对话", "面板"].contains(title) else { return }
+        window.makeKeyAndOrderFront(nil)
+    }
+    @objc func showProjectWindow(_ sender: Any?) { window.makeKeyAndOrderFront(nil) }
 
     @objc func openProject(_ sender: Any?) {
         guard let url = askForProject() else { return }
@@ -2001,6 +2035,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
         serverOutput = ""
         web.loadHTMLString(Self.message("正在启动流转面板…"), baseURL: nil)
         startServer()
+        if blocks.isOpen { blocks.load(port: nil, token: chatToken) }  // 积木库也改写“正在启动”，端口出来再重连
     }
 
     // MARK: 自测截图
