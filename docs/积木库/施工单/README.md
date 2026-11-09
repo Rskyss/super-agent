@@ -18,6 +18,7 @@
 | 55 | 6 | [55-本机服务接口.md](55-本机服务接口.md) | ✅ Gemini 施工，Claude 按复查修过 |
 | 56 | 7 前半 | [56-积木库页面上.md](56-积木库页面上.md) | ✅ Gemini 交付，Claude 验收修改 |
 | 57 | 7 中 | [57-积木库提议卡.md](57-积木库提议卡.md) | ✅ Gemini 交付，Claude 验收修改 |
+| 58 | 7 后半 | [58-体检卡和基础层详情.md](58-体检卡和基础层详情.md) | 待施工 |
 
 后面的单写好后会加到这里。**一次只做表里“待施工”的单，做完就停。**
 
@@ -96,3 +97,7 @@ cd desktop/mac && swift build
 57 号单，交给 Gemini 的话：
 
 > 读 `docs/积木库/施工单/README.md` 和 `docs/积木库/施工单/57-积木库提议卡.md`，严格按它施工。确认当前在 `blocks` 分支、工作区是干净的。只做 57 号单：只改 `desktop/static/chat.js`、`desktop/static/chat.css`、`desktop/server.py`；项目窗口提议卡的显示和行为不能变；`blocks.*`、`nav.*`、`panel.*`、`team.*`、`collab/`、`desktop/clerk/` 和任何测试都不要改。做完先跑 `python3 -m unittest discover -s tests -p 'test_acceptance_57_*.py'`，再跑全量 `python3 -m unittest discover -s tests`，都过了再提交一次（标题 `施工单 57：积木库提议卡`），把回执写进 `docs/积木库/施工单/回执.md` 并一起提交，然后停下。测试不合理就停下告诉我，不准改测试，也不准为了过测试写特殊判断。不要推送，施工中别在项目文件夹里留下试验文件。
+
+58 号单，交给 Gemini 的话：
+
+> 读 `docs/积木库/施工单/README.md` 和 `docs/积木库/施工单/58-体检卡和基础层详情.md`，严格按它施工。确认当前在 `blocks` 分支、工作区是干净的。只做 58 号单：只改 `desktop/static/blocks.html`、`desktop/static/blocks.js`、`desktop/static/blocks.css`；`chat.*`、`nav.*`、`panel.*`、`team.*`、`desktop/server.py`、`collab/`、`desktop/clerk/` 和任何测试都不要改。做完先跑 `python3 -m unittest discover -s tests -p 'test_acceptance_58_*.py'`，再跑全量 `python3 -m unittest discover -s tests`，都过了再提交一次（标题 `施工单 58：体检卡和基础层详情`），把回执写进 `docs/积木库/施工单/回执.md` 并一起提交，然后停下。测试不合理就停下告诉我，不准改测试，也不准为了过测试写特殊判断。不要推送，施工中别在项目文件夹里留下试验文件。
