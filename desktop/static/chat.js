@@ -249,13 +249,13 @@ var ChatCore = (function () {
       var rows = [];
       if (!info.verified) rows.push({ label: "要运行的完整命令", text: info.preview, code: true });
       if (info.replaces) rows.push({ label: "会替换", text: "基础层里的「" + info.replaces + "」" });
-      return { title: info.name, rows: rows, needsKey: false, confirmText: info.verified ? "确认并检测" : "看过了，确认检测", warn: warn };
+      return { title: "接进基础层：" + info.name, rows: rows, needsKey: false, confirmText: info.verified ? "确认并检测" : "看过了，确认检测", warn: warn };
     }
     if (b.proposalKind === "connect_api") {
       var prov = { tencent: "腾讯云", bailian: "阿里百炼", other: "其他" }[info.provider] || info.provider;
       var rows = [{ label: "服务商", text: prov }, { label: "模型", text: info.model }, { label: "地址", text: info.block.base_url }];
       if (info.replaces) rows.push({ label: "会替换", text: "基础层里的「" + info.replaces + "」" });
-      return { title: info.name, rows: rows, needsKey: true, confirmText: "检测", warn: "" };
+      return { title: "接进基础层：" + info.name, rows: rows, needsKey: true, confirmText: "检测", warn: "" };
     }
     return { title: b.title, rows: ChatCore.cardInfoRows(b), needsKey: false, confirmText: "确认" };
   }
@@ -273,8 +273,11 @@ var ChatCore = (function () {
     if (!job.done) return { state: "running", text: job.kind === "install" ? "正在安装…" : "正在检测…", lines: job.kind === "install" ? (job.tail || []) : [], canSave: false };
     if (job.error) return { state: "fail", text: job.error, lines: job.tail || [], canSave: false };
     var res = job.result || {};
-    if (!res.ok) return { state: "fail", text: (res.reason || "") + (res.how ? "。" + res.how : (res.reason ? "。" : "没成功，原因没查出来，跟行政说一声")), lines: job.tail || [], canSave: false };
-    if (job.kind === "install") return { state: "ok", text: res.reason + "。跟行政说一声，它会接着帮你接进基础层", lines: job.tail || [], canSave: false };
+    if (!res.ok) {
+      var why = res.reason ? res.reason + "。" + (res.how || "") : (res.how || "没成功，原因没查出来，跟行政说一声");
+      return { state: "fail", text: why, lines: job.tail || [], canSave: false };
+    }
+    if (job.kind === "install") return { state: "ok", text: res.how || (res.reason + "。跟行政说一声，它会接着帮你接进基础层"), lines: job.tail || [], canSave: false };
     return { state: "ok", text: (job.saved ? "检测通过 · " + res.seconds + " 秒 · 已放进基础层" : "检测通过 · " + res.seconds + " 秒"), lines: [], canSave: !job.saved };
   }
 
@@ -310,6 +313,14 @@ if (typeof document !== "undefined") (function () {
 
   var proposalJobs = {};
   var proposalKeys = {};
+  var confirming = {};  // 确认请求还没回话的提议：这时服务器还没登记任务，不按提议去查
+
+  function findProposal(pid) {
+    for (var i = 0; i < model.blocks.length; i++) {
+      if (model.blocks[i].kind === "proposal" && model.blocks[i].id === pid) return model.blocks[i];
+    }
+    return null;
+  }
 
   function touchProposal(pid) {
     for (var i = 0; i < model.blocks.length; i++) {
@@ -321,16 +332,17 @@ if (typeof document !== "undefined") (function () {
   }
 
   function startJobPoll(pid, jobId) {
-    var rec = proposalJobs[pid] || (proposalJobs[pid] = { job: jobId, view: null, saved: false, timer: null });
+    var rec = proposalJobs[pid] || (proposalJobs[pid] = { job: jobId, view: null, saved: false, polling: false });
     rec.job = jobId;
-    if (rec.timer) return;
+    if (rec.polling) return;
+    rec.polling = true;  // 请求发出前就占住：同一个任务只跑一套
     function tick() {
       fetch("/api/blocks/job?" + new URLSearchParams({ id: jobId, token: token }).toString())
         .then(function (r) { return r.ok ? r.json() : null; })
         .then(function (d) {
           if (!d) {
             rec.view = ChatCore.jobView(null);
-            rec.timer = null;
+            rec.polling = false;
             delete proposalKeys[pid];
             touchProposal(pid);
             return;
@@ -340,24 +352,25 @@ if (typeof document !== "undefined") (function () {
           if (d.done && rec.view.state !== "ok") delete proposalKeys[pid];
           touchProposal(pid);
           if (!d.done) {
-            rec.timer = setTimeout(tick, 1000);
+            setTimeout(tick, 1000);
           } else {
-            rec.timer = null;
+            rec.polling = false;
           }
         })
         .catch(function () {
-          rec.timer = null;
+          setTimeout(tick, 2000);  // 网络断一下：过一会儿再问，不停在“正在安装…”
         });
     }
     tick();
   }
 
   function ensureProposalJob(pid) {
-    if (proposalJobs[pid]) return;
-    var rec = proposalJobs[pid] = { job: "", view: null, saved: false, timer: null, asked: true };
+    if (proposalJobs[pid] || confirming[pid]) return;
+    var rec = proposalJobs[pid] = { job: "", view: null, saved: false, polling: false };
     fetch("/api/blocks/job?" + new URLSearchParams({ proposal: pid, token: token }).toString())
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (d) {
+        if (rec.polling) return;  // 确认的回话已经开始跟进了
         if (!d) {
           rec.view = ChatCore.jobView(null);
           touchProposal(pid);
@@ -372,8 +385,15 @@ if (typeof document !== "undefined") (function () {
         }
       })
       .catch(function () {
-        rec.view = ChatCore.jobView(null);
+        if (rec.polling) return;
+        rec.view = { state: "lost", text: "没连上本机服务，过一会儿再试…", lines: [], canSave: false };
         touchProposal(pid);
+        setTimeout(function () {  // 连不上不等于结果没了：过一会儿重新问一次
+          if (proposalJobs[pid] === rec && !rec.polling) {
+            delete proposalJobs[pid];
+            touchProposal(pid);
+          }
+        }, 3000);
       });
   }
 
@@ -507,12 +527,28 @@ if (typeof document !== "undefined") (function () {
               preOut.className = "prop-output";
               preOut.textContent = vw.lines.slice(-50).join("\n");
               el.appendChild(preOut);
-              setTimeout(function () { preOut.scrollTop = preOut.scrollHeight; }, 0);
+              // 用户往上翻着看的时候，新输出来了也不拉回最底下
+              var oldPre = drawn[idx] && drawn[idx].querySelector ? drawn[idx].querySelector(".prop-output") : null;
+              var nearEnd = !oldPre || oldPre.scrollHeight - oldPre.scrollTop - oldPre.clientHeight < 24;
+              var keepTop = oldPre ? oldPre.scrollTop : 0;
+              setTimeout(function () { preOut.scrollTop = nearEnd ? preOut.scrollHeight : keepTop; }, 0);
             }
             var resP = document.createElement("p");
             resP.className = "prop-result " + (vw.state || "");
             resP.textContent = vw.text || "";
             el.appendChild(resP);
+            if (rec.keyMissing) {
+              var missP = document.createElement("p");
+              missP.className = "prop-warn";
+              missP.textContent = "密钥没带上（页面刷新过）：这块暂时用不了。跟行政说重新提议，再填一次密钥";
+              el.appendChild(missP);
+            }
+            if (rec.saveError) {
+              var saveErrP = document.createElement("p");
+              saveErrP.className = "prop-result fail";
+              saveErrP.textContent = rec.saveError;
+              el.appendChild(saveErrP);
+            }
             if (vw.canSave) {
               var btns = document.createElement("div");
               btns.className = "btns";
@@ -674,14 +710,22 @@ if (typeof document !== "undefined") (function () {
           return;
         }
         body.api_key = keyVal;
+        var hint = box.querySelector(".prop-result.fail");
+        if (hint) hint.hidden = true;
       } else if (decision !== "confirm") {
         delete proposalKeys[pid];
       }
+      var blockKind = findProposal(pid) && ChatCore.isBlockKind(findProposal(pid).proposalKind);
+      if (decision === "confirm" && blockKind) confirming[pid] = true;
       api("/api/clerk/proposal", body).then(function (d) {
+        delete confirming[pid];
         if (keyInp) keyInp.value = "";
         if (keyVal) proposalKeys[pid] = keyVal;
         if (d && d.job) startJobPoll(pid, d.job);
+        else if (blockKind && decision === "confirm") touchProposal(pid);  // 没带任务编号（比如点过一次）：按提议查一次
       }).catch(function (err) {
+        delete confirming[pid];
+        if (blockKind && decision === "confirm") touchProposal(pid);  // 服务器可能已经确认了：按提议查一次，免得卡片一直没结果
         showError(err.message);
         box.querySelectorAll("button").forEach(function (b) { b.disabled = false; });
       });
@@ -700,6 +744,8 @@ if (typeof document !== "undefined") (function () {
         var rec = proposalJobs[pid];
         if (rec) {
           rec.saved = true;
+          rec.saveError = "";
+          rec.keyMissing = !!(d && d.key_account && !key);
           if (rec.view) {
             rec.view.canSave = false;
             if (rec.view.text.indexOf("已放进基础层") === -1) rec.view.text += " · 已放进基础层";
@@ -707,15 +753,15 @@ if (typeof document !== "undefined") (function () {
           touchProposal(pid);
         }
       }).catch(function (err) {
-        var resEl = box ? box.querySelector(".prop-result") : null;
-        if (resEl) {
-          resEl.className = "prop-result fail";
-          resEl.textContent = err.message;
+        var rec = proposalJobs[pid];
+        if (rec) {
+          rec.saveError = err.message;  // 记下来，下次重画时还在；按钮跟着重画恢复
+          touchProposal(pid);
         } else {
           showError(err.message);
+          save.textContent = "放进基础层";
+          save.disabled = false;
         }
-        save.textContent = "放进基础层";
-        save.disabled = false;
       });
     }
   });
