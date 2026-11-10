@@ -26,6 +26,14 @@ body {
   overflow-y: auto;
 }
 
+.bind-card.wide { max-width: 640px; }
+.bind-sub { margin: 20px 0 8px; font-size: var(--fs-base); font-weight: 600; color: var(--dim); }
+.bind-sub:first-of-type { margin-top: 0; }
+.settings-health { margin-top: 24px; padding-top: 4px; border-top: 1px solid var(--line); }
+.settings-health .health-card { padding: 0; border-bottom: 0; background: none; }
+#settingsBtn { position: relative; }
+#settingsBtn.alert::after { content: ""; position: absolute; top: -3px; right: -3px; width: 8px; height: 8px; border-radius: 50%; background: var(--bad); box-shadow: 0 0 0 2px var(--bg); }
+
 .bind-card {
   width: 100%;
   max-width: 480px;

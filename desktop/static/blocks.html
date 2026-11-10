@@ -16,6 +16,7 @@
       <h1 id="bindTitle">先绑定一个大模型，它会当你的行政</h1>
       <button type="button" class="btn ghost" id="bindBack" hidden>返回</button>
     </div>
+    <h2 class="bind-sub" id="bindSub" hidden>行政</h2>
     <p class="bind-note">行政要的是<strong>按用量付费的 API 密钥</strong>，ChatGPT 这类会员<strong>订阅</strong>不能直接用。</p>
 
     <div class="field">
@@ -41,6 +42,19 @@
       <button type="button" class="btn primary" id="bindCheck">检测</button>
       <button type="button" class="btn ghost" id="bindChange" hidden>换一个行政</button>
       <span class="bind-result" id="bindResult"></span>
+    </div>
+    <div class="settings-health" id="settingsHealth" hidden>
+      <h2 class="bind-sub">环境体检</h2>
+      <section class="health-card" id="healthCard">
+        <div class="health-bar">
+          <span class="health-line" id="healthLine"></span>
+          <div class="health-actions">
+            <button class="btn ghost small" id="healthToggle" type="button">展开</button>
+            <button class="btn small" id="healthRecheck" type="button">重新检查</button>
+          </div>
+        </div>
+        <div class="health-rows" id="healthRows" hidden></div>
+      </section>
     </div>
   </div>
 </section>
@@ -68,18 +82,8 @@
   <main class="stage">
     <header class="topbar">
       <span class="topbar-title">积木库</span>
-      <button type="button" class="btn small" id="settingsBtn">行政设置</button>
+      <button type="button" class="btn small" id="settingsBtn">设置</button>
     </header>
-    <section class="health-card" id="healthCard" hidden>
-      <div class="health-bar">
-        <span class="health-line" id="healthLine"></span>
-        <div class="health-actions">
-          <button class="btn ghost small" id="healthToggle" type="button">展开</button>
-          <button class="btn small" id="healthRecheck" type="button">重新检查</button>
-        </div>
-      </div>
-      <div class="health-rows" id="healthRows" hidden></div>
-    </section>
     <iframe class="chat-frame" id="chatFrame" title="积木库行政对话"></iframe>
     <section class="block-detail" id="blockDetail" hidden>
       <div class="detail-inner">

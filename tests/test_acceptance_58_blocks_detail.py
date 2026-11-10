@@ -38,10 +38,9 @@ class PageTest(unittest.TestCase):
         for element in ('id="healthCard"', 'id="healthLine"', 'id="healthToggle"', 'id="healthRecheck"',
                         'id="healthRows"'):
             self.assertIn(element, html)
-        stage = html[html.index('class="stage"'):]
-        self.assertLess(stage.index('class="topbar"'), stage.index('id="healthCard"'))
-        self.assertLess(stage.index('id="healthCard"'), stage.index('id="chatFrame"'),
-                        "体检卡固定在聊天上方，不进聊天记录（用户 2026-11-09 定）")
+        # 2026-11-09 用户改：体检卡不再固定在聊天上方，并进“设置”页（见 test_blocks_settings.py）
+        bind = html[html.index('id="bindCard"'):html.index('id="mainLayout"')]
+        self.assertIn('id="healthCard"', bind, "体检卡在设置页里，不进聊天记录")
         self.assertIn("重新检查", html)
 
     def test_detail_area(self):

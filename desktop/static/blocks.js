@@ -27,6 +27,10 @@ var BlocksCore = {
     return /密钥|额度/.test(String(reason || ""));
   },
   /** saved：钥匙串里已有密钥的账号；这一家有、密钥又没填，就用存的那把（请求里不带密钥） */
+  /** “设置”按钮要不要带小红点：体检发现有工具要处理，或体检本身没查成 */
+  settingsAlert: function (view, scanError) {
+    return !!scanError || !!(view && view.state === "problem");
+  },
   bindRequest: function (form, providers, saved) {
     form = form || {};
     var prov = String(form.provider || "").trim();
@@ -212,6 +216,7 @@ if (typeof document !== "undefined") (function () {
   var activeBlock = null, currentDetail = null, checkTimer = null, pendingKey = "", checkGen = 0;
   // 60 号单：钥匙串里有这一家的密钥时显示“已保存的密钥 / 换一把”；点了“换一把”或存的没通过才露输入框
   var bindWantNew = false, detailWantNew = false, usedSaved = false;
+  var settingsOpen = false;  // 打开的是“设置”页（行政 + 环境体检），不是第一次绑定或重新连上
   var SAVED_FAILED = "存的这把没通过，可以换一把";
 
   function withSavedFailed(text) { return String(text || "").replace(/[。.\s]+$/, "") + "。" + SAVED_FAILED; }
@@ -371,6 +376,14 @@ if (typeof document !== "undefined") (function () {
     $("bindKey").value = "";
     bindWantNew = false;
     $("bindBack").hidden = !returnTo;
+    settingsOpen = mode === "bind" && back === "main" && !!(state && state.setting);
+    $("settingsHealth").hidden = !settingsOpen;
+    $("bindSub").hidden = !settingsOpen;
+    $("bindCard").classList.toggle("wide", settingsOpen);
+    if (settingsOpen) {
+      manualExpand = true;  // 设置页里体检列表默认展开
+      drawHealth();
+    }
 
     var setting = state && state.setting;
     if (mode === "reconnect" && setting) {
@@ -384,7 +397,7 @@ if (typeof document !== "undefined") (function () {
       $("bindAddress").disabled = true;
       $("bindChange").hidden = false;
     } else {
-      $("bindTitle").textContent = setting ? "行政设置：换服务商、模型或密钥" : "先绑定一个大模型，它会当你的行政";
+      $("bindTitle").textContent = settingsOpen ? "设置" : (setting ? "换一个行政：换服务商、模型或密钥" : "先绑定一个大模型，它会当你的行政");
       populateProviders(state ? state.providers : [], setting && setting.provider);
       if (setting && setting.model) $("bindModel").value = setting.model;
       if (setting && setting.base_url && setting.provider === "other") $("bindAddress").value = setting.base_url;
@@ -525,7 +538,6 @@ if (typeof document !== "undefined") (function () {
       $("detailTitle").textContent = "正在读取…";
       ["detailStatus", "detailWarn", "detailRows", "detailPreview", "detailKeyBox", "detailCheck", "detailRemove", "detailCard"].forEach(function (k) { $(k).hidden = true; });
     }
-    $("healthCard").hidden = true;
     $("chatFrame").hidden = true;
     $("blockDetail").hidden = false;
     $("detailKey").value = "";
@@ -578,7 +590,6 @@ if (typeof document !== "undefined") (function () {
     $("detailResult").textContent = "";
     $("detailResult").className = "detail-result";
     $("detailKey").value = "";
-    $("healthCard").hidden = true;
     $("chatFrame").hidden = true;
     $("blockDetail").hidden = false;
     $("detailTitle").textContent = id;
@@ -598,7 +609,6 @@ if (typeof document !== "undefined") (function () {
     currentDetail = null;
     drawBlocks({ blocks: scanBlocks, broken: scanBroken });
     $("blockDetail").hidden = true;
-    $("healthCard").hidden = false;
     $("chatFrame").hidden = false;
     $("detailKey").value = "";
     $("detailResult").textContent = "";
@@ -877,17 +887,17 @@ if (typeof document !== "undefined") (function () {
   }
 
   function drawHealth() {
-    var card = $("healthCard");
-    if (!activeBlock) card.hidden = false;
     $("healthRecheck").disabled = scanRunning;
     var rowsEl = $("healthRows");
     if (scanError) {
+      $("settingsBtn").classList.toggle("alert", BlocksCore.settingsAlert(null, scanError));
       $("healthLine").textContent = scanError;
       $("healthToggle").hidden = true;
       rowsEl.hidden = true;
       return;
     }
     var v = BlocksCore.healthView(scanRunning ? null : lastScan, scanBlocks);
+    $("settingsBtn").classList.toggle("alert", BlocksCore.settingsAlert(v, ""));
     $("healthLine").textContent = v.line;
     rowsEl.innerHTML = "";
     v.rows.forEach(function (r) {
