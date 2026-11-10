@@ -5,7 +5,7 @@
 ## 开工前必读
 
 1. 本文件。
-2. [需求共识](../需求共识.md)、[方案](../方案.md)（尤其是末尾的“技术设计”）、[任务清单](../任务清单.md)。
+2. [需求共识](../需求共识.md)、[方案](../方案.md)（尤其是末尾的“技术设计”）、[任务清单](../任务清单.md)。61 号单起是“沙盒接入”这一轮，另读 [沙盒接入/需求共识](../沙盒接入/需求共识.md)、[沙盒接入/方案](../沙盒接入/方案.md)、[沙盒接入/任务清单](../沙盒接入/任务清单.md)，两边冲突以沙盒接入为准。
 3. 当前这张单，见下方“单子列表”。
 
 ## 单子列表
@@ -21,6 +21,7 @@
 | 58 | 7 后半 | [58-体检卡和基础层详情.md](58-体检卡和基础层详情.md) | ✅ Gemini 交付，Claude 验收修改 |
 | 59 | 8 上半 | [59-积木库窗口.md](59-积木库窗口.md) | ✅ Gemini 交付不通过、撤掉，Claude 重做 |
 | 60 | 8 下半 | [60-存过的密钥免填.md](60-存过的密钥免填.md) | ✅ Claude 施工，按复查修过 |
+| 61 | 沙盒接入 1 | [61-接法卡扩展和联网搜索积木.md](61-接法卡扩展和联网搜索积木.md) | ⏳ 待施工（Cursor），Codex 复查 |
 
 后面的单写好后会加到这里。**一次只做表里“待施工”的单，做完就停。**
 
@@ -107,3 +108,15 @@ cd desktop/mac && swift build
 59 号单，交给 Gemini 的话：
 
 > 读 `docs/积木库/施工单/README.md` 和 `docs/积木库/施工单/59-积木库窗口.md`，严格按它施工。确认当前在 `blocks` 分支、工作区是干净的。只做 59 号单：只新建 `desktop/mac/Sources/SuperAgent/BlocksWindow.swift`，只改 `desktop/mac/Sources/SuperAgent/main.swift`、`desktop/static/nav.html`、`nav.js`、`nav.css`；`blocks.*`、`chat.*`、`panel.*`、`team.*`、`desktop/server.py`、`collab/`、`desktop/clerk/` 和任何测试都不要改。做完先跑 `python3 -m unittest discover -s tests -p 'test_acceptance_59_*.py'`，再跑 `desktop/mac/build.sh` 确认编译打包通过，再跑全量 `python3 -m unittest discover -s tests`，都过了再提交一次（标题 `施工单 59：积木库窗口`），把回执写进 `docs/积木库/施工单/回执.md` 并一起提交，然后停下。不要打开真实窗口去试（会弹钥匙串授权），走查由 Claude 做。测试不合理就停下告诉我，不准改测试，也不准为了过测试写特殊判断。不要推送，施工中别在项目文件夹里留下试验文件。
+
+## 61 号单起的流程（用户 2026-11-09 定）
+
+Cursor 施工 → Codex 复查 → Cursor 按复查修（最多 3 轮，过不了停下报 Claude）→ Claude 最终验收。Claude 不参与中间的来回。
+
+61 号单，交给 Cursor 的话：
+
+> 读 `docs/积木库/施工单/README.md` 和 `docs/积木库/施工单/61-接法卡扩展和联网搜索积木.md`，严格按它施工。确认当前在 `blocks` 分支、工作区是干净的。只做 61 号单：只改 `collab/blocks.py` 和 `collab/blocks_env.py`，别的文件和任何测试都不要改。做完先跑 `python3 -m unittest discover -s tests -p 'test_acceptance_61_*.py'`，再跑全量 `python3 -m unittest discover -s tests`，都过了再提交一次（标题 `施工单 61：接法卡扩展和联网搜索积木`），把回执写进 `docs/积木库/施工单/回执.md` 并一起提交，然后停下。测试不合理就停下告诉我，不准改测试，也不准为了过测试写特殊判断。不要推送，施工中别在项目文件夹里留下试验文件。
+
+61 号单，交给 Codex 复查的话（Cursor 提交后；模型 gpt-6.1-sol，推理 xhigh）：
+
+> 你是复查员，只读不改。读 `docs/积木库/施工单/61-接法卡扩展和联网搜索积木.md`、`docs/积木库/沙盒接入/方案.md` 的技术设计，再看 `blocks` 分支最新一个提交（`git show HEAD`）。对照施工单逐条查：有没有没做到的、做错的、做多了的（改了单子以外的文件、为过测试写的特殊判断）；重点查安全规则能不能绕过（`secrets` 的名字和值、`probe` 的参数、`search` 卡能不能夹带地址或别的字段、老卡和预置卡的“核实过”判断有没有被放宽）；老卡和用户基础层里已有的卡还能不能原样读出和检测。自己跑 `python3 -m unittest discover -s tests -p 'test_acceptance_61_*.py'` 和全量测试（先查有没有残留的测试进程）。结论写成：通过 / 不通过，每个问题写“在哪、什么情况下出错、怎么改”，按严重程度排序。不要改任何文件。
