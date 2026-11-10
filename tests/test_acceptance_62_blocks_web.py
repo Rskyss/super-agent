@@ -383,3 +383,22 @@ class ReviewFixes(unittest.TestCase):
         with mock.patch.object(web, "_get_json", return_value=(200, meta)):
             info = web.npm_info("x")
         self.assertEqual(info["commands"], [])
+
+
+class ProxyFakeIp(NetCase):
+    """开着 Clash 这类代理的“假地址”模式时，所有网站名都解析成 198.18 段（2026-11-09 用真密钥实测发现全被挡住）。"""
+
+    def test_hostname_on_fake_ip_range_allowed(self):
+        self.use(FakeNet({"https://lbs.amap.com/cli": (200, "", HTML)}, hosts={"lbs.amap.com": ["198.18.13.51"]}))
+        page = web.read_page("https://lbs.amap.com/cli")
+        self.assertIn("npm install -g @amap-lbs/amap-gui", page["text"])
+
+    def test_literal_fake_ip_still_blocked(self):
+        self.use(FakeNet())
+        with self.assertRaises(BlockError):
+            web.read_page("https://198.18.13.51/")
+
+    def test_fake_ip_mixed_with_private_still_blocked(self):
+        self.use(FakeNet(hosts={"x.example.com": ["198.18.0.5", "127.0.0.1"]}))
+        with self.assertRaises(BlockError):
+            web.read_page("https://x.example.com/")

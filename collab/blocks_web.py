@@ -107,6 +107,16 @@ def _allow_local() -> bool:
 _SHARED = ipaddress.ip_network("100.64.0.0/10")  # 运营商共享地址，ipaddress 不算私有（复查第 5 条）
 
 
+_FAKE_IP = ipaddress.ip_network("198.18.0.0/15")
+
+
+def _fake_ip(ip) -> bool:
+    try:
+        return ipaddress.ip_address(ip) in _FAKE_IP
+    except ValueError:
+        return False
+
+
 def _bad_ip(ip) -> bool:
     try:
         addr = ipaddress.ip_address(ip)
@@ -137,7 +147,14 @@ def check_url(url) -> urllib.parse.SplitResult:
     try:
         ips = [str(ipaddress.ip_address(host))]
     except ValueError:
-        ips = _resolve(host)
+        # 网站名解析出 198.18 段：是 Clash 这类代理“假地址”模式的转发地址，不是局域网设备，放行；
+        # 直接写成数字地址的照旧挡（2026-11-09 用真密钥实测发现：开着代理时所有网站都被挡住）
+        resolved = _resolve(host)
+        if not resolved:
+            raise BlockError(f"找不到 {host} 这个网站")
+        ips = [ip for ip in resolved if not _fake_ip(ip)]
+        if not ips:  # 全是代理的转发地址
+            return parts
     if not ips:
         raise BlockError(f"找不到 {host} 这个网站")
     if any(_bad_ip(ip) for ip in ips):
