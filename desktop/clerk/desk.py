@@ -581,6 +581,10 @@ class ClerkDesk:
                         result = clerk_tasks.propose_connect_cli(conv, args)
                     elif name == "propose_connect_api":
                         result = clerk_tasks.propose_connect_api(conv, args)
+                    elif name == "propose_web_install":
+                        result = clerk_tasks.propose_web_install(conv, args)
+                    elif name == "propose_connect_search":
+                        result = clerk_tasks.propose_connect_search(conv, args)
                     elif blocks_tools.is_blocks_home(conv.project):
                         result = blocks_tools.run(conv.project, name, args)
                     else:
@@ -630,7 +634,7 @@ class ClerkDesk:
                 text = "团队设置已更新。" if result["state"] == "confirmed" else "好的，先不改团队设置。"
             elif kind == "revise":
                 text = result.get("reply") or ("已交给开发，做完再告诉你。" if result["state"] == "confirmed" else "好的，先不改。")
-            elif kind in ("install", "connect", "connect_api"):
+            elif kind in clerk_tasks._BLOCK_KINDS:  # 积木库的提议种类只在 tasks.py 定义一次（走查发现这里漏了新种类）
                 text = result["reply"] if result["state"] == "confirmed" else "好的，先不做。"
             elif result["state"] == "confirmed":
                 text = f"已生成卡片 {result['card']}，接下来写方案。"

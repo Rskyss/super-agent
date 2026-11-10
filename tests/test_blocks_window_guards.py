@@ -127,7 +127,11 @@ class AccountRuleRuns(unittest.TestCase):
         cases = {"tencent": True, "bailian": True, "other:api.example.com": True, "other:a-b.c9": True,
                  "other:": False, "other:API.example.com": False, "other:a b": False, "other:a/b": False,
                  "other:a\nb": False, "other:" + "a" * 254: False, "other:" + "a" * 253: True,
-                 "Tencent": False, "": False, "openai": False, "other:a_b": False}
+                 "Tencent": False, "": False, "openai": False, "other:a_b": False,
+                 # 沙盒接入 65 号单：联网搜索和普通工具的密钥账号，和 server.py 的 _SAVED_ACCOUNT 一致
+                 "tavily": True, "tavily2": False, "cli:demotool:DEMO_KEY": True, "cli:a-1:AB_2": True,
+                 "cli:Demo:DEMO_KEY": False, "cli:demotool:demo_key": False, "cli:demotool:D": False,
+                 "cli::DEMO_KEY": False, "cli:demotool:DEMO_KEY:x": False, "cli:-a:KEY": False}
         lines = ["import Foundation", fn]
         for i, (value, want) in enumerate(cases.items()):  # JSON 的字符串写法 Swift 也认
             lines.append(f'print(isValidAccount({json.dumps(value)}) == {str(want).lower()} ? "ok" : "bad {i}")')

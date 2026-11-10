@@ -173,7 +173,21 @@ final class BlocksWindow: NSObject, NSWindowDelegate, WKScriptMessageHandler, WK
 
     /// 和 collab/providers.py 的 account_for、AppDelegate.clerkAccount 一套账号名
     static func isValidAccount(_ s: String) -> Bool {
-        if s == "tencent" || s == "bailian" { return true }
+        if s == "tencent" || s == "bailian" || s == "tavily" { return true }
+        if s.hasPrefix("cli:") {
+            // 普通工具的密钥 cli:<卡编号>:<名字>，和本机服务 server.py 的 _SAVED_ACCOUNT 同一条规矩（沙盒接入 65 号单）
+            let parts = s.split(separator: ":", omittingEmptySubsequences: false)
+            guard parts.count == 3 else { return false }
+            let id = parts[1], env = parts[2]
+            guard (1...40).contains(id.count), let first = id.unicodeScalars.first,
+                  ("a"..."z").contains(first) || ("0"..."9").contains(first),
+                  id.unicodeScalars.allSatisfy({ ("a"..."z").contains($0) || ("0"..."9").contains($0) || $0 == "-" })
+            else { return false }
+            guard (2...64).contains(env.count), let head = env.unicodeScalars.first, ("A"..."Z").contains(head),
+                  env.unicodeScalars.allSatisfy({ ("A"..."Z").contains($0) || ("0"..."9").contains($0) || $0 == "_" })
+            else { return false }
+            return true
+        }
         guard s.hasPrefix("other:") else { return false }
         let host = s.dropFirst(6)
         return (1...253).contains(host.count) && host.unicodeScalars.allSatisfy {

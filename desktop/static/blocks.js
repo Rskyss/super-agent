@@ -91,6 +91,22 @@ var BlocksCore = {
   kindText: function (kind) {
     return kind === "cli" ? "CLI" : "大模型 API";
   },
+  // 沙盒接入：左栏和详情标类别（AI 助手 / 普通工具 / 大模型 API / 联网搜索）；没有类别时退回老说法
+  categoryText: function (category, kind) {
+    var labels = { agent: "AI 助手", tool: "普通工具", llm_api: "大模型 API", search: "联网搜索" };
+    if (labels[category]) return labels[category];
+    if (kind === "search") return "联网搜索";
+    return BlocksCore.kindText(kind);
+  },
+  pendingView: function (p, job) {
+    // 待接入：体检认出、还没接进来的预置工具。点一下检测，通过自动放进基础层（用户 2026-11-09 选 A）
+    if (!job) return { cls: "idle", text: "待接入 · 点一下检测并接入", busy: false };
+    if (!job.done) return { cls: "idle", text: "正在检测…", busy: true };
+    if (job.error) return { cls: "bad", text: "没接上：" + job.error, busy: false };
+    var res = job.result || {};
+    if (job.saved) return { cls: res.ok ? "ok" : "warn", text: "已接入", busy: false };
+    return { cls: "bad", text: "没接上：" + (res.reason || "") + (res.how ? "。" + res.how : ""), busy: false };
+  },
   chatUrl: function (home, token) {
     var q = new URLSearchParams({ project: String(home || ""), token: String(token || ""), clerk: "1" });
     return "/static/chat.html?" + q.toString();
@@ -139,12 +155,18 @@ var BlocksCore = {
   },
   detailView: function (d, scanItem) {
     var card = d.card;
-    var rows = [{ label: "类型", text: BlocksCore.kindText(card.kind) }];
-    if (card.kind === "cli") {
+    var rows = [{ label: "类型", text: BlocksCore.categoryText(d.category, card.kind) }];
+    if (card.kind === "search") {
+      rows.push({ label: "服务", text: "Tavily" });
+      rows.push({ label: "密钥账号", text: d.key_account });
+    } else if (card.kind === "cli") {
       rows.push({ label: "命令", text: card.command, code: true });
       rows.push({ label: "版本", text: scanItem ? scanItem.version || "还没查到" : "还没查到" });
       rows.push({ label: "登录", text: scanItem ? (scanItem.login || "查不了") : "还没查到" });
       rows.push({ label: "来源", text: d.verified ? "预置接法，核实过" : "行政起草，没核实" });
+      (d.secrets || []).forEach(function (sec) {
+        rows.push({ label: "密钥", text: sec.label + (sec.saved ? " · 已保存" : " · 还没填") });
+      });
     } else {
       var provs = { tencent: "腾讯云", bailian: "阿里百炼", other: "其他" };
       rows.push({ label: "服务商", text: provs[card.provider] || card.provider });
@@ -163,7 +185,7 @@ var BlocksCore = {
       else if (d.last_check.status === "quota") status = { cls: "warn", text: "额度不足：工具能连上，" + d.last_check.reason + (d.last_check.how ? "。" + d.last_check.how : "") };
       else status = { cls: "bad", text: "不能用：" + d.last_check.reason + (d.last_check.how ? "。" + d.last_check.how : "") };
     }
-    var needsKey = card.kind === "llm_api";
+    var needsKey = card.kind === "llm_api" || card.kind === "search";
     var needsApprove = card.kind === "cli" && !d.verified;
     return {
       title: card.name,
@@ -174,7 +196,8 @@ var BlocksCore = {
       preview: needsApprove ? d.preview : "",
       warn: needsApprove ? "未核实，有风险：检测前看清要运行的完整命令" : "",
       checkText: needsApprove ? "看过了，确认检测" : "检测",
-      cardText: JSON.stringify(card, null, 2)
+      cardText: JSON.stringify(card, null, 2),
+      secrets: d.secrets || []
     };
   },
   checkView: function (job) {
@@ -214,6 +237,7 @@ if (typeof document !== "undefined") (function () {
   var threadTimer = null, blocksTimer = null;
   var lastScan = null, scanBlocks = [], scanBroken = [], scanRunning = false, manualExpand = null, scanError = "";
   var activeBlock = null, currentDetail = null, checkTimer = null, pendingKey = "", checkGen = 0;
+  var scanPending = [], pendingJobs = {}, pendingSecrets = {};  // 待接入的预置工具和它们的检测；详情里新填的工具密钥
   // 60 号单：钥匙串里有这一家的密钥时显示“已保存的密钥 / 换一把”；点了“换一把”或存的没通过才露输入框
   var bindWantNew = false, detailWantNew = false, usedSaved = false;
   var settingsOpen = false;  // 打开的是“设置”页（行政 + 环境体检），不是第一次绑定或重新连上
@@ -239,7 +263,7 @@ if (typeof document !== "undefined") (function () {
 
   function syncDetailKey() {
     var card = currentDetail && currentDetail.card;
-    var isApi = !!card && card.kind === "llm_api";
+    var isApi = !!card && (card.kind === "llm_api" || card.kind === "search");
     var showSaved = isApi && hasSaved(currentDetail.key_account || card.key_account) && !detailWantNew && !$("detailKey").value;
     $("detailSaved").hidden = !showSaved;
     $("detailKey").hidden = showSaved;
@@ -475,13 +499,15 @@ if (typeof document !== "undefined") (function () {
   function drawBlocks(data) {
     var items = (data && data.blocks) || [];
     var broken = (data && data.broken) || [];
+    var pending = (data && data.pending) || scanPending || [];
     scanBlocks = items;
     scanBroken = broken;
+    scanPending = pending;
     drawHealth();
-    var key = JSON.stringify([items, broken, activeBlock]);
+    var key = JSON.stringify([items, broken, pending, activeBlock, pendingJobs]);
     if (key === blocksKey) return;
     blocksKey = key;
-    if (!items.length && !broken.length) {
+    if (!items.length && !broken.length && !pending.length) {
       $("blocksList").innerHTML = '<div class="empty">还没有接进来的工具，跟行政说一声就行</div>';
       return;
     }
@@ -490,7 +516,7 @@ if (typeof document !== "undefined") (function () {
       var st = BlocksCore.statusText(b);
       return '<div class="block-item' + (activeBlock === b.id ? " on" : "") + '" data-block="' + BlocksCore.esc(b.id) + '">' +
         '<div class="block-top"><span class="block-name">' + BlocksCore.esc(b.name) + '</span>' +
-        '<span class="block-kind">' + BlocksCore.esc(BlocksCore.kindText(b.kind)) + "</span></div>" +
+        '<span class="block-kind">' + BlocksCore.esc(BlocksCore.categoryText(b.category, b.kind)) + "</span></div>" +
         '<div class="block-status"><i class="dot ' + cls + '"></i><span>' + BlocksCore.esc(st) + "</span></div>" +
       "</div>";
     }).join("");
@@ -500,7 +526,46 @@ if (typeof document !== "undefined") (function () {
         '<div class="block-status"><i class="dot bad"></i><span>这张接法卡坏了</span></div>' +
       "</div>";
     }).join("");
+    pending.forEach(function (p) {  // 页面重新加载时还在检测的：接着跟，不显示成“点一下”（复查发现）
+      if (p.job && !(p.id in pendingJobs)) followPending(p.id, p.job);
+    });
+    html += pending.map(function (p) {
+      var v = BlocksCore.pendingView(p, pendingJobs[p.id]);
+      return '<div class="block-item pending' + (v.busy ? " busy" : "") + '" data-pending="' + BlocksCore.esc(p.id) + '">' +
+        '<div class="block-top"><span class="block-name">' + BlocksCore.esc(p.name) + '</span>' +
+        '<span class="block-kind">' + BlocksCore.esc(BlocksCore.categoryText(p.category, "cli")) + "</span></div>" +
+        '<div class="block-status"><i class="dot ' + v.cls + '"></i><span>' + BlocksCore.esc(v.text) + "</span></div>" +
+      "</div>";
+    }).join("");
     $("blocksList").innerHTML = html;
+  }
+
+  function followPending(id, jobId) {
+    pendingJobs[id] = pendingJobs[id] || { done: false };
+    var poll = function () {
+      getJson("/api/blocks/job", { id: jobId }).then(function (job) {
+        pendingJobs[id] = job;
+        drawBlocks({ blocks: scanBlocks, broken: scanBroken, pending: scanPending });
+        if (job.done) fetchBlocks();
+        else setTimeout(poll, 1500);
+      }).catch(function (err) {
+        pendingJobs[id] = err && err.status === 404 ? null : { done: true, error: err.message };
+        drawBlocks({ blocks: scanBlocks, broken: scanBroken, pending: scanPending });
+      });
+    };
+    poll();
+  }
+
+  function connectPending(id) {
+    if (pendingJobs[id] && !pendingJobs[id].done) return;
+    pendingJobs[id] = { done: false };
+    drawBlocks({ blocks: scanBlocks, broken: scanBroken, pending: scanPending });
+    postJson("/api/blocks/connect_builtin", { id: id }).then(function (d) {
+      followPending(id, d.job);
+    }).catch(function (err) {
+      pendingJobs[id] = { done: true, error: err.message };
+      drawBlocks({ blocks: scanBlocks, broken: scanBroken, pending: scanPending });
+    });
   }
 
   $("blocksList").addEventListener("click", function (ev) {
@@ -508,9 +573,12 @@ if (typeof document !== "undefined") (function () {
     if (!item) return;
     var blockId = item.getAttribute("data-block");
     var brokenId = item.getAttribute("data-broken");
-    if (blockId) {
+    var pendingId = item.getAttribute("data-pending");
+    if (pendingId) {
+      connectPending(pendingId);
+    } else if (blockId) {
       activeBlock = blockId;
-      drawBlocks({ blocks: scanBlocks, broken: scanBroken });
+      drawBlocks({ blocks: scanBlocks, broken: scanBroken, pending: scanPending });
       openDetail(blockId);
     } else if (brokenId) {
       activeBlock = brokenId;
@@ -572,6 +640,7 @@ if (typeof document !== "undefined") (function () {
       $("detailPreview").hidden = !v.preview;
       $("detailKeyBox").hidden = !v.needsKey;
       syncDetailKey();
+      drawDetailSecrets(v.secrets);
       $("detailCheck").textContent = v.checkText;
       $("detailCheck").hidden = false;
       $("detailRemove").hidden = false;
@@ -582,6 +651,31 @@ if (typeof document !== "undefined") (function () {
       currentDetail = null;
       $("detailTitle").textContent = err && err.status === 404 ? "基础层里没有这一块了" : "详情没取到：" + err.message;
       ["detailStatus", "detailWarn", "detailRows", "detailPreview", "detailKeyBox", "detailCheck", "detailRemove", "detailCard"].forEach(function (k) { $(k).hidden = true; });
+    });
+  }
+
+  function drawDetailSecrets(secrets) {
+    // 普通工具的几把密钥：一把一格；钥匙串里存过的可以空着（用存的）
+    var box = $("detailSecrets");
+    if (!box) {
+      box = document.createElement("div");
+      box.id = "detailSecrets";
+      box.className = "detail-key";
+      $("detailKeyBox").after(box);
+    }
+    box.innerHTML = "";
+    box.hidden = !(secrets && secrets.length);
+    (secrets || []).forEach(function (sec) {
+      var lab = document.createElement("small");
+      lab.textContent = sec.label + (sec.saved ? "（已保存，可以空着）" : "");
+      var inp = document.createElement("input");
+      inp.type = "password";
+      inp.setAttribute("autocomplete", "off");
+      inp.setAttribute("data-account", sec.account);
+      if (sec.saved) inp.setAttribute("data-saved", "1");
+      inp.placeholder = "在这里填入「" + sec.label + "」";
+      box.appendChild(lab);
+      box.appendChild(inp);
     });
   }
 
@@ -620,7 +714,23 @@ if (typeof document !== "undefined") (function () {
     var card = currentDetail.card;
     var payload = { id: card.id };
     usedSaved = false;
-    if (card.kind === "llm_api") {
+    pendingSecrets = {};
+    var secretInps = document.querySelectorAll("#detailSecrets input[data-account]");
+    if (secretInps.length) {
+      var lacking = false;
+      secretInps.forEach(function (si) {
+        var v = si.value.trim();
+        if (v) pendingSecrets[si.getAttribute("data-account")] = v;
+        else if (!si.getAttribute("data-saved")) lacking = true;
+      });
+      if (lacking) {
+        $("detailResult").textContent = "请先把每个密钥框都填好";
+        $("detailResult").className = "detail-result fail";
+        return;
+      }
+      payload.secret_keys = pendingSecrets;
+    }
+    if (card.kind === "llm_api" || card.kind === "search") {
       var k = $("detailKey").value.trim();
       if (!k && !$("detailSaved").hidden) {
         usedSaved = true;  // 用钥匙串里存的那把：请求里不带密钥
@@ -632,7 +742,8 @@ if (typeof document !== "undefined") (function () {
         payload.api_key = k;
         pendingKey = k;
       }
-    } else if (!currentDetail.verified) {
+    }
+    if (card.kind === "cli" && !currentDetail.verified) {
       var scanItem = (lastScan && lastScan.items || []).find(function (it) { return it.name === card.id; }) || null;
       payload.approved = BlocksCore.detailView(currentDetail, scanItem).preview;
     }
@@ -674,9 +785,13 @@ if (typeof document !== "undefined") (function () {
         if (job.done) {
           $("detailCheck").disabled = false;
           $("detailRemove").disabled = false;
-          if ((v.state === "ok" || v.state === "warn") && currentDetail && currentDetail.card.kind === "llm_api" && pendingKey) {
+          if ((v.state === "ok" || v.state === "warn") && currentDetail && currentDetail.card.kind !== "cli" && pendingKey) {
             saveKeyToMac(currentDetail.key_account, pendingKey);
           }
+          if (v.state === "ok" || v.state === "warn") {
+            Object.keys(pendingSecrets).forEach(function (acc) { saveKeyToMac(acc, pendingSecrets[acc]); });
+          }
+          pendingSecrets = {};
           pendingKey = "";
           openDetail(cardId, true);
           fetchBlocks();

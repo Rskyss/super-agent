@@ -17,7 +17,7 @@ import threading
 import time
 from pathlib import Path
 
-from collab import blocks
+from collab import blocks, blocks_web
 from collab.agents import QuietTimeout, watched_runner
 from collab.blocks import BlockError
 from collab.blocks_env import _EMAIL, _clean_path, _which
@@ -25,6 +25,8 @@ from collab.blocks_env import remove_folder as _remove
 from collab.providers import find as find_provider
 
 DEFAULT_TIMEOUT = 180
+TOOL_TIMEOUT = 60  # 普通工具的检测命令只查不改，一分钟足够
+SEARCH_PROBE = "超级助手 连通检测"
 API_TIMEOUT = 30
 PING = "只回复两个字：收到"
 TOOL_NAME = "report_ready"
@@ -121,7 +123,10 @@ def _explain(output: str, command: str, name: str):
 
 def _probe_args(card, lookup):
     """检测要跑的参数和找到的程序：preview 和 check_cli 用同一份，比对的就是要跑的。"""
-    args = blocks.build_args(card, probe_prompt(card["done_when"]["file"]))
+    if card["role"] == "tool":
+        args = blocks.probe_args(card)
+    else:
+        args = blocks.build_args(card, probe_prompt(card["done_when"]["file"]))
     found = _which(card["command"], lookup)
     if found:
         args[0] = found
@@ -150,8 +155,112 @@ def _save(card_id, result, root, record):
     return result
 
 
+def _secret_env(card, keys) -> dict:
+    """普通工具要的密钥：按卡里写的名字，从钥匙串交来的那份里取；缺一把就不跑。"""
+    env = {}
+    for item in card.get("secrets") or []:
+        value = (keys or {}).get(blocks.secret_account(card["id"], item["env"]), "")
+        if not isinstance(value, str) or not value.strip():
+            raise BlockError(f"还没填 {card['name']} 的「{item['label']}」：先在密钥框里填好再检测")
+        env[item["env"]] = value.strip()
+    return env
+
+
+def _run_tool(args, folder, timeout, env):
+    """输出写临时文件只读最后 64KB；超时把整组（包括它另开的进程）关掉（复查第 10 条）。"""
+    import signal
+    with tempfile.TemporaryFile() as out:
+        proc = subprocess.Popen(args, cwd=folder, env=env, stdin=subprocess.DEVNULL, stdout=out,
+                                stderr=subprocess.STDOUT, start_new_session=True)
+        try:
+            code = proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            code = None
+        finally:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except OSError:
+                pass
+            proc.wait()
+        if code is None:
+            raise subprocess.TimeoutExpired(args, timeout)
+        size = out.seek(0, os.SEEK_END)
+        out.seek(max(0, size - 64 * 1024))
+        return code, out.read().decode("utf-8", "replace")
+
+
+def _mask_all(text, secrets) -> str:
+    for value in secrets:
+        if value:
+            text = text.replace(value, "[已隐藏]")
+    return _mask(text)
+
+
+def _check_tool(card, root, args, found, verified, keys, runner, timeout, terminal_path, record):
+    secret_env = _secret_env(card, keys)
+    with _OneAtATime(card["id"]):
+        if not found:
+            how = ("关掉超级助手再重新打开，然后再检测一次" if terminal_path and _which(card["command"], terminal_path)
+                   else f"先装好 {card['name']}，再检测一次")
+            return _save(card["id"], dict(ok=False, status="missing", verified=verified, seconds=0,
+                                          reason=f"电脑上找不到 {card['command']} 这个命令", how=how), root, record)
+        folder = Path(tempfile.mkdtemp(prefix="积木库检测-"))
+        env = {"PATH": os.path.dirname(found) + os.pathsep + _clean_path(os.environ.get("PATH", "")),
+               "HOME": os.environ.get("HOME", ""), **secret_env}
+        started = time.time()
+        code, output = None, ""
+        try:
+            code, output = (runner or _run_tool)(args, folder, timeout or TOOL_TIMEOUT, env)
+        except subprocess.TimeoutExpired:
+            output = "超时"
+        except OSError as exc:
+            output = f"运行不了：{exc}"
+        finally:
+            _remove(folder)
+        seconds = round(time.time() - started, 1)
+        words = card.get("ok_words") or []
+        if code == 0 and all(w in output for w in words):
+            result = {"ok": True, "status": "ok", "reason": f"通了 · {seconds:g} 秒", "how": ""}
+        elif code is None:
+            result = {"ok": False, "status": "fail", "reason": "超时：规定时间内没跑完" if output == "超时"
+                      else "工具运行不起来", "how": "稍后再检测一次；还不行就跟行政说"}
+        else:
+            lines = [ln.strip() for ln in (output or "").splitlines() if ln.strip()]
+            # 先打码再截短：截断在前会把跨在截断处的半截密钥漏出来（复查第 1 条）
+            tail = _mask_cut(_mask_all(lines[-1][:4000], secret_env.values()), 120) if lines else "没有输出"
+            reason = "检测命令跑完了，但没看到该有的结果" if code == 0 else f"检测命令出错了（退出码 {code}）"
+            result = {"ok": False, "status": "fail", "reason": reason,
+                      "how": f"把这句告诉行政，让它改检测命令或换一把密钥。工具最后说：{tail}"}
+        result["reason"] = _mask_all(result["reason"], secret_env.values())
+        result["how"] = _mask_all(result["how"], secret_env.values())
+        result.update(seconds=seconds, verified=verified)
+        return _save(card["id"], result, root, record)
+
+
+def check_search(card, key, root=None, record=True) -> dict:
+    """联网搜索检测：真搜一次。额度用完、太频繁算“额度不足”（密钥是对的）。"""
+    card = blocks.validate_card(card)
+    if card["kind"] != "search":
+        raise BlockError("这不是联网搜索")
+    if not isinstance(key, str) or not key.strip():
+        raise BlockError("还没填密钥：先在密钥框里填好再检测")
+    with _OneAtATime(card["id"]):
+        started = time.time()
+        try:
+            blocks_web.search(SEARCH_PROBE, key.strip(), 1)
+            result = {"ok": True, "status": "ok", "reason": "通了", "how": ""}
+        except blocks_web.SearchError as exc:
+            quota = exc.status in (429, 432, 433)
+            result = {"ok": False, "status": "quota" if quota else "fail", "reason": _mask(str(exc), key.strip()),
+                      "how": "等额度恢复后再检测一次" if quota else "换一把密钥再检测"}
+        except BlockError as exc:
+            result = {"ok": False, "status": "fail", "reason": _mask(str(exc), key.strip()), "how": "稍后再检测一次"}
+        result.update(seconds=round(time.time() - started, 1))
+        return _save(card["id"], result, root, record)
+
+
 def check_cli(card, root=None, approved=None, runner=None, timeout=DEFAULT_TIMEOUT, path=None,
-              terminal_path=None, record=True) -> dict:
+              terminal_path=None, record=True, keys=None) -> dict:
     """检测一张 CLI 接法卡。返回 {ok, status(ok/missing/fail), reason, how, seconds, verified}。
     没核实过的卡，approved 必须是用户确认时看到的那条完整命令（preview 的结果），
     和现在要跑的对不上（卡改过、换了程序）就抛 BlockError，什么都不跑。"""
@@ -163,6 +272,9 @@ def check_cli(card, root=None, approved=None, runner=None, timeout=DEFAULT_TIMEO
     args, found = _probe_args(card, lookup)
     if not verified and (not isinstance(approved, str) or approved != _shown(args)):
         raise BlockError(f"{card['name']} 的接法没核实过：要把完整命令给用户看，用户确认的必须就是现在要跑的这一条")
+    if card["role"] == "tool":
+        return _check_tool(card, root, args, found, verified, keys, runner,
+                           None if timeout == DEFAULT_TIMEOUT else timeout, terminal_path, record)
     with _OneAtATime(card["id"]):
         if not found:
             if terminal_path and _which(card["command"], terminal_path):

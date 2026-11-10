@@ -26,7 +26,7 @@ import math
 import re
 from datetime import datetime
 
-from collab import blocks, blocks_check, blocks_install
+from collab import blocks, blocks_check, blocks_install, blocks_web
 from collab.blocks import BlockError
 from collab.providers import account_for, find as find_provider
 
@@ -155,7 +155,7 @@ def propose(conv, arguments: dict) -> str:
     return "已向用户出示确认框，等用户点确认或先不做。还没建卡。"
 
 
-_BLOCK_KINDS = ("install", "connect", "connect_api")
+_BLOCK_KINDS = ("install", "connect", "connect_api", "web_install", "connect_search")
 _STRIKES = 3  # 一段对话里行政起草的接法卡连续检测不通过几次就停
 _HTTPS_URL = re.compile(r"https://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[^\s]*)?")
 
@@ -276,9 +276,13 @@ def propose_connect_cli(conv, args: dict) -> str:
         if _strikes(conv) >= _STRIKES:
             return (f"这段对话里起草的接法卡已经连续 {_STRIKES} 次检测不通过。先停下，"
                     "把卡在哪一步告诉用户，不要再提议。")
-    data = {"kind": "connect", "block": block, "name": block["name"], "verified": verified}
+    data = {"kind": "connect", "block": block, "name": block["name"], "verified": verified,
+            "category": blocks.CATEGORY_LABELS[blocks.category(block)]}
     if not verified:
         data["preview"] = blocks_check.preview(block)
+    if block.get("secrets"):  # 每把密钥一个框：页面只拿到钥匙串账号名和显示名
+        data["secrets"] = [{"account": blocks.secret_account(block["id"], item["env"]), "label": item["label"]}
+                           for item in block["secrets"]]
     saved = _saved_block(conv.project, block["id"])
     if saved is not None:
         data["replaces"] = saved.get("name") or block["id"]
@@ -328,12 +332,71 @@ def propose_connect_api(conv, args: dict) -> str:
     return _publish_block(conv, data)
 
 
+key_source = None  # 本机服务启动时设：钥匙串账号 -> 密钥（只在内存里），行政的搜索要用 Tavily 那把
+
+
+def search_key() -> str:
+    """基础层里接了联网搜索、钥匙串里也有密钥，才给；否则给空。"""
+    if key_source is None:
+        return ""
+    try:
+        card = blocks.load_card(blocks.SEARCH_PRESETS["tavily"]["id"], root=None)
+    except BlockError:
+        return ""
+    if card.get("kind") != "search":
+        return ""
+    return str(key_source(card["key_account"]) or "")
+
+
+def propose_web_install(conv, args: dict) -> str:
+    """模型调用 propose_web_install：程序自己读页面核对命令、查安装包底细，都过了才出卡。"""
+    args = args or {}
+    url = str(args.get("url") or "").strip()
+    line = str(args.get("install_command") or "").strip()
+    command = str(args.get("command") or "").strip() or None
+    try:
+        spec = blocks_web.verify_install(url, line, command=command, search_key=search_key() or None)
+    except BlockError as exc:
+        return f"没有出卡：{exc}"
+    except Exception:  # noqa: BLE001 — 网站、npm 回的东西什么样都有，不能让行政这一轮断掉（复查第 8 条）
+        return "没有出卡：核对时出了意外，换一页官网再试，或者请用户自己装"
+    package = spec.get("package") or {}
+    facts = []
+    if spec["type"] == "npm":
+        facts.append(f"npm 上第一次发布：{package.get('created') or '查不到'}")
+        facts.append(f"发布者：{'、'.join(package.get('publishers') or []) or '查不到'}")
+        facts.append(f"最新版本：{package.get('latest') or '查不到'}")
+    elif spec["type"] == "brew":
+        facts.append("Homebrew 官方目录里有这一项")
+    else:
+        facts.append(f"脚本来自：{spec['script_host']}")
+    data = {"kind": "web_install", "label": f"从网上装 {spec['command']}", "tool": spec["command"],
+            "command": spec["command_text"], "source": spec["source"], "domain": spec["domain"],
+            "danger": spec["danger"], "new": bool(package.get("new")), "facts": facts,
+            "found_by": spec["found_by"], "spec": spec}
+    return _publish_block(conv, data)
+
+
+def propose_connect_search(conv, args: dict) -> str:
+    """模型调用 propose_connect_search：接法预置（Tavily），卡上只有一个密钥框。"""
+    block = blocks.search_card("tavily")
+    data = {"kind": "connect_search", "block": block, "name": block["name"], "verified": True,
+            "category": blocks.CATEGORY_LABELS["search"], "key_account": block["key_account"]}
+    saved = _saved_block(conv.project, block["id"])
+    if saved is not None:
+        data["replaces"] = saved.get("name") or block["id"]
+    return _publish_block(conv, data)
+
+
 def _block_result(data: dict, repeat: bool) -> dict:
     kind = data["kind"]
     result = {"ok": True, "state": "confirmed", "repeat": repeat, "kind": kind, "card": ""}
     if kind == "install":
         result["install"] = data.get("install") or ""
         result["reply"] = f"已确认：{data.get('label') or data.get('install')}。"
+    elif kind == "web_install":
+        result["spec"] = data.get("spec")
+        result["reply"] = f"已确认：{data.get('label') or ''}。"
     else:
         result["block"] = data.get("block")
         result["reply"] = f"已确认接入「{data.get('name') or ''}」。"
@@ -605,7 +668,8 @@ def event_from_proposal(data: dict) -> dict:
             base["before"] = data["before"]
     elif kind in _BLOCK_KINDS:
         for key in ("install", "tool", "label", "command", "source", "needs", "minutes", "block", "name",
-                    "verified", "preview", "replaces", "provider", "model"):
+                    "verified", "preview", "replaces", "provider", "model", "category", "secrets", "domain",
+                    "danger", "new", "facts", "found_by", "key_account"):
             if key in data:
                 base[key] = data[key]
     else:

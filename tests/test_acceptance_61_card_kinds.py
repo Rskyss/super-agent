@@ -321,3 +321,13 @@ class EnvScanWithNewCards(RootCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReviewFixes(RootCase):
+    def test_more_dangerous_env_names(self):
+        for bad in ("SHELLOPTS", "BASHOPTS", "PS4", "PROMPT_COMMAND", "CDPATH", "NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE",
+                    "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE"):
+            self.assertRefused(tool_card(secrets=[{"env": bad, "label": "Key"}]))
+
+    def test_web_search_id_reserved_for_search(self):
+        self.assertRefused(tool_card(id="web-search"))

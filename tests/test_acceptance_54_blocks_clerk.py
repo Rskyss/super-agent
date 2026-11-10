@@ -18,7 +18,9 @@ from desktop.clerk.desk import ClerkDesk
 
 KEY = "sk-abcdefghijklmnopqrstuvwxyz0123456789"
 EXPECTED_TOOLS = {"scan_environment", "check_installed", "read_help", "list_blocks", "install_options",
-                  "propose_install", "propose_connect_cli", "propose_connect_api"}
+                  "propose_install", "propose_connect_cli", "propose_connect_api",
+                  # 沙盒接入 64 号单按已批准的方案加的四样（用户 2026-11-09 批准）：上网搜、读网页、网上安装卡、接联网搜索
+                  "web_search", "read_page", "propose_web_install", "propose_connect_search"}
 
 
 class BlocksCase(ProjectCase):

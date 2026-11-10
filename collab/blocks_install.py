@@ -23,7 +23,7 @@ import tempfile
 import threading
 import time
 
-from collab import blocks
+from collab import blocks, blocks_web
 from collab.blocks import BlockError
 from collab.blocks_check import _mask_cut
 from collab.blocks_env import _clean_path, _which, scratch_folder
@@ -40,6 +40,7 @@ INSTALLS = {
                   "source": "https://formulae.brew.sh/formula/node"},
 }
 DEFAULT_TIMEOUT = 600
+SCRIPT_LIMIT = 1024 * 1024  # 安装脚本最多下载这么大
 TERM_GRACE = 5  # 超时后先请它自己退出，等这么多秒还不退才强行关掉
 LINE_LIMIT = 2000  # 每行最多显示这么多字，超长的一行既卡打码也撑版面
 TAIL_BYTES = 64 * 1024  # 判断结果只看最后这么多输出，整份不读进内存
@@ -56,11 +57,14 @@ _NEEDS_NAME = {"npm": "npm（装 Node 时自带）", "brew": "Homebrew"}
 # 要管理员权限的说法按工具分开认：brew 会提醒“不要用 sudo 跑 brew”，npm 包名里也可能有 sudo，单个词不算
 _ADMIN_WORDS = {
     "npm": ("eacces", "eperm", "permission denied", "operation not permitted"),
+    "script": ("permission denied", "operation not permitted", "password is required", "password:",
+               "need sudo", "sudo:", "a terminal is required", "must be run as root"),
     "brew": ("permission denied", "operation not permitted", "is not writable", "need sudo access",
              "a terminal is required", "a password is required"),
 }
 _ADMIN_HOW = {
     "npm": "换一种安装方式（比如用 Homebrew 装），或者让行政带你在终端里处理",
+    "script": "安装脚本要电脑密码或管理员权限，超级助手不替你输：按官网说明在终端里自己装",
     "brew": "Homebrew 的文件夹权限不对，要在终端里修：让行政带你一步步做",
 }
 
@@ -213,6 +217,16 @@ def run_install(install_id, root=None, path=None, timeout=DEFAULT_TIMEOUT, prefi
     extra = _extra_env(item, prefix)
     lookup = _clean_path(os.environ.get("PATH", "") if path is None else path)
     target = os.path.join(prefix, "bin") if prefix is not None else lookup  # 装进 prefix 的，只在 prefix 里找
+    result = _install(item, item["args"], lambda: dict(os.environ, PATH=lookup, **extra), lookup, target,
+                      timeout, force)
+    if record:
+        blocks.add_record(item["tool"], dict(type="install", install=install_id, **result), root=root)
+    return result
+
+
+def _install(item, args, make_env, lookup, target, timeout, force, prepare=None) -> dict:
+    """安装的共同部分：同一时间只装一个；已装的不跑；先查前提；跑完按说法判断。
+    args[0] 是前提程序名（npm / brew），会换成找到的完整路径；prepare 给脚本安装用（下载后返回参数）。"""
     with _lock:
         if _busy["on"]:
             raise BlockError("正在安装别的工具，等它装完再装")
@@ -223,20 +237,91 @@ def run_install(install_id, root=None, path=None, timeout=DEFAULT_TIMEOUT, prefi
         if not force and _which(item["command"], target):
             result = {"ok": True, "status": "already", "found": True,
                       "reason": f"{item['tool']} 已经装好了，不用再装", "how": ""}
-        elif not _which(item["needs"], lookup):
+        elif prepare is None and not _which(item["needs"], lookup):
             result = {"ok": False, "status": "missing_prereq", "found": False,
                       "reason": f"要先有 {_NEEDS_NAME[item['needs']]} 才能这样装", "how": _NEEDS_HOW[item["needs"]]}
+        elif prepare is not None:
+            with scratch_folder("积木库脚本-") as holder:
+                code, output = _run(prepare(holder), make_env(), timeout)
+            result = _judge(item, code, output, target)
         else:
-            args = [_which(item["needs"], lookup)] + item["args"][1:]
-            env = dict(os.environ, PATH=lookup, **extra)
-            code, output = _run(args, env, timeout)
+            code, output = _run([_which(item["needs"], lookup)] + list(args[1:]), make_env(), timeout)
             result = _judge(item, code, output, target)
         result["seconds"] = round(time.time() - started, 1)
     finally:
         with _lock:
             _busy["on"] = False
+    return result
+
+
+def _download_script(url) -> bytes:
+    """下载安装脚本：和读网页同一套地址检查（只许 https、挡私有地址、每次跳转都查），最多 SCRIPT_LIMIT。"""
+    current = url
+    for _ in range(blocks_web.MAX_REDIRECTS + 1):
+        blocks_web.check_url(current)
+        try:
+            status, location, body = blocks_web._open(current, blocks_web.PAGE_TIMEOUT, SCRIPT_LIMIT)
+        except Exception as exc:  # noqa: BLE001
+            raise BlockError("下载不了安装脚本：连不上或超时") from exc
+        if status in (301, 302, 303, 307, 308) and location:
+            import urllib.parse
+            current = urllib.parse.urljoin(current, location)
+            continue
+        if status != 200:
+            raise BlockError(f"下载不了安装脚本（网站返回 {status}）")
+        if len(body) > SCRIPT_LIMIT:
+            raise BlockError("安装脚本太大，不运行")
+        if not body.strip():
+            raise BlockError("下载到的安装脚本是空的")
+        return body
+    raise BlockError("安装脚本的地址跳转太多次")
+
+
+def _web_targets(lookup, prefix) -> str:
+    """装好后去哪找：npm 装进 prefix 的只在 prefix；脚本常装进 ~/.local/bin。"""
+    if prefix is not None:
+        return os.path.join(prefix, "bin")
+    home = os.environ.get("HOME", "")
+    extra = [os.path.join(home, ".local", "bin")] if home else []
+    return _clean_path(os.pathsep.join([lookup] + extra))
+
+
+def run_web_install(spec, root=None, path=None, timeout=DEFAULT_TIMEOUT, prefix=None, force=False,
+                    record=True) -> dict:
+    """按网上找来、核对过的安装命令装（沙盒接入 63 号单）。不信 spec 里存的参数：用 command_text 重新解析。
+    npm、brew 和名单内一样执行；脚本先下载到空文件夹再交给 /bin/sh 或 /bin/bash，环境只给 PATH 和 HOME。"""
+    if not isinstance(spec, dict):
+        raise BlockError("安装说明不对")
+    parsed = blocks_web.parse_install(spec.get("command_text"))
+    command = spec.get("command")
+    if not isinstance(command, str) or not blocks._COMMAND.fullmatch(command):
+        raise BlockError("装好后的命令名不对")
+    _check_timeout(timeout)
+    lookup = _clean_path(os.environ.get("PATH", "") if path is None else path)
+    if parsed["type"] == "script":
+        if prefix is not None:
+            raise BlockError("只有用 npm 装的才能指定装到哪个文件夹")
+        item = {"tool": command, "command": command, "needs": "script"}
+        home = os.environ.get("HOME", "")
+
+        def prepare(holder):
+            body = _download_script(parsed["script_url"])
+            file = os.path.join(holder, "install.sh")
+            with open(file, "wb") as fh:
+                fh.write(body)
+            return [f"/bin/{parsed['shell']}", file]
+
+        result = _install(item, [], lambda: {"PATH": lookup, "HOME": home}, lookup,
+                          _web_targets(lookup, None), timeout, force, prepare=prepare)
+    else:
+        item = {"tool": command, "command": command, "needs": parsed["type"]}
+        extra = _extra_env(item, prefix)
+        result = _install(item, parsed["args"], lambda: dict(os.environ, PATH=lookup, **extra), lookup,
+                          _web_targets(lookup, prefix), timeout, force)
     if record:
-        blocks.add_record(item["tool"], dict(type="install", install=install_id, **result), root=root)
+        record_id = re.sub(r"[^a-z0-9-]+", "-", command.lower()).strip("-")[:40] or "web-install"
+        blocks.add_record(record_id, dict(type="install", how_installed=parsed["command_text"], command=command,
+                                        source=str(spec.get("source") or "")[:500], **result), root=root)
     return result
 
 

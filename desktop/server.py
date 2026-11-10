@@ -78,14 +78,15 @@ _IMAGE_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg"
                 ".webp": "image/webp"}
 _MAX_BODY = 1024 * 1024  # 聊天消息最多 1MB，够用了
 _CARD_ID = re.compile(r"^[A-Za-z0-9_-]+$")
-_BLOCK_KINDS = ("install", "connect", "connect_api")
+_BLOCK_KINDS = clerk_tasks._BLOCK_KINDS  # 只在 desktop/clerk/tasks.py 定义一次
 _JOB_LIMIT = 100         # 积木库做完的后台任务最多留这么多
 def _blocks_connected(result: dict) -> bool:
     """检测通过，或只是额度不足（能连上，所选模型没额度；用户 2026-11-09 定也算接上了）"""
     return bool(result.get("ok")) or result.get("status") == "quota"
 
 
-_SAVED_ACCOUNT = re.compile(r"tencent|bailian|other:[a-z0-9.-]{1,253}")  # 和 Mac 窗口 BlocksWindow.isValidAccount 一样
+# 和 Mac 窗口 BlocksWindow.isValidAccount 一样；tavily 和 cli:编号:名字 是沙盒接入 64 号单加的
+_SAVED_ACCOUNT = re.compile(r"tencent|bailian|other:[a-z0-9.-]{1,253}|tavily|cli:[a-z0-9][a-z0-9-]{0,39}:[A-Z][A-Z0-9_]{1,63}")
 _TERMINAL_TTL = 60       # 终端路径一分钟内只读一次
 
 
@@ -331,6 +332,21 @@ class Handler(BaseHTTPRequestHandler):
             return ""
         return self.server.blocks_saved_keys.get(account, "")
 
+    def _blocks_tool_keys(self, card: dict, body: dict) -> dict:
+        """普通工具要的几把密钥：页面这次填的优先，没填的用钥匙串里存的。只认这张卡自己的账号名。"""
+        given = body.get("secret_keys") if isinstance(body.get("secret_keys"), dict) else {}
+        keys = {}
+        for item in card.get("secrets") or []:
+            account = blocks.secret_account(card["id"], item["env"])
+            value = given.get(account)
+            value = value.strip() if isinstance(value, str) else ""
+            keys[account] = value or self.server.blocks_saved_keys.get(account, "")
+        return keys
+
+    def _blocks_search_key(self, body: dict) -> str:
+        given = str(body.get("api_key") or "").strip()
+        return given or self.server.blocks_saved_keys.get(blocks.SEARCH_PRESETS["tavily"]["key_account"], "")
+
     def _blocks_take_keys(self, body: dict) -> None:
         """Mac 窗口交来钥匙串里的整份密钥：只记在内存里，整份替换；不合格的那条丢掉，不回显。"""
         keys = body.get("keys")
@@ -361,7 +377,9 @@ class Handler(BaseHTTPRequestHandler):
             cached = server.blocks_terminal
             if fresh or cached is None or now - cached[0] > _TERMINAL_TTL:
                 cached = server.blocks_terminal = (now, server.terminal_path() or "")
-            os.environ["PATH"] = merged_path(os.environ.get("PATH", ""), cached[1])
+            # 脚本安装常装进 ~/.local/bin，终端里不一定有它：一并补上，装好的后面才检测得到（复查第 7 条）
+            local_bin = os.path.join(os.path.expanduser("~"), ".local", "bin")
+            os.environ["PATH"] = merged_path(merged_path(os.environ.get("PATH", ""), cached[1]), local_bin)
             return cached[1]
 
     def _blocks_client(self, provider: str, base_url: str, model: str, api_key: str):
@@ -401,16 +419,40 @@ class Handler(BaseHTTPRequestHandler):
         threading.Thread(target=run, daemon=True).start()
         return job_id
 
-    def _blocks_check_work(self, home: str, card: dict, approved=None, api_key: str = ""):
+    def _blocks_check_work(self, home: str, card: dict, approved=None, api_key: str = "", keys=None,
+                           auto_save: bool = False):
         def work(job):
             terminal = self._blocks_path()
             if card["kind"] == "llm_api":
                 return blocks_check.check_api(card, api_key, root=home,
                                               client_factory=self.server.blocks_client_factory)
+            if card["kind"] == "search":
+                return blocks_check.check_search(card, api_key, root=home)
             if not blocks.is_verified(card) and approved != blocks_check.preview(card):
                 return {"ok": False, "status": "changed", "reason": "要跑的命令和你确认时看到的不一样",
                         "how": "跟行政说重新提议，确认新的完整命令"}
-            return blocks_check.check_cli(card, root=home, approved=approved, terminal_path=terminal)
+            result = blocks_check.check_cli(card, root=home, approved=approved, terminal_path=terminal, keys=keys)
+            if auto_save and _blocks_connected(result):  # “待接入”点一下：通过就直接放进基础层（用户 2026-11-09 选 A）
+                with self.server.blocks_lock:
+                    if not blocks._card_path(card["id"], home).is_file():
+                        blocks.save_card(card, home)
+                    job["saved"] = True
+            return result
+        return work
+
+    def _blocks_web_install_work(self, home: str, spec: dict):
+        def work(job):
+            server = self.server
+            try:
+                self._blocks_path()
+                result = blocks_install.run_web_install(spec, root=home)
+            finally:
+                job["tail"] = blocks_install.output_tail()
+                with server.blocks_lock:
+                    server.blocks_installing = None
+            if result.get("ok"):
+                self._blocks_path(fresh=True)
+            return result
         return work
 
     def _blocks_install_work(self, home: str, install_id: str):
@@ -427,6 +469,19 @@ class Handler(BaseHTTPRequestHandler):
                 self._blocks_path(fresh=True)  # 刚装好的工具可能在新的文件夹里
             return result
         return work
+
+    def _blocks_pending(self, home: str, items: list, broken: list) -> list:
+        """待接入：上一次体检认出、装好了的预置工具（Codex、Cursor、agy），基础层里还没有的。"""
+        taken = {i["id"] for i in items} | {b["id"] for b in broken}
+        last = blocks.last_record("env", home, type="env") or {}
+        found = {i.get("name") for i in last.get("items") or [] if isinstance(i, dict) and i.get("status") == "有"}
+        pending = []
+        for name in blocks.BUILTIN:
+            if name in found and name not in taken:
+                card = blocks.builtin_card(name)
+                job_id = self.server.blocks_pending_jobs.get(name, "")
+                pending.append({"id": name, "name": card["name"], "category": "agent", "job": job_id})
+        return pending
 
     def _blocks_get(self, path: str, query: dict) -> None:
         try:
@@ -459,12 +514,13 @@ class Handler(BaseHTTPRequestHandler):
                     continue
                 last = blocks.last_record(card["id"], home, type="check")
                 items.append({"id": card["id"], "name": card["name"], "kind": card["kind"],
+                              "category": blocks.category(card),
                               "verified": blocks.is_verified(card),
                               "status": "never" if not last else ("ok" if last.get("ok") else
                                                                     ("quota" if last.get("status") == "quota" else "fail")),
                               "reason": (last or {}).get("reason") or "", "time": (last or {}).get("time") or "",
                               "seconds": (last or {}).get("seconds") or 0})
-            self._json({"blocks": items, "broken": broken})
+            self._json({"blocks": items, "broken": broken, "pending": self._blocks_pending(home, items, broken)})
         elif path == "/api/blocks/detail":
             card_id = query.get("id", "")
             if not blocks._ID.fullmatch(card_id):
@@ -479,7 +535,12 @@ class Handler(BaseHTTPRequestHandler):
             if card["kind"] == "cli":
                 self._blocks_path()
                 preview = blocks_check.preview(card)
+            secrets = [{"account": blocks.secret_account(card["id"], item["env"]), "label": item["label"],
+                        "saved": bool(self.server.blocks_saved_keys.get(blocks.secret_account(card["id"], item["env"])))}
+                       for item in card.get("secrets") or []]
             self._json({"card": card, "verified": blocks.is_verified(card), "preview": preview,
+                        "category": blocks.category(card), "secrets": secrets,
+                        "search_saved": bool(card["kind"] == "search" and self._blocks_search_key({})),
                         "key_account": card.get("key_account", ""),
                         "last_check": blocks.last_record(card_id, home, type="check"),
                         "last_install": blocks.last_record(card_id, home, type="install")})
@@ -586,14 +647,34 @@ class Handler(BaseHTTPRequestHandler):
                 return
             approved = body.get("approved")
             api_key = (self._blocks_key(body, card.get("key_account", ""), card.get("provider", ""),
-                                        card.get("base_url", "")) if card["kind"] == "llm_api" else "")
+                                        card.get("base_url", "")) if card["kind"] == "llm_api" else
+                       self._blocks_search_key(body) if card["kind"] == "search" else "")
+            keys = self._blocks_tool_keys(card, body) if card["kind"] == "cli" else {}
+            if card["kind"] == "search" and not api_key:
+                self._json({"error": "要先填密钥"}, 400)
+                return
+            if any(not v for v in keys.values()):
+                self._json({"error": "要先把这个工具的密钥都填好"}, 400)
+                return
             if card["kind"] == "cli" and not blocks.is_verified(card) and not isinstance(approved, str):
                 self._json({"error": "这块的接法没核实过：先把完整命令给用户看，用户确认后再检测"}, 400)
                 return
             if card["kind"] == "llm_api" and not api_key:
                 self._json({"error": "要先填密钥"}, 400)
                 return
-            job = self._blocks_job("check", self._blocks_check_work(home, card, approved, api_key))
+            job = self._blocks_job("check", self._blocks_check_work(home, card, approved, api_key, keys))
+            self._json({"job": job})
+        elif path == "/api/blocks/connect_builtin":
+            name = str(body.get("id") or "")
+            if name not in blocks.BUILTIN:
+                self._json({"error": "只有 Codex、Cursor、agy 能一键接入"}, 400)
+                return
+            if blocks._card_path(name, home).is_file():
+                self._json({"error": "基础层里已经有这一块"}, 409)
+                return
+            card = blocks.builtin_card(name)
+            job = self._blocks_job("check", self._blocks_check_work(home, card, auto_save=True), card=card)
+            self.server.blocks_pending_jobs[name] = job
             self._json({"job": job})
         elif path == "/api/blocks/save":
             self._blocks_save(home, str(body.get("job") or ""))
@@ -663,14 +744,24 @@ class Handler(BaseHTTPRequestHandler):
         with server.blocks_confirm_lock:
             proposal = clerk_tasks.load_proposal(project, pid)
             block = (proposal or {}).get("block") or {}
+            pkind = (proposal or {}).get("kind")
             api_key = (self._blocks_key(body, str(block.get("key_account") or ""), str(block.get("provider") or ""),
                                         str(block.get("base_url") or ""))
-                       if (proposal or {}).get("kind") == "connect_api" else "")
+                       if pkind == "connect_api" else self._blocks_search_key(body) if pkind == "connect_search" else "")
+            keys = {}
+            if pkind == "connect" and block.get("secrets"):
+                try:
+                    keys = self._blocks_tool_keys(blocks.validate_card(block), body)
+                except BlockError:
+                    keys = {}
             if decision == "confirm" and proposal and proposal.get("state") == "open":
-                if proposal.get("kind") == "connect_api" and not api_key:
+                if pkind in ("connect_api", "connect_search") and not api_key:
                     self._json({"error": "请先在密钥框里填好密钥"}, 400)
                     return
-                if proposal.get("kind") == "install" and (blocks_install.installing() or server.blocks_installing):
+                if pkind == "connect" and any(not v for v in keys.values()):
+                    self._json({"error": "请先把每个密钥框都填好"}, 400)
+                    return
+                if pkind in ("install", "web_install") and (blocks_install.installing() or server.blocks_installing):
                     self._json({"error": "正在安装别的工具，等它装完再装"}, 409)
                     return
             try:
@@ -692,16 +783,18 @@ class Handler(BaseHTTPRequestHandler):
                 return
             home = str(blocks.home())
             replaces = bool(proposal and proposal.get("replaces"))
-            if kind == "install":
+            if kind in ("install", "web_install"):
                 with server.blocks_lock:
                     server.blocks_installing = "pending"
-                job = self._blocks_job("install", self._blocks_install_work(home, answer["install"]))
+                work = (self._blocks_install_work(home, answer["install"]) if kind == "install"
+                        else self._blocks_web_install_work(home, answer["spec"]))
+                job = self._blocks_job("install", work)
                 with server.blocks_lock:
                     if server.blocks_installing == "pending":
                         server.blocks_installing = job
             else:
                 block = answer["block"]
-                work = self._blocks_check_work(home, block, answer.get("approved"), api_key)
+                work = self._blocks_check_work(home, block, answer.get("approved"), api_key, keys)
                 job = self._blocks_job("check", work, card=block, replaces=replaces)
             server.blocks_proposal_jobs[pid] = job
             reply["job"] = job
@@ -1175,10 +1268,12 @@ def make_server(port: int = 0, token=None, hub=None) -> ThreadingHTTPServer:
     server.clerk = None           # 行政人员的模型连接，密钥只在内存里
     server.blocks_clerk = None    # 积木库行政的模型连接
     server.blocks_saved_keys = {}  # Mac 窗口从钥匙串交来的密钥：账号 -> 密钥，只在内存里（60 号单）
+    clerk_tasks.key_source = lambda account: server.blocks_saved_keys.get(account, "")  # 行政的联网搜索用
     server.blocks_client_factory = None
     server.terminal_path = terminal_path
     server.blocks_jobs = {}            # 积木库后台任务：编号 -> 状态
     server.blocks_proposal_jobs = {}   # 提议编号 -> 任务编号：同一个提议点两次拿到同一个任务
+    server.blocks_pending_jobs = {}    # 待接入的预置工具 -> 检测任务（64 号单）
     server.blocks_lock = threading.Lock()
     server.blocks_confirm_lock = threading.Lock()
     server.blocks_path_lock = threading.Lock()

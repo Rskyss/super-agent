@@ -1,6 +1,8 @@
 /* 聊天页面：内容居中，调度员的话直接排版，只有你发的内容是气泡。依赖 theme.css */
 .prop-output { font: var(--fs-sm) var(--font-mono); background: var(--bg-side); border-radius: var(--r-md); padding: 10px 12px; margin: 6px 0 10px; max-height: 240px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; }
 .ask .prop-warn { color: var(--bad); font-size: var(--fs-sm); margin: 0 0 10px; }
+.ask .prop-warn.caution { color: var(--accent); }  /* 黄色提醒，和“额度不足”同一种颜色 */
+.prop-secrets small:not(:last-child) { color: var(--text); }
 .prop-key { display: flex; flex-direction: column; gap: 6px; margin: 0 0 12px; }
 .prop-key input { font: var(--fs-base) var(--font-mono); color: var(--text); background: var(--bg-side); border: 0; box-shadow: inset 0 0 0 1px var(--hair-2); border-radius: var(--r-md); padding: 7px 10px; width: 100%; }
 .prop-key small { font-size: var(--fs-sm); color: var(--dim); }

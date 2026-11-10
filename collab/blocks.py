@@ -41,7 +41,7 @@ _MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,99}")  # 模型名：不�
 _SECRET_NAME_EXACT = {"key", "auth"}
 _SECRET_NAME_PARTS = ("apikey", "secret", "password", "passwd", "authorization", "accesskey", "privatekey")
 # 名字以 token 结尾的才算（access_token、token）；tokens_used、max_tokens 是用量，不是密钥
-_NOT_SECRET_NAMES = {"keyaccount"}  # llm_api 卡里只存钥匙串账号名，不是密钥
+_NOT_SECRET_NAMES = {"keyaccount", "secrets"}  # llm_api 卡里只存钥匙串账号名，不是密钥
 # 接法卡不能变成“运行任意程序”的口子：这些程序要么能执行任意脚本，要么能删改文件、联网下载、装软件
 _DANGEROUS_COMMANDS = {
     "sh", "bash", "zsh", "dash", "fish", "ksh", "csh", "tcsh", "env", "sudo", "doas", "su", "exec", "nohup",
@@ -106,7 +106,8 @@ _VERSION_FORMS = (["--version"], ["-V"], ["-v"], ["version"])
 _LOGIN_FORMS = (["status"], ["login", "status"], ["auth", "status"], ["whoami"], ["auth", "whoami"])
 _FIELDS = {
     "cli": {"id", "kind", "name", "command", "run", "model", "version_args", "login_check", "done_when",
-            "source", "note"},
+            "source", "note", "role", "probe", "ok_words", "secrets"},
+    "search": {"id", "kind", "name", "provider", "key_account", "source", "note"},
     "llm_api": {"id", "kind", "name", "provider", "base_url", "model", "key_account", "source", "note"},
 }
 
@@ -124,6 +125,20 @@ BUILTIN = {
             "run": ["-p", "{prompt}", "--model", "{model}", "--output-format", "json"],
             "model": DEFAULT_MODELS["agy"]},
 }
+
+
+SEARCH_PRESETS = {
+    "tavily": {"id": "web-search", "kind": "search", "name": "联网搜索 · Tavily", "provider": "tavily",
+               "key_account": "tavily"},
+}
+CATEGORY_LABELS = {"agent": "AI 助手", "tool": "普通工具", "llm_api": "大模型 API", "search": "联网搜索"}
+_ENV = re.compile(r"[A-Z][A-Z0-9_]{1,63}")
+_ENV_DENY = {"PATH", "HOME", "SHELL", "USER", "LOGNAME", "TMPDIR", "PWD", "OLDPWD", "ENV", "BASH_ENV", "ZDOTDIR",
+             "IFS", "NODE_OPTIONS", "NODE_PATH", "LANG", "TERM", "EDITOR", "VISUAL", "PAGER", "BROWSER",
+             "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "SHELLOPTS", "BASHOPTS", "PS4", "PROMPT_COMMAND",
+             "CDPATH", "NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE", "SSL_CERT_DIR", "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE"}
+_ENV_DENY_PREFIX = ("DYLD_", "LD_", "PYTHON", "NPM_CONFIG_", "HOMEBREW_", "GIT_", "SSH_", "LC_", "PERL", "RUBY",
+                    "JAVA_", "SUPER_AGENT_")
 
 
 def home(root=None) -> Path:
@@ -176,18 +191,9 @@ def _check_id(card_id) -> str:
     return card_id
 
 
-def _check_cli(card: dict) -> None:
-    command = card.get("command")
-    if not isinstance(command, str) or not _COMMAND.fullmatch(command):
-        raise BlockError("命令不对：只能写可执行文件的名字，不能带路径、空格或符号，开头不能是横线")
-    low = command.lower()
-    if low in _DANGEROUS_COMMANDS or _DANGEROUS_PATTERN.fullmatch(low):
-        raise BlockError(f"命令 {command} 不能接进基础层：它能运行任意脚本或改动电脑，只能接 AI 工具本身")
-    run = card.get("run")
-    if not _texts(run) or not any("{prompt}" in part for part in run):
-        raise BlockError("run 要写成一组参数，并且其中一处要有 {prompt}，用来放交代")
+def _check_parts(parts, what) -> None:
     previous_flag = ""
-    for part in run:
+    for part in parts:
         if len(part) > _PART_LIMIT or _odd_text(part) or "（交代）" in part:
             raise BlockError("参数里只能用英文字符、空格、汉字和常用中文标点，不能有换行和看不见的字，单个参数最长 500 个字，也不能直接写“（交代）”")
         if part.startswith("-") and "{" in part.split("=", 1)[0]:
@@ -197,17 +203,53 @@ def _check_cli(card: dict) -> None:
         if _safety_off(part, previous_flag):
             raise BlockError(f"参数 {part} 会关掉工具自己的安全限制，不能写进接法卡")
         previous_flag = _flag_name(part) if part.startswith("-") else ""
-    used = {name for part in run for name in _PLACEHOLDER.findall(part)}
-    unknown = sorted(used - {"prompt", "model"})
-    if unknown:
-        raise BlockError(f"run 里有不认识的占位：{'、'.join('{' + n + '}' for n in unknown)}，只能用 {{prompt}} 和 {{model}}")
-    if "model" in card and not (isinstance(card["model"], str) and _MODEL.fullmatch(card["model"])):
-        raise BlockError("模型名不对：要以字母或数字开头，只能用字母、数字和 . _ : / @ + -")
-    if "model" in used and not _text(card.get("model")):
-        raise BlockError("run 里用了 {model}，就要写默认模型")
+
+
+def _check_env(env) -> str:
+    if not isinstance(env, str) or not _ENV.fullmatch(env):
+        raise BlockError(f"密钥名字 {env!r} 不对：只能用大写字母、数字和下划线，以字母开头，2 到 64 个字")
+    if env in _ENV_DENY or env.startswith(_ENV_DENY_PREFIX):
+        raise BlockError(f"密钥名字 {env} 不能用：这个名字会改变程序的运行方式")
+    return env
+
+
+def _check_secrets(secrets) -> None:
+    if not isinstance(secrets, list) or not 1 <= len(secrets) <= 5:
+        raise BlockError("密钥要写成 1 到 5 项的列表，每项 {\"env\": 名字, \"label\": 显示名}")
+    seen = set()
+    for item in secrets:
+        if not (isinstance(item, dict) and set(item) == {"env", "label"}):
+            raise BlockError("每把密钥只写 env（交给工具时的名字）和 label（显示名）两项，密钥本身不能写进接法卡")
+        _check_env(item["env"])
+        if not _text(item["label"]) or len(item["label"].strip()) > 20:
+            raise BlockError("密钥的显示名不能为空，最长 20 个字")
+        if item["env"] in seen:
+            raise BlockError(f"密钥名字 {item['env']} 写了两次")
+        seen.add(item["env"])
+
+
+def _check_cli(card: dict) -> None:
+    if any(card.get("id") == p["id"] for p in SEARCH_PRESETS.values()):
+        raise BlockError(f"编号 {card.get('id')} 留给联网搜索用，换一个编号")
+    command = card.get("command")
+    if not isinstance(command, str) or not _COMMAND.fullmatch(command):
+        raise BlockError("命令不对：只能写可执行文件的名字，不能带路径、空格或符号，开头不能是横线")
+    low = command.lower()
+    if low in _DANGEROUS_COMMANDS or _DANGEROUS_PATTERN.fullmatch(low):
+        raise BlockError(f"命令 {command} 不能接进基础层：它能运行任意脚本或改动电脑，只能接 AI 工具本身")
+    card.setdefault("role", "agent")
+    role = card["role"]
+    if role not in ("agent", "tool"):
+        raise BlockError("类别只能是 agent（AI 助手）或 tool（普通工具）")
+    if role == "agent":
+        if "probe" in card or "ok_words" in card:
+            raise BlockError("AI 助手用“交代一句话、看它新建文件”来检测，不用写 probe 和 ok_words")
+        _check_agent(card)
+    else:
+        _check_tool(card)
     card.setdefault("version_args", ["--version"])
-    if card["version_args"] not in _VERSION_FORMS:
-        raise BlockError("查版本只能写 --version、-V、-v 或 version 其中一种")
+    if card["version_args"] != [] and card["version_args"] not in _VERSION_FORMS:
+        raise BlockError("查版本只能写 --version、-V、-v 或 version 其中一种；没有查版本的命令就写空列表")
     if "login_check" in card:
         check = card["login_check"]
         if not (isinstance(check, dict) and set(check) == {"args", "ok_words"}
@@ -216,11 +258,51 @@ def _check_cli(card: dict) -> None:
             raise BlockError("登录检查要写成 {\"args\": [参数], \"ok_words\": [已登录时会出现的字]}，两样都不能空，判断字样至少 3 个字，不能多写别的")
         if check["args"] not in _LOGIN_FORMS:
             raise BlockError("查登录只能用 status、login status、auth status、whoami 这几种写法")
+    if "secrets" in card:
+        _check_secrets(card["secrets"])
+
+
+def _check_agent(card: dict) -> None:
+    run = card.get("run")
+    if not _texts(run) or not any("{prompt}" in part for part in run):
+        raise BlockError("run 要写成一组参数，并且其中一处要有 {prompt}，用来放交代")
+    _check_parts(run, "run")
+    used = {name for part in run for name in _PLACEHOLDER.findall(part)}
+    unknown = sorted(used - {"prompt", "model"})
+    if unknown:
+        raise BlockError(f"run 里有不认识的占位：{'、'.join('{' + n + '}' for n in unknown)}，只能用 {{prompt}} 和 {{model}}")
+    if "model" in card and not (isinstance(card["model"], str) and _MODEL.fullmatch(card["model"])):
+        raise BlockError("模型名不对：要以字母或数字开头，只能用字母、数字和 . _ : / @ + -")
+    if "model" in used and not _text(card.get("model")):
+        raise BlockError("run 里用了 {model}，就要写默认模型")
     card.setdefault("done_when", {"file": DEFAULT_DONE_FILE})
     done = card["done_when"]
     name = done.get("file") if isinstance(done, dict) and set(done) == {"file"} else None
     if not isinstance(name, str) or not _DONE_FILE.fullmatch(name):
         raise BlockError("算干完活的文件只能写一个普通文件名：字母、数字、汉字和 . _ -，最长 60 个字，不能以点开头")
+
+
+def _check_tool(card: dict) -> None:
+    for field in ("run", "model", "done_when"):
+        if field in card:
+            raise BlockError(f"普通工具不用写 {field}：它不接交代，用 probe 写一条只查不改的检测命令")
+    probe = card.get("probe")
+    if not _texts(probe) or len(probe) > 20:
+        raise BlockError("普通工具要写 probe：一条只查不改的检测命令，写成 1 到 20 个参数的列表")
+    if any(_PLACEHOLDER.search(part) for part in probe):
+        raise BlockError("检测命令里不能有 {…} 占位，要写成真正要运行的参数")
+    _check_parts(probe, "probe")
+    if "ok_words" in card:
+        words = card["ok_words"]
+        if not (_texts(words, nonempty=True) and len(words) <= 5 and all(len(w.strip()) >= 2 for w in words)):
+            raise BlockError("ok_words 要写 1 到 5 个判断字样，每个至少 2 个字")
+
+
+def _check_search(card: dict) -> None:
+    if card.get("provider") not in SEARCH_PRESETS:
+        raise BlockError(f"联网搜索只支持 {'、'.join(sorted(SEARCH_PRESETS))}")
+    if card.get("key_account") != SEARCH_PRESETS[card["provider"]]["key_account"]:
+        raise BlockError("联网搜索的钥匙串账号是固定的，不能改")
 
 
 def _check_api(card: dict) -> None:
@@ -243,7 +325,7 @@ def validate_card(card) -> dict:
     _check_id(card.get("id"))
     kind = card.get("kind")
     if not isinstance(kind, str) or kind not in _FIELDS:
-        raise BlockError(f"类型 {kind!r} 不认识：只能是 cli 或 llm_api")
+        raise BlockError(f"类型 {kind!r} 不认识：只能是 cli、llm_api 或 search")
     extra = sorted(str(k) for k in set(card) - _FIELDS[kind])
     if extra:
         raise BlockError(f"接法卡里有不认识的项：{'、'.join(extra)}")
@@ -254,7 +336,7 @@ def validate_card(card) -> dict:
         raise BlockError("来源只能是 builtin 或 clerk")
     if "note" in card and not isinstance(card["note"], str):
         raise BlockError("备注要写成文字")
-    (_check_cli if kind == "cli" else _check_api)(card)
+    {"cli": _check_cli, "llm_api": _check_api, "search": _check_search}[kind](card)
     if not _json_safe(card):
         raise BlockError("接法卡里有存不下来的内容（怪字符或不是文字的值）")
     return card
@@ -334,7 +416,9 @@ def is_verified(card) -> bool:
     card = validate_card(card)
     if card["kind"] != "cli":
         return False
-    fixed = ("command", "run", "version_args", "login_check", "done_when")
+    if card["role"] != "agent":
+        return False
+    fixed = ("command", "run", "version_args", "login_check", "done_when", "role", "probe", "ok_words", "secrets")
     for name in BUILTIN:
         preset = builtin_card(name)
         if all(card.get(k) == preset.get(k) for k in fixed):
@@ -349,7 +433,8 @@ def command_preview(card, executable=None) -> str:
     """给用户看的完整命令：交代写成“（交代）”，带空格的参数加引号，看得出是一个整体。
     executable 给了就显示实际要运行的完整路径（电脑上有同名程序时看得出是哪一个）。"""
     import shlex
-    args = build_args(card, _PROMPT_MARK)
+    card = validate_card(card)
+    args = probe_args(card) if card["kind"] == "cli" and card["role"] == "tool" else build_args(card, _PROMPT_MARK)
     if executable:
         args[0] = str(executable)
     return " ".join(_PROMPT_MARK if a == _PROMPT_MARK else shlex.quote(a) for a in args)
@@ -359,13 +444,40 @@ def build_args(card, prompt, model=None) -> list:
     """按接法卡拼出参数列表。只替换模板里本来就有的占位，交代原样作为参数，不展开。"""
     card = validate_card(card)
     if card["kind"] != "cli":
-        raise BlockError("大模型 API 不用拼命令")
+        raise BlockError("只有命令行工具才拼命令")
+    if card["role"] != "agent":
+        raise BlockError("普通工具不接交代，检测用 probe_args")
     if not isinstance(prompt, str):
         raise BlockError("交代要是文字")
     if model is not None and not (isinstance(model, str) and _MODEL.fullmatch(model)):
         raise BlockError("模型名不对：要以字母或数字开头，只能用字母、数字和 . _ : / @ + -")
     values = {"prompt": prompt, "model": model or card.get("model", "")}
     return [card["command"]] + [_PLACEHOLDER.sub(lambda m: values[m.group(1)], part) for part in card["run"]]
+
+
+def probe_args(card) -> list:
+    """普通工具的检测命令：程序名加 probe，原样，不替换任何东西。"""
+    card = validate_card(card)
+    if card["kind"] != "cli" or card["role"] != "tool":
+        raise BlockError("只有普通工具才有检测命令")
+    return [card["command"]] + list(card["probe"])
+
+
+def search_card(provider) -> dict:
+    if not isinstance(provider, str) or provider not in SEARCH_PRESETS:
+        raise BlockError(f"没有预置的联网搜索 {provider!r}，只有 {'、'.join(sorted(SEARCH_PRESETS))}")
+    return validate_card(dict(SEARCH_PRESETS[provider], source="builtin"))
+
+
+def category(card) -> str:
+    """agent / tool / llm_api / search，显示名见 CATEGORY_LABELS。"""
+    card = validate_card(card)
+    return card["role"] if card["kind"] == "cli" else card["kind"]
+
+
+def secret_account(card_id, env) -> str:
+    """工具密钥在钥匙串里的账号名。"""
+    return f"cli:{_check_id(card_id)}:{_check_env(env)}"
 
 
 def _record_path(card_id, root) -> Path:

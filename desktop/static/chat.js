@@ -130,7 +130,8 @@ var ChatCore = (function () {
         };
         if (isBlockKind(pkind)) {
           pblock.info = {};
-          ["install", "tool", "label", "command", "source", "needs", "minutes", "block", "name", "verified", "preview", "replaces", "provider", "model"].forEach(function (k) {
+          ["install", "tool", "label", "command", "source", "needs", "minutes", "block", "name", "verified", "preview", "replaces", "provider", "model",
+           "category", "secrets", "domain", "danger", "new", "facts", "found_by", "key_account"].forEach(function (k) {
             if (ev[k] != null) pblock.info[k] = ev[k];
           });
         }
@@ -230,7 +231,7 @@ var ChatCore = (function () {
   }
 
   function isBlockKind(kind) {
-    return ["install", "connect", "connect_api"].indexOf(kind) !== -1;
+    return ["install", "connect", "connect_api", "web_install", "connect_search"].indexOf(kind) !== -1;
   }
 
   /** 没通过的原因是不是出在密钥本身：只有这时才劝“换一把”（和 BlocksCore.keyProblem 同一个判断） */
@@ -249,12 +250,36 @@ var ChatCore = (function () {
       if (info.needs) rows.push({ label: "要先有", text: info.needs === "npm" ? "npm（装 Node 时自带）" : (info.needs === "brew" ? "Homebrew" : info.needs) });
       return { title: info.label, rows: rows, needsKey: false, confirmText: "确认安装", warn: "" };
     }
+    if (b.proposalKind === "web_install") {
+      // 网上找来的：黄色提醒；“下载脚本直接运行”换红色（沙盒接入方案第一节第 3 步）
+      var rows = [
+        { label: "来源", text: info.source },
+        { label: "网站", text: info.domain, strong: true },
+        { label: "原文核对", text: "✓ 这条命令在这一页的原文里找到了" + (info.found_by === "tavily" ? "（由联网搜索读出页面）" : "") }
+      ];
+      (info.facts || []).forEach(function (f) { rows.push({ label: "安装包底细", text: f }); });
+      if (info.new) rows.push({ label: "提醒", text: "刚发布不久，多留个心" });
+      rows.push({ label: "会执行的命令", text: info.command, code: true });
+      var warnText = info.danger
+        ? "这种方式会运行厂商的安装脚本，脚本做什么程序管不住。只在你确定这是官网时确认"
+        : "不在核实名单里，来自网上。请看清下面的网站是不是这个工具的官网";
+      return { title: info.label, rows: rows, needsKey: false, confirmText: "确认安装", warn: warnText,
+               warnLevel: info.danger ? "danger" : "caution" };
+    }
+    if (b.proposalKind === "connect_search") {
+      var srows = [{ label: "用途", text: "让行政能上网找官网和安装说明" }, { label: "服务", text: "Tavily（免费版每月 1000 次）" }];
+      if (info.replaces) srows.push({ label: "会替换", text: "基础层里的「" + info.replaces + "」" });
+      return { title: "接进基础层：" + info.name, rows: srows, needsKey: true, confirmText: "检测", warn: "",
+               keyAccount: info.key_account || "tavily", keyHint: "在这里填入 Tavily 密钥（tvly- 开头）" };
+    }
     if (b.proposalKind === "connect") {
       var warn = info.verified ? "" : "未核实，有风险：确认前看清要运行的完整命令";
       var rows = [];
+      if (info.category) rows.push({ label: "类别", text: info.category });
       if (!info.verified) rows.push({ label: "要运行的完整命令", text: info.preview, code: true });
       if (info.replaces) rows.push({ label: "会替换", text: "基础层里的「" + info.replaces + "」" });
-      return { title: "接进基础层：" + info.name, rows: rows, needsKey: false, confirmText: info.verified ? "确认并检测" : "看过了，确认检测", warn: warn };
+      return { title: "接进基础层：" + info.name, rows: rows, needsKey: false, confirmText: info.verified ? "确认并检测" : "看过了，确认检测", warn: warn,
+               secrets: info.secrets || [] };
     }
     if (b.proposalKind === "connect_api") {
       var prov = { tencent: "腾讯云", bailian: "阿里百炼", other: "其他" }[info.provider] || info.provider;
@@ -268,8 +293,8 @@ var ChatCore = (function () {
 
   function blockDoneTitle(b) {
     if (b.state === "confirmed") {
-        if (b.proposalKind === "install") return "已确认安装：" + b.info.label;
-        if (b.proposalKind === "connect" || b.proposalKind === "connect_api") return "已确认接入：" + b.info.name;
+        if (b.proposalKind === "install" || b.proposalKind === "web_install") return "已确认安装：" + b.info.label;
+        if (b.proposalKind === "connect" || b.proposalKind === "connect_api" || b.proposalKind === "connect_search") return "已确认接入：" + b.info.name;
     }
     return { cancelled: "好的，先不做。", replaced: "已换成新的提议" }[b.state] || b.title;
   }
@@ -323,6 +348,7 @@ if (typeof document !== "undefined") (function () {
 
   var proposalJobs = {};
   var proposalKeys = {};
+  var proposalSecrets = {};  // 提议编号 -> {钥匙串账号: 密钥}：放进基础层后逐把交给 Mac 窗口，只在内存里
   var confirming = {};  // 确认请求还没回话的提议：这时服务器还没登记任务，不按提议去查
   // 60 号单：钥匙串里有这一家的密钥时，提议卡显示“已保存的密钥 / 换一把”
   var savedAccounts = null, savedLoading = false, keyWanted = {}, usedSavedKey = {};
@@ -337,7 +363,7 @@ if (typeof document !== "undefined") (function () {
         savedLoading = false;
         savedAccounts = (d && d.saved_accounts) || [];
         model.blocks.forEach(function (b) {
-          if (b.kind === "proposal" && b.proposalKind === "connect_api" && b.state === "open") model._touch(b);
+          if (b.kind === "proposal" && ["connect_api", "connect_search", "connect"].indexOf(b.proposalKind) >= 0 && b.state === "open") model._touch(b);
         });
         render();
       })
@@ -507,7 +533,7 @@ if (typeof document !== "undefined") (function () {
           el.querySelector("[data-prop=\"confirm\"]").textContent = bc.confirmText || "确认";
           if (bc.warn) {
             var warnP = document.createElement("p");
-            warnP.className = "prop-warn";
+            warnP.className = "prop-warn" + (bc.warnLevel === "caution" ? " caution" : "");
             warnP.textContent = bc.warn;
             el.querySelector("h3").after(warnP);
           }
@@ -517,7 +543,11 @@ if (typeof document !== "undefined") (function () {
             var sp = document.createElement("span");
             sp.textContent = r.label || "";
             var p = document.createElement("p");
-            if (r.code) {
+            if (r.strong) {
+              var st = document.createElement("strong");
+              st.textContent = r.text || "";
+              p.appendChild(st);
+            } else if (r.code) {
               var cd = document.createElement("code");
               cd.textContent = r.text || "";
               p.appendChild(cd);
@@ -558,12 +588,34 @@ if (typeof document !== "undefined") (function () {
             var inp = document.createElement("input");
             inp.type = "password";
             inp.setAttribute("autocomplete", "off");
-            inp.placeholder = "在这里填入 API 密钥";
+            inp.placeholder = bc.keyHint || "在这里填入 API 密钥";
             var tip = document.createElement("small");
             tip.textContent = "密钥只填在这里，别贴在聊天里";
             keyBox.appendChild(inp);
             keyBox.appendChild(tip);
             rowsEl.after(keyBox);
+          }
+          if (bc.secrets && bc.secrets.length) {  // 普通工具要的几把密钥：一把一格；钥匙串里存过的可以空着
+            if (savedAccounts === null) loadSavedAccounts();
+            var secBox = document.createElement("div");
+            secBox.className = "prop-key prop-secrets";
+            bc.secrets.forEach(function (sec) {
+              var lab = document.createElement("small");
+              var saved = (savedAccounts || []).indexOf(sec.account) >= 0;
+              lab.textContent = sec.label + (saved ? "（已保存，可以空着）" : "");
+              var si = document.createElement("input");
+              si.type = "password";
+              si.setAttribute("autocomplete", "off");
+              si.setAttribute("data-account", sec.account);
+              if (saved) si.setAttribute("data-saved", "1");
+              si.placeholder = "在这里填入「" + sec.label + "」";
+              secBox.appendChild(lab);
+              secBox.appendChild(si);
+            });
+            var stip = document.createElement("small");
+            stip.textContent = "密钥只填在这里，别贴在聊天里";
+            secBox.appendChild(stip);
+            (el.querySelector(".prop-key") || rowsEl).after(secBox);
           }
           var errP = document.createElement("p");
           errP.className = "prop-result fail";
@@ -761,7 +813,25 @@ if (typeof document !== "undefined") (function () {
         conversation: currentThread || "", id: pid,
         decision: decision,
       };
-      var keyInp = box.querySelector(".prop-key input");
+      var keyInp = box.querySelector(".prop-key:not(.prop-secrets) input");
+      var secretInps = box.querySelectorAll(".prop-secrets input[data-account]");
+      var secretVals = {};
+      if (decision === "confirm" && secretInps.length) {
+        var lacking = false;
+        secretInps.forEach(function (si) {
+          var v = si.value.trim();
+          if (v) secretVals[si.getAttribute("data-account")] = v;
+          else if (!si.getAttribute("data-saved")) lacking = true;
+        });
+        if (lacking) {
+          var serr = box.querySelector(".prop-result.fail");
+          serr.textContent = "请先把每个密钥框都填好";
+          serr.hidden = false;
+          box.querySelectorAll("button").forEach(function (b) { b.disabled = false; });
+          return;
+        }
+        body.secret_keys = secretVals;
+      }
       var keyVal = "";
       usedSavedKey[pid] = decision === "confirm" && !keyInp && !!box.querySelector(".saved-key");
       if (decision === "confirm" && keyInp) {
@@ -784,7 +854,9 @@ if (typeof document !== "undefined") (function () {
       api("/api/clerk/proposal", body).then(function (d) {
         delete confirming[pid];
         if (keyInp) keyInp.value = "";
+        secretInps.forEach(function (si) { si.value = ""; });
         if (keyVal) proposalKeys[pid] = keyVal;
+        if (Object.keys(secretVals).length) proposalSecrets[pid] = secretVals;
         if (d && d.job) startJobPoll(pid, d.job);
         else if (blockKind && decision === "confirm") touchProposal(pid);  // 没带任务编号（比如点过一次）：按提议查一次
       }).catch(function (err) {
@@ -805,6 +877,9 @@ if (typeof document !== "undefined") (function () {
         var key = proposalKeys[pid];
         if (d && d.key_account && key) passKeyToWindow(d.key_account, key);
         delete proposalKeys[pid];
+        var secs = proposalSecrets[pid] || {};
+        Object.keys(secs).forEach(function (acc) { passKeyToWindow(acc, secs[acc]); });  // 普通工具的几把密钥各存一条
+        delete proposalSecrets[pid];
         var rec = proposalJobs[pid];
         if (rec) {
           rec.saved = true;

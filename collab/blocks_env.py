@@ -135,7 +135,11 @@ def _check(target, app_path, terminal_path, runner, timeout) -> dict:
             status, use_path = "找不到", _clean_path(terminal_path)
     item = {"name": target["name"], "label": target["label"], "kind": target["kind"], "status": status,
             "path": found or "", "version": "", "login": None, "why": target["why"], "note": "", "fix": ""}
-    if found:
+    if found and not target["args"]:
+        item["note"] = "这个工具查不了版本"
+        if target["kind"] == "tool":
+            item["login"] = _login(target["login_check"], found, use_path, runner, timeout)
+    elif found:
         try:
             _, out = runner([found] + target["args"], use_path, timeout)
             item["version"] = _version_line(out)
