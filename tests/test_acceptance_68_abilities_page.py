@@ -325,6 +325,7 @@ class ModelTest(AbilityCase):
 
     def test_only_from_list(self):
         self.models_known()
+        self.bget("/api/abilities/list")  # 先让程序写进预置卡片（施工方 2026-11-11 指出：原来没调接口就读卡片）
         before = abilities.load_ability("write-article", self.home)
         for body in ({"model": "qwen-max", "backup_models": []},
                      {"model": "qwen3.7-plus", "backup_models": ["qwen-max"]},
