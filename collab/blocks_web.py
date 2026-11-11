@@ -378,16 +378,23 @@ def _tavily(url, payload, key):
     return body if isinstance(body, dict) else {}
 
 
-def search(query, key, max_results=5) -> list:
+def search(query, key, max_results=5, time_range=None) -> list:
     if not isinstance(query, str) or not query.strip() or len(query) > 300:
         raise BlockError("搜索词不能为空，最长 300 个字")
-    body = _tavily(SEARCH_URL, {"query": query.strip(), "max_results": min(int(max_results), 5)}, key)
+    if isinstance(max_results, bool) or not isinstance(max_results, int) or not (1 <= max_results <= 20):
+        raise BlockError("条数必须是 1 到 20 的整数")
+    if time_range not in (None, "none", "day", "week", "month"):
+        raise BlockError("时间范围不对：只能是 none、day、week 或 month")
+    payload = {"query": query.strip(), "max_results": max_results}
+    if time_range in ("day", "week", "month"):
+        payload["time_range"] = time_range
+    body = _tavily(SEARCH_URL, payload, key)
     items = []
     for r in body.get("results") or []:
         if isinstance(r, dict) and isinstance(r.get("url"), str):
             items.append({"title": str(r.get("title") or "")[:120], "url": r["url"][:500],
                           "snippet": _SECRET_TEXT.sub("[已隐藏]", str(r.get("content") or ""))[:300]})
-    return items[:5]
+    return items[:max_results]
 
 
 def tavily_extract(url, key) -> str:

@@ -750,7 +750,7 @@ BUILTIN_ABILITIES = {
         "how": {
             "kind": "llm_api",
             "system": "你是一个优秀的写作助手。请直接输出文章正文，不要输出任何开场白、问候语或客套话。如果用户在要求后面附了资料，请参考它。",
-            "prompt": "写一篇关于{topic}的文章，约{words}字。{notes}"
+            "prompt": "写一篇关于{topic}的文章，约{words}字。\n\n{notes}"
         },
         "output": {
             "type": "text",
