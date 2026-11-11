@@ -532,24 +532,17 @@ def _record_path(card_id, root) -> Path:
     return home(root) / RECORD_DIR / f"{_check_id(card_id)}.jsonl"
 
 
-def add_record(card_id, record, root=None) -> dict:
-    path = _record_path(card_id, root)
-    if not isinstance(record, dict) or not _text(record.get("type")):
-        raise BlockError("记录要写 type，并且是文字")
-    if _has_secret(record):
-        raise BlockError("记录里不能有密钥")
-    item = dict(record, time=datetime.now().isoformat(timespec="seconds"))
-    if not _json_safe(item):
-        raise BlockError("记录里有存不下来的内容（怪字符或不是文字的值）")
-    line = json.dumps(item, ensure_ascii=False) + "\n"
+def append_jsonl(path, record) -> dict:
+    path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    line = json.dumps(record, ensure_ascii=False) + "\n"
     with open(path, "a", encoding="utf-8") as fh:
         fh.write(line)
-    return item
+    return record
 
 
-def records(card_id, root=None, limit=None) -> list:
-    path = _record_path(card_id, root)
+def read_jsonl(path, limit=None) -> list:
+    path = Path(path)
     if limit is not None and (not isinstance(limit, int) or isinstance(limit, bool) or limit < 1):
         raise BlockError("limit 要是大于 0 的整数")
     if not path.is_file():
@@ -563,6 +556,22 @@ def records(card_id, root=None, limit=None) -> list:
         if isinstance(item, dict):
             items.append(item)
     return items[-limit:] if limit else items
+
+
+def add_record(card_id, record, root=None) -> dict:
+    path = _record_path(card_id, root)
+    if not isinstance(record, dict) or not _text(record.get("type")):
+        raise BlockError("记录要写 type，并且是文字")
+    if _has_secret(record):
+        raise BlockError("记录里不能有密钥")
+    item = dict(record, time=datetime.now().isoformat(timespec="seconds"))
+    if not _json_safe(item):
+        raise BlockError("记录里有存不下来的内容（怪字符或不是文字的值）")
+    return append_jsonl(path, item)
+
+
+def records(card_id, root=None, limit=None) -> list:
+    return read_jsonl(_record_path(card_id, root), limit=limit)
 
 
 def last_record(card_id, root=None, type=None):

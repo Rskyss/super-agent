@@ -11,8 +11,11 @@ import math
 import os
 import re
 import secrets
+import shutil
 import struct
 import tempfile
+import threading
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -20,13 +23,16 @@ from collab.blocks import (
     BlockError,
     home,
     category,
+    CATEGORY_LABELS,
     _ID,
     _MODEL,
     _DONE_FILE,
     _has_secret,
-    _check_id,
     _json_safe,
     _text,
+    _PLACEHOLDER,
+    append_jsonl,
+    read_jsonl,
 )
 
 
@@ -50,7 +56,6 @@ ALLOWED_TOP_FIELDS = {
 _RUN_ID = re.compile(r"^\d{8}-\d{6}-[0-9a-f]{4}$")
 _PROP_NAME = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 _EXT_NAME = re.compile(r"^[a-z0-9]{1,8}$")
-_PLACEHOLDER = re.compile(r"\{([^{}]*)\}")
 
 
 def _check_ability_id(cid) -> str:
@@ -67,19 +72,36 @@ def _run_record_path(ability_id: str, root=None) -> Path:
     return home(root) / RUN_RECORD_DIR[0] / RUN_RECORD_DIR[1] / f"{_check_ability_id(ability_id)}.jsonl"
 
 
-def _check_template(template: str, properties: dict, name: str = "交代") -> set[str]:
+def _parse_template(template: str, properties: dict, name: str = "交代") -> set[str]:
+    """严格解析模板中的占位符，只许出现成对、不嵌套、已声明的 {项名}。"""
     if not isinstance(template, str) or not template.strip():
         raise AbilityError(f"{name}不能为空，去掉空白后要有内容")
     if len(template) > 4000:
         raise AbilityError(f"{name}太长：最长 4000 个字")
+
     used = set()
-    for m in _PLACEHOLDER.finditer(template):
-        ph = m.group(1)
-        if not ph:
-            raise AbilityError(f"{name}里有空的占位 {{}}，必须写明项名")
-        if ph not in properties:
-            raise AbilityError(f"{name}里引用了未声明的占位项 {{{ph}}}")
-        used.add(ph)
+    in_brace = False
+    start = -1
+    for i, ch in enumerate(template):
+        if ch == "{":
+            if in_brace:
+                raise AbilityError(f"{name}里的花括号不能嵌套")
+            in_brace = True
+            start = i
+        elif ch == "}":
+            if not in_brace:
+                raise AbilityError(f"{name}里有单独未配对的花括号 }}")
+            ph = template[start + 1:i]
+            if not ph:
+                raise AbilityError(f"{name}里有空的占位 {{}}，花括号里必须写明项名")
+            if ph not in properties:
+                raise AbilityError(f"{name}里引用了未声明的占位项 {{{ph}}}")
+            used.add(ph)
+            in_brace = False
+
+    if in_brace:
+        raise AbilityError(f"{name}里有未闭合的花括号 {{")
+
     return used
 
 
@@ -140,9 +162,6 @@ def validate_ability(card) -> dict:
             raise AbilityError("联网搜索的能力卡片不许指定模型")
         if card.get("backup_models"):
             raise AbilityError("联网搜索的能力卡片不许指定备用模型")
-    elif how_kind == "cli":
-        if "model" in card and (not isinstance(card["model"], str) or not _MODEL.fullmatch(card["model"])):
-            raise AbilityError("模型名不对：要以字母或数字开头，只能用字母、数字和 . _ : / @ + -")
     else:
         if "model" in card and (not isinstance(card["model"], str) or not _MODEL.fullmatch(card["model"])):
             raise AbilityError("模型名不对：要以字母或数字开头，只能用字母、数字和 . _ : / @ + -")
@@ -151,6 +170,11 @@ def validate_ability(card) -> dict:
     backup = card["backup_models"]
     if not isinstance(backup, list):
         raise AbilityError("备用模型必须是列表")
+    for m in backup:
+        if not isinstance(m, str):
+            raise AbilityError("备用模型列表里的每一项必须是文字")
+        if not _MODEL.fullmatch(m):
+            raise AbilityError(f"模型名 {m!r} 不对：要以字母或数字开头，只能用字母、数字和 . _ : / @ + -")
     if len(backup) > 2:
         raise AbilityError("备用模型最多 2 个")
     if "model" not in card and backup:
@@ -159,9 +183,6 @@ def validate_ability(card) -> dict:
         raise AbilityError("备用模型不能重复")
     if "model" in card and card["model"] in backup:
         raise AbilityError("备用模型不能和主模型一样")
-    for m in backup:
-        if not isinstance(m, str) or not _MODEL.fullmatch(m):
-            raise AbilityError(f"模型名 {m!r} 不对：要以字母或数字开头，只能用字母、数字和 . _ : / @ + -")
 
     # 5. inputSchema
     schema = card.get("inputSchema")
@@ -216,10 +237,13 @@ def validate_ability(card) -> dict:
                 en = p["enum"]
                 if not isinstance(en, list) or not (2 <= len(en) <= 10):
                     raise AbilityError(f"项 {k} 的 enum 必须是 2 到 10 个选项")
+                for v in en:
+                    if not isinstance(v, str):
+                        raise AbilityError(f"项 {k} 的 enum 选项必须是文字")
+                    if not (1 <= len(v.strip()) <= 20):
+                        raise AbilityError(f"项 {k} 的 enum 选项必须是 1 到 20 个字的文字")
                 if len(en) != len(set(en)):
                     raise AbilityError(f"项 {k} 的 enum 不能有重复项")
-                if not all(isinstance(v, str) and (1 <= len(v.strip()) <= 20) for v in en):
-                    raise AbilityError(f"项 {k} 的 enum 选项必须是 1 到 20 个字的文字")
 
             if "default" in p:
                 df = p["default"]
@@ -281,11 +305,13 @@ def validate_ability(card) -> dict:
     req = schema["required"]
     if not isinstance(req, list):
         raise AbilityError("required 必须是列表")
-    if len(req) != len(set(req)):
-        raise AbilityError("required 不能有重复项")
     for r in req:
+        if not isinstance(r, str):
+            raise AbilityError("required 里的每一项必须是文字")
         if r not in props:
             raise AbilityError(f"required 里的项 {r} 没有在 properties 里声明")
+    if len(req) != len(set(req)):
+        raise AbilityError("required 不能有重复项")
 
     # 6. how
     if not isinstance(how, dict):
@@ -307,7 +333,7 @@ def validate_ability(card) -> dict:
     used_props = set()
 
     if kind == "search":
-        used_props.update(_check_template(how.get("query"), props, "query 交代"))
+        used_props.update(_parse_template(how.get("query"), props, "query 交代"))
 
         how.setdefault("max_results", 8)
         mr = how["max_results"]
@@ -320,6 +346,8 @@ def validate_ability(card) -> dict:
                 raise AbilityError("max_results 引用的项必须是整数")
             if ref_prop["minimum"] < 1 or ref_prop["maximum"] > 20:
                 raise AbilityError("max_results 引用的整数项范围必须在 1 到 20 之间")
+            if ref not in req and "default" not in ref_prop:
+                raise AbilityError(f"max_results 引用的项 {ref} 必须是必填项或指定 default 默认值")
             used_props.add(ref)
         else:
             if not isinstance(mr, int) or isinstance(mr, bool) or not (1 <= mr <= 20):
@@ -337,21 +365,23 @@ def validate_ability(card) -> dict:
             for opt in ref_prop["enum"]:
                 if opt not in TIME_RANGES:
                     raise AbilityError(f"time_range 引用的选项 {opt} 不是合法的时间范围")
+            if ref not in req and "default" not in ref_prop:
+                raise AbilityError(f"time_range 引用的项 {ref} 必须是必填项或指定 default 默认值")
             used_props.add(ref)
         else:
             if tr not in ("none", "day", "week", "month"):
                 raise AbilityError("time_range 只能是 none、day、week、month 或引用选项项")
 
     elif kind == "llm_api":
-        used_props.update(_check_template(how.get("prompt"), props, "prompt 交代"))
+        used_props.update(_parse_template(how.get("prompt"), props, "prompt 交代"))
         if "system" in how:
-            used_props.update(_check_template(how["system"], props, "system 交代"))
+            used_props.update(_parse_template(how["system"], props, "system 交代"))
 
     elif kind == "cli":
-        used_props.update(_check_template(how.get("prompt"), props, "prompt 交代"))
+        used_props.update(_parse_template(how.get("prompt"), props, "prompt 交代"))
 
         out_f = how.get("output_file")
-        if not isinstance(out_f, str) or not _DONE_FILE.fullmatch(out_f) or "/" in out_f or "\\" in out_f:
+        if not isinstance(out_f, str) or not _DONE_FILE.fullmatch(out_f):
             raise AbilityError("output_file 文件名不对：只能写普通文件名，不能带路径")
 
         how.setdefault("timeout", 300)
@@ -414,6 +444,8 @@ def validate_ability(card) -> dict:
             if "of" not in check:
                 raise AbilityError("使用倍数限制时必须指定 of 项")
             of_prop = check["of"]
+            if not isinstance(of_prop, str):
+                raise AbilityError("check.of 必须是文字")
             if of_prop not in props:
                 raise AbilityError(f"of 引用的项 {of_prop} 未在 properties 里声明")
             if props[of_prop]["type"] != "integer":
@@ -428,9 +460,8 @@ def validate_ability(card) -> dict:
                 if check["min_ratio"] > check["max_ratio"]:
                     raise AbilityError("最小倍数不能大于最大倍数")
         else:
-            extra_c = sorted(set(check) - set())
-            if extra_c:
-                raise AbilityError(f"check 包含不认识的项：{'、'.join(extra_c)}")
+            if check:
+                raise AbilityError(f"check 包含不认识的项：{'、'.join(sorted(check))}")
 
     elif out_type == "list":
         check.setdefault("min_items", 1)
@@ -449,10 +480,9 @@ def validate_ability(card) -> dict:
         ms = check["min_side"]
         if not isinstance(ms, int) or isinstance(ms, bool) or not (16 <= ms <= 4096):
             raise AbilityError("min_side 必须是 16 到 4096 的整数宽高")
-        if kind == "cli":
-            out_f = how.get("output_file", "")
-            if not (out_f.lower().endswith(".png") or out_f.lower().endswith(".jpg") or out_f.lower().endswith(".jpeg")):
-                raise AbilityError("出图的 output_file 必须以 .png、.jpg 或 .jpeg 结尾")
+        out_f = how.get("output_file", "")
+        if not (out_f.lower().endswith(".png") or out_f.lower().endswith(".jpg") or out_f.lower().endswith(".jpeg")):
+            raise AbilityError("出图的 output_file 必须以 .png、.jpg 或 .jpeg 结尾")
 
     elif out_type == "file":
         if "extensions" not in check:
@@ -466,11 +496,10 @@ def validate_ability(card) -> dict:
         for e in exts:
             if not isinstance(e, str) or not _EXT_NAME.fullmatch(e):
                 raise AbilityError(f"扩展名 {e!r} 不对：只能用 1 到 8 位小写字母或数字，不能带点")
-        if kind == "cli":
-            out_f = how.get("output_file", "")
-            out_ext = out_f.rsplit(".", 1)[-1].lower() if "." in out_f else ""
-            if out_ext not in exts:
-                raise AbilityError(f"output_file 的扩展名 {out_ext} 不在允许的 extensions 列表中")
+        out_f = how.get("output_file", "")
+        out_ext = out_f.rsplit(".", 1)[-1].lower() if "." in out_f else ""
+        if out_ext not in exts:
+            raise AbilityError(f"output_file 的扩展名 {out_ext} 不在允许的 extensions 列表中")
 
     return card
 
@@ -483,19 +512,20 @@ def fits_block(card, block, models=None, models_complete=True) -> list:
         raise AbilityError(f"能力卡片用的积木块编号 {card['block']} 和积木块编号 {block.get('id')} 对不上")
 
     cat = category(block)
+    cat_label = CATEGORY_LABELS.get(cat, "未知类别")
     how_kind = card["how"]["kind"]
 
     if how_kind == "search":
         if cat != "search":
-            raise AbilityError(f"联网搜索的能力卡片必须配联网搜索积木块，当前是 {cat}")
+            raise AbilityError(f"联网搜索的能力卡片必须配联网搜索积木块，当前是{cat_label}")
     elif how_kind == "llm_api":
         if cat != "llm_api":
-            raise AbilityError(f"写文章的能力卡片必须配大模型 API 积木块，当前是 {cat}")
+            raise AbilityError(f"大模型 API 的能力卡片必须配大模型 API 积木块，当前是{cat_label}")
     elif how_kind == "cli":
         if cat == "tool":
-            raise AbilityError("命令行能力卡片必须配 AI 助手（agent），普通工具不接交代")
+            raise AbilityError("命令行能力卡片必须配 AI 助手，普通工具不接交代")
         if cat != "agent":
-            raise AbilityError(f"命令行能力卡片必须配 AI 助手，当前是 {cat}")
+            raise AbilityError(f"命令行能力卡片必须配 AI 助手，当前是{cat_label}")
 
     warns = []
     if models is not None:
@@ -575,50 +605,59 @@ def remove_ability(ability_id: str, root=None) -> None:
 
 def add_run(ability_id: str, record: dict, root=None) -> dict:
     """追加一条运行记录到 记录/能力/<编号>.jsonl。"""
-    path = _run_record_path(ability_id, root)
-    if not isinstance(record, dict) or not _text(record.get("type")):
-        raise BlockError("记录要写 type，并且是文字")
-    if _has_secret(record):
-        raise BlockError("记录里不能有密钥")
-    item = dict(record, time=datetime.now().isoformat(timespec="seconds"))
+    try:
+        _check_ability_id(ability_id)
+    except BlockError as exc:
+        raise AbilityError(str(exc)) from exc
+    try:
+        raw = json.dumps(record, ensure_ascii=False)
+        parsed = json.loads(raw)
+    except Exception as exc:
+        raise AbilityError(f"记录无法序列化为 JSON：{exc}") from exc
+    if not isinstance(parsed, dict) or not _text(parsed.get("type")):
+        raise AbilityError("记录要写 type，并且是文字")
+    if _has_secret(parsed):
+        raise AbilityError("记录里不能有密钥")
+    item = dict(parsed, time=datetime.now().isoformat(timespec="seconds"))
     if not _json_safe(item):
-        raise BlockError("记录里有存不下来的内容（怪字符或不是文字的值）")
-    line = json.dumps(item, ensure_ascii=False) + "\n"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "a", encoding="utf-8") as fh:
-        fh.write(line)
-    return item
+        raise AbilityError("记录里有存不下来的内容（怪字符或不是文字的值）")
+    path = _run_record_path(ability_id, root)
+    return append_jsonl(path, item)
 
 
 def runs(ability_id: str, root=None, limit: int | None = None) -> list:
     """读指定能力卡片的运行记录。"""
-    path = _run_record_path(ability_id, root)
+    try:
+        _check_ability_id(ability_id)
+    except BlockError as exc:
+        raise AbilityError(str(exc)) from exc
     if limit is not None and (not isinstance(limit, int) or isinstance(limit, bool) or limit < 1):
-        raise BlockError("limit 要是大于 0 的整数")
-    if not path.is_file():
-        return []
-    items = []
-    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-        try:
-            item = json.loads(line)
-        except ValueError:
-            continue
-        if isinstance(item, dict):
-            items.append(item)
-    return items[-limit:] if limit else items
+        raise AbilityError("limit 要是大于 0 的整数")
+    path = _run_record_path(ability_id, root)
+    return read_jsonl(path, limit=limit)
 
 
-_last_run_id = ""
+_run_id_lock = threading.Lock()
+_current_sec = ""
+_used_suffixes: set[str] = set()
 
 
 def new_run_id() -> str:
-    """生成唯一的运行编号：年月日-时分秒-4位十六进制，连着调用也不重复。"""
-    global _last_run_id
-    while True:
-        candidate = f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(2)}"
-        if candidate != _last_run_id:
-            _last_run_id = candidate
-            return candidate
+    """生成唯一的运行编号：年月日-时分秒-4位十六进制，同一秒内加锁保证不重复。"""
+    global _current_sec, _used_suffixes
+    with _run_id_lock:
+        while True:
+            now_str = datetime.now().strftime("%Y%m%d-%H%M%S")
+            if now_str != _current_sec:
+                _current_sec = now_str
+                _used_suffixes.clear()
+            if len(_used_suffixes) >= 65536:
+                time.sleep(0.01)
+                continue
+            candidate = secrets.token_hex(2)
+            if candidate not in _used_suffixes:
+                _used_suffixes.add(candidate)
+                return f"{now_str}-{candidate}"
 
 
 def result_folder(ability_id: str, run_id: str, root=None) -> Path:
@@ -710,8 +749,8 @@ BUILTIN_ABILITIES = {
         },
         "how": {
             "kind": "llm_api",
-            "system": "你是一个优秀的写作助手。请直接输出文章正文，不要输出任何开场白、问候语或客套话。",
-            "prompt": "写一篇关于{topic}的文章，约{words}字。参考资料：{notes}"
+            "system": "你是一个优秀的写作助手。请直接输出文章正文，不要输出任何开场白、问候语或客套话。如果用户在要求后面附了资料，请参考它。",
+            "prompt": "写一篇关于{topic}的文章，约{words}字。{notes}"
         },
         "output": {
             "type": "text",
@@ -763,17 +802,32 @@ BUILTIN_ABILITIES = {
 
 
 def ensure_builtin(root=None) -> list:
-    """只在 能力层/ 文件夹还不存在时把三张预置卡片写进去（source: builtin），返回写了哪些编号；已经在就返回 []。"""
-    folder = home(root) / ABILITY_DIR
-    if folder.exists():
+    """只在 能力层/ 文件夹还不存在时把三张预置卡片写进去（source: builtin）。不留半套，也不怕同时打开。"""
+    target = home(root) / ABILITY_DIR
+    if target.exists():
         return []
-    folder.mkdir(parents=True, exist_ok=True)
-    created = []
-    for cid, card in sorted(BUILTIN_ABILITIES.items()):
-        to_save = dict(card, source="builtin")
-        save_ability(to_save, root)
-        created.append(cid)
-    return created
+
+    home_dir = home(root)
+    home_dir.mkdir(parents=True, exist_ok=True)
+    tmp_dir = Path(tempfile.mkdtemp(dir=home_dir, prefix=".builtin_tmp_"))
+    try:
+        created = []
+        for cid, card in sorted(BUILTIN_ABILITIES.items()):
+            clean = validate_ability(dict(card, source="builtin"))
+            file_path = tmp_dir / f"{clean['id']}.json"
+            file_path.write_text(json.dumps(clean, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            created.append(cid)
+
+        try:
+            tmp_dir.rename(target)
+        except (FileExistsError, OSError):
+            if target.exists():
+                return []
+            raise
+        return created
+    finally:
+        if tmp_dir.exists():
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 def prepare(card: dict, inputs: dict) -> dict:
@@ -855,38 +909,44 @@ def prepare(card: dict, inputs: dict) -> dict:
 
 
 def image_size(path: Path | str) -> tuple[int, int] | None:
-    """只读文件头获取 PNG 或 JPEG 图片的宽高 (宽, 高)。读不全、读不出返回 None。"""
+    """只读文件头获取 PNG 或 JPEG 图片的宽高 (宽, 高)。PNG 必须有完整 IHDR（至少 33 字节）；JPEG 前 64KB 扫描。读不全、读不出返回 None。"""
     path = Path(path)
     if not path.is_file():
         return None
     try:
         with open(path, "rb") as f:
-            header = f.read(24)
-            if len(header) < 24:
-                return None
+            header = f.read(33)
+            # PNG 检查: 必须有完整 IHDR 前 33 字节
             if header.startswith(b"\x89PNG\r\n\x1a\n"):
-                if header[12:16] == b"IHDR":
+                if len(header) >= 33 and header[12:16] == b"IHDR":
                     w, h = struct.unpack(">II", header[16:24])
                     return (w, h)
                 return None
+            # JPEG 检查: \xff\xd8 开头，扫描最多前 64KB
             if header.startswith(b"\xff\xd8"):
                 f.seek(2)
-                while True:
+                scanned = 2
+                while scanned < 65536:
                     b = f.read(1)
+                    scanned += 1
                     if not b:
                         return None
                     if b != b"\xff":
                         continue
                     while b == b"\xff":
                         b = f.read(1)
+                        scanned += 1
                         if not b:
                             return None
                     marker = b[0]
+                    # SOF markers: 0xC0 .. 0xCF, 除了 0xC4, 0xC8, 0xCC
                     if (0xc0 <= marker <= 0xcf) and marker not in (0xc4, 0xc8, 0xcc):
                         length_bytes = f.read(2)
+                        scanned += 2
                         if len(length_bytes) < 2:
                             return None
                         data = f.read(5)
+                        scanned += 5
                         if len(data) < 5:
                             return None
                         _, h, w = struct.unpack(">BHH", data)
@@ -895,12 +955,14 @@ def image_size(path: Path | str) -> tuple[int, int] | None:
                         return None
                     else:
                         length_bytes = f.read(2)
+                        scanned += 2
                         if len(length_bytes) < 2:
                             return None
                         length = struct.unpack(">H", length_bytes)[0]
                         if length < 2:
                             return None
                         f.seek(length - 2, os.SEEK_CUR)
+                        scanned += (length - 2)
     except Exception:
         return None
     return None
@@ -962,18 +1024,20 @@ def check_output(card: dict, result, values: dict) -> tuple[bool, str]:
         return True, ""
 
     elif out_type == "image":
+        if not isinstance(result, (str, Path)):
+            return False, "输出结果不是文件路径"
         path = Path(result)
         if not path.is_file():
             return False, f"没有找到 {path.name}"
 
         try:
-            head = path.read_bytes()[:16]
-            is_png = head.startswith(b"\x89PNG\r\n\x1a\n")
-            is_jpg = head.startswith(b"\xff\xd8")
-            if not is_png and not is_jpg:
-                return False, f"{path.name} 不是 PNG 或 JPG 图片"
+            with open(path, "rb") as f:
+                head = f.read(16)
         except Exception:
             return False, f"无法读取 {path.name}"
+
+        if not head.startswith(b"\x89PNG\r\n\x1a\n") and not head.startswith(b"\xff\xd8"):
+            return False, f"{path.name} 不是 PNG 或 JPG 图片"
 
         size = image_size(path)
         if size is None:
@@ -987,12 +1051,17 @@ def check_output(card: dict, result, values: dict) -> tuple[bool, str]:
         return True, ""
 
     elif out_type == "file":
+        if not isinstance(result, (str, Path)):
+            return False, "输出结果不是文件路径"
         path = Path(result)
         if not path.is_file():
             return False, f"没有找到 {path.name}"
 
-        if path.stat().st_size == 0:
-            return False, f"{path.name} 是空文件"
+        try:
+            if path.stat().st_size == 0:
+                return False, f"{path.name} 是空文件"
+        except Exception:
+            return False, f"无法读取 {path.name}"
 
         exts = check.get("extensions", [])
         ext = path.suffix.lstrip(".").lower()
