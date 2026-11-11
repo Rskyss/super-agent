@@ -479,18 +479,16 @@ def run(ability_id: str, inputs: dict, root=None, *,
             can_check_img_folder = True
             img_folder_skip_reason = ""
 
-            if is_image:
-                if img_folder.exists():
-                    try:
-                        for p in img_folder.rglob("*"):
-                            if p.is_file() and p.suffix.lower() in (".png", ".jpg", ".jpeg"):
-                                existing_images.add(str(p.resolve()))
-                                existing_images.add(str(p))
-                    except Exception as exc:
-                        can_check_img_folder = False
-                        img_folder_skip_reason = f"运行前记录已有图片出错（{exc}），未去图片文件夹检索"
-                else:
+            # 图片文件夹还不存在（第一次出图）：已有图片清单就是空的，运行中新建出来的图照样能拿回
+            if is_image and img_folder.exists():
+                try:
+                    for p in img_folder.rglob("*"):
+                        if p.is_file() and p.suffix.lower() in (".png", ".jpg", ".jpeg"):
+                            existing_images.add(str(p.resolve()))
+                            existing_images.add(str(p))
+                except Exception as exc:
                     can_check_img_folder = False
+                    img_folder_skip_reason = f"运行前记录已有图片出错（{exc}），未去图片文件夹检索"
 
             tmp_dir = tempfile.mkdtemp(prefix="能力运行-")
             cli_start_time = time.time()

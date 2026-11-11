@@ -618,6 +618,7 @@ class Round2(Case):
 
 class Round3(Case):
     runner = Cli.runner
+    folder_files = Round2.folder_files
 
     def setUp(self):
         super().setUp()
@@ -644,6 +645,16 @@ class Round3(Case):
         self.assertEqual(r["status"], "format")
         self.assertEqual(r["files"], [])
         self.assertFalse(abilities.result_folder("write-article", r["run_id"], self.root).exists())
+
+
+    # Codex 第 3 轮复查查出：第一次出图时 Codex 图片文件夹还不存在，运行中才建出来，新图要能拿回
+    def test_image_folder_created_during_run(self):
+        self.images.rmdir()
+        run = self.runner(write=("2026/new.png", png_bytes(512, 512)), where=self.images)
+        r = self.run_ability("draw-image", {"scene": "猫"}, runner=run)
+        self.assertTrue(r["ok"], r)
+        self.assertIn("别处", r["reason"])
+        self.assertEqual(abilities.image_size(self.folder_files("draw-image", r)[0]), (512, 512))
 
 
 if __name__ == "__main__":
