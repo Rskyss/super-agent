@@ -882,7 +882,8 @@ class ReviewRound2(Case):
     def test_jpeg_scan_budget_cannot_be_bypassed(self):
         # 开头塞 7 万个 FF 再放 SOF：超出前 64KB 才找到，必须返回 None
         p = self.dir / "out.jpg"
-        p.write_bytes(b"\xff\xd8" + b"\xff" * 70000 + jpeg_bytes(512, 512)[2:])
+        sof0 = b"\xff\xc0" + struct.pack(">HBHHB", 11, 8, 512, 512, 1) + b"\x01\x11\x00"
+        p.write_bytes(b"\xff\xd8" + b"\xff" * 70000 + sof0 + b"\xff\xd9")
         self.assertIsNone(abilities.image_size(p))
         # 正常的 JPEG 照样认得
         p.write_bytes(jpeg_bytes(512, 512))
