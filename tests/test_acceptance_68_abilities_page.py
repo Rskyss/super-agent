@@ -176,7 +176,7 @@ class DetailTest(AbilityCase):
         status, d = self.bget("/api/abilities/detail", id="write-article")
         self.assertEqual(status, 200, d)
         self.assertEqual(d["ability"]["id"], "write-article")
-        self.assertEqual(d["block"], {"id": "bailian", "name": "阿里百炼", "exists": True, "kind": "llm_api"})
+        self.assertEqual(d["block"], {"id": "bailian", "name": "阿里百炼", "exists": True, "kind": "llm_api", "model": ""})
         self.assertEqual(d["models"], MODELS)
         self.assertEqual((d["status"], d["example"], d["runs"], d["running"], d["job"]), ("ok", None, [], False, ""))
 
@@ -495,6 +495,102 @@ class PageTest(unittest.TestCase):
         self.assertNotIn("console.log", script)
         self.assertNotRegex(script, r"type=\\?\"password\\?\"|api_key|apiKey", "能力层页面没有密钥框、不带密钥")
         self.assertIn("module.exports", script, "规则层能给 node 检查")
+
+
+# ---------- 第 2 轮补充（Codex 第 1 轮复查查出） ----------
+
+class Round2Test(AbilityCase):
+    def outside_run(self):
+        """外面一个文件夹，长得像一次运行的成果：里面有图和 proof.txt。"""
+        outside = Path(self.tmp) / "外面"
+        (outside / "20261111-120000-ab12").mkdir(parents=True)
+        for folder in (outside, outside / "20261111-120000-ab12"):
+            (folder / "proof.txt").write_text("不该被读到", encoding="utf-8")
+            (folder / "输出.png").write_bytes(self.picture)
+        return outside
+
+    def refused(self, ability_id, run):
+        for name in ("proof.txt", "输出.png"):
+            status, _, body = self.raw_get("/api/abilities/file", id=ability_id, run=run, name=name)
+            self.assertEqual(status, 404, (ability_id, run, name))
+            self.assertNotIn("不该被读到".encode("utf-8"), body)
+            self.assertNotEqual(body, self.picture)
+        status, data = self.bpost("/api/abilities/reveal", {"id": ability_id, "run": run})
+        self.assertEqual(status, 404, data)
+        self.assertEqual(self.opened, [], "链接过去的文件夹不能在访达里打开")
+
+    def test_run_folder_link_refused(self):
+        self.bget("/api/abilities/list")
+        outside = self.outside_run()
+        parent = self.home / abilities.RESULT_DIR / "draw-image"
+        parent.mkdir(parents=True)
+        os.symlink(outside / "20261111-120000-ab12", parent / "20261111-120000-ab12")
+        self.refused("draw-image", "20261111-120000-ab12")
+
+    def test_ability_folder_link_refused(self):
+        self.bget("/api/abilities/list")
+        outside = self.outside_run()
+        (self.home / abilities.RESULT_DIR).mkdir(parents=True, exist_ok=True)
+        os.symlink(outside, self.home / abilities.RESULT_DIR / "search-web")
+        self.refused("search-web", "20261111-120000-ab12")
+
+    def test_result_root_link_refused(self):
+        result = self.run_card("draw-image", {"scene": "猫"})
+        root = self.home / abilities.RESULT_DIR
+        moved = Path(self.tmp) / "挪走的成果"
+        root.rename(moved)
+        os.symlink(moved, root)
+        status, _, body = self.raw_get("/api/abilities/file", id="draw-image", run=result["run_id"], name="输出.png")
+        self.assertEqual(status, 404)
+        self.assertEqual(self.bpost("/api/abilities/reveal", {"id": "draw-image", "run": result["run_id"]})[0], 404)
+        self.assertEqual(self.opened, [])
+
+    def test_home_itself_behind_link_still_works(self):
+        """积木库资料夹本身在链接后面（比如 Mac 的临时文件夹）是正常情况，不能因此拒绝。"""
+        real = Path(self.tmp) / "真的积木库"
+        self.home.rename(real)
+        link = Path(self.tmp) / "积木库链接"
+        os.symlink(real, link)
+        self.home = link
+        os.environ["SUPER_AGENT_BLOCKS_HOME"] = str(link)
+        result = self.run_card("draw-image", {"scene": "猫"})
+        status, _, body = self.raw_get("/api/abilities/file", id="draw-image", run=result["run_id"], name="输出.png")
+        self.assertEqual((status, body), (200, self.picture))
+        self.assertEqual(self.bpost("/api/abilities/reveal", {"id": "draw-image", "run": result["run_id"]})[0], 200)
+        self.assertEqual(len(self.opened), 1)
+
+    def test_detail_gives_job_inputs(self):
+        self.release = threading.Event()
+        try:
+            status, data = self.bpost("/api/abilities/run", {"id": "draw-image", "inputs": {"scene": "猫"}})
+            self.assertEqual(status, 200, data)
+            job_id = data["job"]
+            d = self.bget("/api/abilities/detail", id="draw-image")[1]
+            self.assertEqual(d["job"], job_id, "任务开了还没跑完，不管 running 是不是已经为真，都给任务编号")
+            self.assertEqual(d["job_inputs"], {"scene": "猫"}, "重新打开详情时拿得到这次的输入，备用模型重试用它")
+        finally:
+            self.release.set()
+        self.job(job_id)
+        d = self.bget("/api/abilities/detail", id="draw-image")[1]
+        self.assertEqual((d["job"], d["job_inputs"]), ("", {}))
+        d = self.bget("/api/abilities/detail", id="write-article")[1]
+        self.assertEqual(d["job_inputs"], {})
+
+    def test_detail_block_model(self):
+        d = self.bget("/api/abilities/detail", id="draw-image")[1]
+        self.assertEqual(d["block"]["model"], blocks.BUILTIN["codex"]["model"], "命令行卡片显示积木块的模型")
+        d = self.bget("/api/abilities/detail", id="search-web")[1]
+        self.assertEqual(d["block"]["model"], "")
+        self.bget("/api/abilities/list")
+        blocks.remove_card("codex", self.home)
+        d = self.bget("/api/abilities/detail", id="draw-image")[1]
+        self.assertEqual(d["block"]["model"], "")
+
+    def test_page_round2(self):
+        script = read("abilities.js")
+        self.assertIn("job_inputs", script, "恢复跟踪时用这次任务的输入")
+        self.assertIn("inputsView", script[script.index("module.exports"):], "试做示例显示那次填的内容")
+        self.assertNotRegex(script, r"alert\([^)]*problem", "坏卡片进详情显示原因，不弹窗")
 
 
 if __name__ == "__main__":

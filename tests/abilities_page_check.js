@@ -157,4 +157,15 @@ assert.strictEqual(A.promptText(search), "");
 assert.strictEqual(A.removeConfirm(article), "把「写文章」移出能力层？记录和成果都留着。");
 assert.deepStrictEqual([A.canChangeModel(article), A.canChangeModel(draw), A.canChangeModel(search)], [true, false, false]);
 
+// 第 2 轮：试做示例显示那次填的内容（按“你要填什么”的顺序，只列填了的项）
+assert.strictEqual(typeof A.inputsView, "function", "AbilitiesCore 要有 inputsView");
+assert.deepStrictEqual(A.inputsView(article.inputSchema, { words: 800, topic: "春天" }),
+  [{ title: "主题", value: "春天" }, { title: "大概字数", value: "800" }]);
+assert.deepStrictEqual(A.inputsView(search.inputSchema, { keywords: "<b>猫</b>" }),
+  [{ title: "关键词", value: "<b>猫</b>" }], "只给值，转义交给页面用 textContent");
+assert.deepStrictEqual(A.inputsView(article.inputSchema, { topic: "春天", notes: "  " }), [{ title: "主题", value: "春天" }]);
+assert.deepStrictEqual(A.inputsView(article.inputSchema, null), []);
+assert.deepStrictEqual(A.inputsView({ properties: { x: {} } }, { x: 1, y: 2 }), [{ title: "x", value: "1" }],
+  "没有 title 用项名；卡上没写的项不列");
+
 console.log("OK");
