@@ -168,4 +168,10 @@ assert.deepStrictEqual(A.inputsView(article.inputSchema, null), []);
 assert.deepStrictEqual(A.inputsView({ properties: { x: {} } }, { x: 1, y: 2 }), [{ title: "x", value: "1" }],
   "没有 title 用项名；卡上没写的项不列");
 
+// Claude 验收补：成了的时候不显示工具最后一句（命令行工具成功时那句是它自己的收尾话）；没成时照样显示
+assert.strictEqual(A.resultView({ ok: true, status: "ok", model: "gpt-6.1-sol", seconds: 2, output: "输出.png", files: ["输出.png"],
+  reason: "", how: "", platform_said: "OK", next_model: null, run_id: "20261111-120000-abcd" }, draw).said, "");
+assert.strictEqual(A.resultView({ ok: false, status: "error", seconds: 2, output: null, files: [],
+  reason: "工具出错", how: "稍后再试", platform_said: "no such file", next_model: null }, draw).said, "no such file");
+
 console.log("OK");

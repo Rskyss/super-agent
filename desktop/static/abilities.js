@@ -171,6 +171,7 @@ var AbilitiesCore = {
 
     if (status === "ok") {
       tone = "ok";
+      said = ""; // 成了不显示工具最后一句，没成时才给用户看平台原话
       if (result.model) {
         head = "用了 " + result.model + " · " + secStr;
       } else {
@@ -326,7 +327,7 @@ if (typeof document !== "undefined") (function () {
 
   function apiPost(url, body) {
     var headers = { "Content-Type": "application/json" };
-    if (chatToken) headers["X-Chat-Token"] = chatToken;
+    if (chatToken) headers["X-Chat-Token"] = encodeURIComponent(chatToken); // 和基础层一样编码，服务器会解开
     return fetch(url, {
       method: "POST",
       headers: headers,

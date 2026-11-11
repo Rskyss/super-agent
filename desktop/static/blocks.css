@@ -547,6 +547,20 @@ code.detail-value { font-family: var(--font-mono); color: var(--text); }
   margin-top: 16px;
 }
 
+/* 左栏能力卡片的小字，和基础层的状态字一样大小和颜色 */
+.block-meta {
+  font-size: var(--fs-sm);
+  color: var(--dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  width: 100%;
+}
+
+#abilityDetail .detail-actions {
+  margin-top: 24px;
+}
+
 .detail-desc {
   color: var(--dim);
   font-size: var(--fs-base);
