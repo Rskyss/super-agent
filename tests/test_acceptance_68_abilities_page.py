@@ -413,6 +413,31 @@ class RemoveFileRevealTest(AbilityCase):
         self.assertEqual(self.bpost("/api/abilities/reveal", {"id": "draw-image", "run": "../x"})[0], 400)
         self.assertEqual(len(self.opened), 1)
 
+    def test_reveal_real_opener(self):
+        """用户实测：真窗口里点“在访达里打开”弹“Load failed”。别的测试都换了假的打开动作，
+        真的那一路（调系统的打开命令）从没走过，一走就出错断开。这里只把系统命令本身换掉，其余照真的走。"""
+        from unittest import mock
+        result = self.run_card("draw-image", {"scene": "猫"})
+        self.server.blocks_open = None
+        with mock.patch("subprocess.run") as fake_run:
+            try:
+                status, data = self.bpost("/api/abilities/reveal", {"id": "draw-image", "run": result["run_id"]})
+            except Exception as exc:  # noqa: BLE001 — 服务出错断开，就是用户看到的 Load failed
+                self.fail("服务出错断开了：%r" % exc)
+        self.assertEqual(status, 200, data)
+        self.assertEqual(fake_run.call_args[0][0],
+                         ["/usr/bin/open", str(abilities.result_folder("draw-image", result["run_id"], self.home))])
+
+    def test_server_has_no_undefined_names(self):
+        """同类问题：服务里用了没加载进来的东西，平时测不到、一用就断。用 pyflakes 扫一遍（没装就跳过）。"""
+        try:
+            import pyflakes  # noqa: F401
+        except ImportError:
+            self.skipTest("没装 pyflakes")
+        proc = subprocess.run(["python3", "-m", "pyflakes", str(HERE.parent / "desktop" / "server.py")],
+                              capture_output=True, text=True, timeout=60)
+        self.assertNotIn("undefined name", proc.stdout)
+
 
 # ---------- 原有接口照旧 ----------
 
