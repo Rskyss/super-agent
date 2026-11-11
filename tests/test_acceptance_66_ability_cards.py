@@ -79,7 +79,8 @@ def image_card(**over):
 
 
 def api_block(**over):
-    b = {"id": "bailian", "kind": "llm_api", "name": "阿里百炼", "provider": "bailian", "key_account": "bailian"}
+    b = {"id": "bailian", "kind": "llm_api", "name": "阿里百炼", "provider": "bailian", "key_account": "bailian",
+         "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1"}
     b.update(over)
     return blocks.validate_card(b)
 
@@ -223,6 +224,7 @@ class Models(Case):
 def with_props(make, props, required=None, how=None):
     c = make()
     c["inputSchema"] = {"type": "object", "properties": props, "required": required or []}
+    c["output"] = {"type": c["output"]["type"]}   # 换掉了输入项，原来按某一项算字数的检查也去掉
     if how is not None:
         c["how"] = how
     return c
@@ -444,7 +446,7 @@ class FitsBlock(Case):
         self.assertEqual(abilities.fits_block(search_card(), tavily_block()), [])
         self.assertEqual(abilities.fits_block(image_card(), codex_block()), [])
         with self.assertRaises(AbilityError) as ctx:
-            abilities.fits_block(text_card(), codex_block())
+            abilities.fits_block(text_card(block="codex"), codex_block())   # 编号对得上、类别对不上
         self.assertIn("大模型 API", str(ctx.exception))
         with self.assertRaises(AbilityError):
             abilities.fits_block(image_card(), api_block())
