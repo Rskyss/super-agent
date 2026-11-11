@@ -763,5 +763,118 @@ class Untouched(Case):
         self.assertEqual(len(blocks.records("codex", self.root)), 1, "能力卡片的记录不能写进积木块的记录")
 
 
+# ---------- 第 1 轮复查后补（Codex 和 Claude 复查员 2026-11-11） ----------
+
+class ReviewRound1(Case):
+    def test_stray_braces_refused(self):
+        # 嵌套、不配对的花括号都拒收：{who{notes}} 只认出里面的 notes，外面会留下没声明的 {who}
+        for prompt in ("{topic}{words}{who{notes}}", "写}{topic}{words}{notes}", "{topic}{words}{notes}{"):
+            self.assertRefused(text_card(how={"kind": "llm_api", "prompt": prompt}), "花括号")
+
+    def test_unhashable_members_refused_in_chinese(self):
+        cases = [
+            text_card(backup_models=[{"a": 1}]),
+            with_props(text_card, {"shape": {"type": "string", "title": "画幅", "enum": [["a"], ["b"]]}},
+                       ["shape"], {"kind": "llm_api", "prompt": "{shape}"}),
+            text_card(output={"type": "text", "check": {"min_ratio": 0.5, "of": ["words"]}}),
+        ]
+        c = text_card()
+        c["inputSchema"]["required"] = [["topic"]]
+        cases.append(c)
+        for card in cases:
+            self.assertRefused(card)        # 抛 AbilityError、中文原因，不抛 TypeError
+
+    def test_search_reference_needs_value(self):
+        # max_results / time_range 引用的项，必须是必填或有默认值，否则拒收并说出项名
+        c = search_card()
+        del c["inputSchema"]["properties"]["n"]["default"]
+        self.assertRefused(c, "n")
+        c = search_card()
+        del c["inputSchema"]["properties"]["when"]["default"]
+        self.assertRefused(c, "when")
+        c = search_card()
+        del c["inputSchema"]["properties"]["when"]["default"]
+        c["inputSchema"]["required"] = ["q", "when"]
+        abilities.validate_ability(c)
+
+    def test_runs_errors_are_ability_errors(self):
+        with self.assertRaises(AbilityError):
+            abilities.add_run("write-demo", {"ok": True}, self.root)
+        with self.assertRaises(AbilityError):
+            abilities.add_run("write-demo", {"type": "run", "said": "sk-abcdefghijklmnopqrstuvwx"}, self.root)
+        with self.assertRaises(AbilityError):
+            abilities.runs("write-demo", self.root, limit=0)
+
+    def test_secret_in_tuple_not_written(self):
+        with self.assertRaises(AbilityError):
+            abilities.add_run("write-demo", {"type": "run", "output": ("sk-" + "x" * 24,)}, self.root)
+        self.assertEqual(abilities.runs("write-demo", self.root), [])
+
+    def test_png_header_must_be_complete(self):
+        full = png_bytes(512, 512)
+        p = self.dir / "输出.png"
+        p.write_bytes(full[:24])            # 宽高在，IHDR 后半截和校验码没了
+        self.assertIsNone(abilities.image_size(p))
+        self.assertFalse(abilities.check_output(image_card(), p, {})[0])
+        p.write_bytes(full[:33])            # IHDR 完整
+        self.assertEqual(abilities.image_size(p), (512, 512))
+
+    def test_image_or_file_result_not_a_path(self):
+        for card in (image_card(), image_card(how={"kind": "cli", "prompt": "{scene}{shape}", "output_file": "a.md"},
+                                              output={"type": "file", "check": {"extensions": ["md"]}})):
+            for bad in (None, 3, ["a"]):
+                ok, why = abilities.check_output(card, bad, {})
+                self.assertFalse(ok)
+                self.assertRegex(why, r"[一-鿿]")
+
+    def test_block_mismatch_wording(self):
+        with self.assertRaises(AbilityError) as ctx:
+            abilities.fits_block(text_card(block="web-search"), tavily_block())
+        msg = str(ctx.exception)
+        self.assertIn("大模型 API", msg)
+        self.assertNotIn("写文章", msg)
+        self.assertIn("联网搜索", msg)                       # 用中文类别名，不露 search / tool 这种内部叫法
+        self.assertNotRegex(msg.replace("web-search", ""), r"\b(search|tool|agent|llm_api)\b")
+        with self.assertRaises(AbilityError) as ctx:
+            abilities.fits_block(image_card(block="maptool"), tool_block())
+        self.assertNotRegex(str(ctx.exception).replace("maptool", "").replace("map-tool", ""),
+                            r"\b(search|tool|agent|llm_api)\b")
+
+    def test_run_ids_unique(self):
+        ids = [abilities.new_run_id() for _ in range(3000)]
+        self.assertEqual(len(ids), len(set(ids)))
+
+    def test_ensure_builtin_failure_leaves_nothing(self):
+        # 写到一半出错：不留下半套，下次打开还能把三张都放进来
+        original = abilities.BUILTIN_ABILITIES
+        broken = dict(original)
+        broken["zz-broken"] = dict(original["write-article"], id="zz-broken", title="")
+        abilities.BUILTIN_ABILITIES = broken
+        try:
+            with self.assertRaises(AbilityError):
+                abilities.ensure_builtin(self.root)
+        finally:
+            abilities.BUILTIN_ABILITIES = original
+        self.assertFalse((self.root / "能力层").exists())
+        self.assertEqual(sorted(abilities.ensure_builtin(self.root)), ["draw-image", "search-web", "write-article"])
+        self.assertEqual(sorted(c["id"] for c in abilities.list_abilities(self.root)),
+                         ["draw-image", "search-web", "write-article"])
+        leftovers = [x.name for x in self.root.iterdir() if x.name not in ("能力层",)]
+        self.assertEqual(leftovers, [], "不能在积木库资料夹里留下临时文件夹")
+
+    def test_write_article_without_notes(self):
+        p = abilities.prepare(abilities.BUILTIN_ABILITIES["write-article"], {"topic": "春天"})
+        self.assertNotIn("参考资料", p["prompt"], "没填参考资料时，交代里不留空的“参考资料：”")
+        p = abilities.prepare(abilities.BUILTIN_ABILITIES["write-article"], {"topic": "春天", "notes": "要点 A"})
+        self.assertIn("要点 A", p["prompt"])
+
+    def test_records_shared_with_blocks(self):
+        # 记录的读写和基础层用同一份代码（blocks.py 里按路径的两个函数），不整段照抄
+        self.assertTrue(callable(getattr(blocks, "append_jsonl", None)))
+        self.assertTrue(callable(getattr(blocks, "read_jsonl", None)))
+        src = Path(abilities.__file__).read_text(encoding="utf-8")
+        self.assertNotIn('open(path, "a"', src)
+
+
 if __name__ == "__main__":
     unittest.main()
