@@ -270,6 +270,25 @@ var AbilitiesCore = {
   canChangeModel: function (card) {
     return !!(card && card.how && card.how.kind === "llm_api");
   },
+
+  inputsView: function (inputSchema, inputs) {
+    if (!inputs || typeof inputs !== "object") return [];
+    inputSchema = inputSchema || {};
+    var props = inputSchema.properties || {};
+    var out = [];
+    var keys = Object.keys(props);
+    for (var i = 0; i < keys.length; i++) {
+      var k = keys[i];
+      if (k in inputs && inputs[k] !== null && inputs[k] !== undefined) {
+        var str = String(inputs[k]);
+        if (!str.trim()) continue;
+        var p = props[k] || {};
+        var tit = p.title || k;
+        out.push({ title: tit, value: str });
+      }
+    }
+    return out;
+  },
 };
 
 if (typeof module !== "undefined") module.exports = AbilitiesCore;
@@ -285,7 +304,6 @@ if (typeof document !== "undefined") (function () {
   var currentDetailData = null;
   var abilityGen = 0;
   var currentJobTimer = null;
-  var currentLastInputs = null;
   var pollTimer = null;
 
   function $(id) {
@@ -372,7 +390,8 @@ if (typeof document !== "undefined") (function () {
     broken.forEach(function (b) {
       var btn = document.createElement("button");
       btn.type = "button";
-      btn.className = "block-item broken";
+      btn.className = "block-item broken" + (b.id === currentAbilityId ? " on" : "");
+      btn.setAttribute("data-id", b.id);
       var top = document.createElement("div");
       top.className = "block-top";
       var nameSpan = document.createElement("span");
@@ -392,10 +411,47 @@ if (typeof document !== "undefined") (function () {
       btn.appendChild(meta);
 
       btn.addEventListener("click", function () {
-        alert("坏卡片：" + b.problem);
+        openBrokenDetail(b);
       });
       list.appendChild(btn);
     });
+  }
+
+  function openBrokenDetail(b) {
+    if (window.BlocksStage && typeof window.BlocksStage.closeBlock === "function") {
+      window.BlocksStage.closeBlock();
+    }
+    var chatFrame = $("chatFrame");
+    if (chatFrame) chatFrame.hidden = true;
+    var blockDetail = $("blockDetail");
+    if (blockDetail) blockDetail.hidden = true;
+
+    currentAbilityId = b.id;
+    abilityGen++;
+    if (currentJobTimer) {
+      clearTimeout(currentJobTimer);
+      currentJobTimer = null;
+    }
+    currentCard = null;
+    currentDetailData = null;
+
+    var detail = $("abilityDetail");
+    if (detail) detail.hidden = false;
+
+    highlightSidebar(b.id);
+
+    $("abilityTitle").textContent = b.id;
+    $("abilityStatus").innerHTML = '<span class="detail-status bad"><span class="dot bad"></span> 这张能力卡片坏了</span>';
+    $("abilityDesc").textContent = b.problem || "";
+
+    $("abilityRows").hidden = true;
+    $("abilityExampleSection").hidden = true;
+    $("abilityRunSection").hidden = true;
+    $("abilityResult").hidden = true;
+    $("abilityResult").innerHTML = "";
+    $("abilityRunsSection").hidden = true;
+    $("abilityPrompt").hidden = true;
+    $("abilityRemove").hidden = true;
   }
 
   function openDetail(id) {
@@ -430,6 +486,7 @@ if (typeof document !== "undefined") (function () {
     $("abilityResult").innerHTML = "";
     $("abilityRunsSection").hidden = true;
     $("abilityPrompt").hidden = true;
+    $("abilityRemove").hidden = false;
     $("abilityRemove").disabled = false;
 
     highlightSidebar(id);
@@ -490,7 +547,7 @@ if (typeof document !== "undefined") (function () {
       $("abilityModelRow").hidden = false;
       $("abilityModelGroup").hidden = true;
       $("abilityCliModelVal").hidden = false;
-      var cliModel = card.model || (d.block && d.block.name) || "";
+      var cliModel = card.model || (d.block && d.block.model) || "跟着积木块默认";
       $("abilityCliModelVal").innerHTML = AbilitiesCore.esc(cliModel) + ' <small class="dim">这一版不能换</small>';
     } else {
       // 搜索卡片不显示模型行
@@ -508,7 +565,26 @@ if (typeof document !== "undefined") (function () {
     var exBox = $("abilityExampleBox");
     if (d.example) {
       exBox.innerHTML = "";
-      renderResultInBox(exBox, d.example, card);
+      var exInputs = AbilitiesCore.inputsView(card.inputSchema, d.example.inputs || d.example.args || {});
+      if (exInputs.length) {
+        var inWrap = document.createElement("div");
+        inWrap.className = "example-inputs";
+        exInputs.forEach(function (it) {
+          var inRow = document.createElement("div");
+          inRow.className = "example-input-row";
+          var titSpan = document.createElement("span");
+          titSpan.className = "example-input-title";
+          titSpan.textContent = it.title + "：";
+          var valSpan = document.createElement("span");
+          valSpan.className = "example-input-value";
+          valSpan.textContent = it.value;
+          inRow.appendChild(titSpan);
+          inRow.appendChild(valSpan);
+          inWrap.appendChild(inRow);
+        });
+        exBox.appendChild(inWrap);
+      }
+      renderResultInBox(exBox, d.example, card, null);
     } else {
       exBox.textContent = "还没有试做示例";
     }
@@ -521,12 +597,13 @@ if (typeof document !== "undefined") (function () {
     }
 
     var runBtn = $("abilityRun");
-    if (d.running) {
+    if (d.job) {
       runBtn.textContent = "正在用…";
       runBtn.disabled = true;
-      if (d.job) {
-        pollJob(d.job, card);
-      }
+      pollJob(d.job, card, d.job_inputs || {});
+    } else if (d.running) {
+      runBtn.textContent = "正在用…";
+      runBtn.disabled = true;
     } else {
       runBtn.textContent = "开始";
       runBtn.disabled = false;
@@ -664,7 +741,7 @@ if (typeof document !== "undefined") (function () {
     });
   }
 
-  function renderResultInBox(box, result, card) {
+  function renderResultInBox(box, result, card, taskInputs) {
     var v = AbilitiesCore.resultView(result, card);
     var headDiv = document.createElement("div");
     headDiv.className = "result-head " + v.tone;
@@ -685,7 +762,7 @@ if (typeof document !== "undefined") (function () {
       box.appendChild(tipDiv);
     }
 
-    if (v.ask) {
+    if (v.ask && taskInputs) {
       var askDiv = document.createElement("div");
       askDiv.className = "result-ask";
       var askText = document.createElement("span");
@@ -698,9 +775,7 @@ if (typeof document !== "undefined") (function () {
       tryBtn.id = "abilityTryBackup";
       tryBtn.textContent = "换这个试";
       tryBtn.addEventListener("click", function () {
-        if (currentLastInputs) {
-          executeRun(currentLastInputs, v.ask.model);
-        }
+        executeRun(taskInputs, v.ask.model);
       });
       askDiv.appendChild(tryBtn);
 
@@ -813,7 +888,8 @@ if (typeof document !== "undefined") (function () {
 
   function executeRun(inputs, optModel) {
     if (!currentCard) return;
-    currentLastInputs = inputs;
+    var runCard = currentCard;
+    var runGen = abilityGen;
     var runBtn = $("abilityRun");
     runBtn.textContent = "正在用…";
     runBtn.disabled = true;
@@ -823,12 +899,14 @@ if (typeof document !== "undefined") (function () {
     resBox.hidden = false;
     resBox.innerHTML = '<div class="result-running">正在运行中，请稍候…</div>';
 
-    var payload = { id: currentCard.id, inputs: inputs };
+    var payload = { id: runCard.id, inputs: inputs };
     if (optModel) payload.model = optModel;
 
     apiPost("/api/abilities/run", payload).then(function (data) {
-      pollJob(data.job, currentCard);
+      if (runGen !== abilityGen || !currentCard || currentCard.id !== runCard.id) return;
+      pollJob(data.job, runCard, inputs);
     }).catch(function (err) {
+      if (runGen !== abilityGen || !currentCard || currentCard.id !== runCard.id) return;
       runBtn.textContent = "开始";
       runBtn.disabled = false;
       $("abilityFormError").textContent = err.message;
@@ -836,7 +914,7 @@ if (typeof document !== "undefined") (function () {
     });
   }
 
-  function pollJob(jobId, card) {
+  function pollJob(jobId, card, taskInputs) {
     if (currentJobTimer) clearTimeout(currentJobTimer);
     var thisGen = abilityGen;
 
@@ -848,6 +926,7 @@ if (typeof document !== "undefined") (function () {
           return;
         }
         // 完成
+        if (!currentCard || currentCard.id !== card.id) return;
         $("abilityRun").textContent = "开始";
         $("abilityRun").disabled = false;
         var resBox = $("abilityResult");
@@ -859,12 +938,12 @@ if (typeof document !== "undefined") (function () {
           errDiv.textContent = "没成：" + job.error;
           resBox.appendChild(errDiv);
         } else if (job.result) {
-          renderResultInBox(resBox, job.result, card);
+          renderResultInBox(resBox, job.result, card, taskInputs);
         }
 
         // 重新拉取详情，刷新“最近几次”
         apiGet("/api/abilities/detail", { id: card.id }).then(function (d) {
-          if (thisGen !== abilityGen) return;
+          if (thisGen !== abilityGen || !currentCard || currentCard.id !== card.id) return;
           renderRuns(d.runs || []);
           var st = AbilitiesCore.statusView(d);
           var stHtml = '<span class="detail-status ' + st.cls + '"><span class="dot ' + st.cls + '"></span> ' + AbilitiesCore.esc(st.text) + "</span>";
@@ -875,6 +954,7 @@ if (typeof document !== "undefined") (function () {
         refreshList();
       }).catch(function (err) {
         if (thisGen !== abilityGen) return;
+        if (!currentCard || currentCard.id !== card.id) return;
         $("abilityRun").textContent = "开始";
         $("abilityRun").disabled = false;
         $("abilityResult").innerHTML = '<div class="result-head bad">查询任务出错：' + AbilitiesCore.esc(err.message) + "</div>";
@@ -932,6 +1012,8 @@ if (typeof document !== "undefined") (function () {
   if (saveModelBtn) {
     saveModelBtn.addEventListener("click", function () {
       if (!currentCard) return;
+      var saveCard = currentCard;
+      var saveGen = abilityGen;
       var modelVal = $("abilityModel").value;
       var b1 = $("abilityBackup1").value;
       var b2 = $("abilityBackup2").value;
@@ -944,15 +1026,17 @@ if (typeof document !== "undefined") (function () {
       tip.className = "model-save-tip";
 
       apiPost("/api/abilities/model", {
-        id: currentCard.id,
+        id: saveCard.id,
         model: modelVal,
         backup_models: backups,
       }).then(function (data) {
+        if (saveGen !== abilityGen || !currentCard || currentCard.id !== saveCard.id) return;
         tip.textContent = "已保存";
         tip.className = "model-save-tip ok";
         currentCard = data.ability;
         refreshList();
       }).catch(function (err) {
+        if (saveGen !== abilityGen || !currentCard || currentCard.id !== saveCard.id) return;
         tip.textContent = err.message;
         tip.className = "model-save-tip bad";
       });
@@ -963,14 +1047,18 @@ if (typeof document !== "undefined") (function () {
   if (removeBtn) {
     removeBtn.addEventListener("click", function () {
       if (!currentCard) return;
-      if (window.confirm(AbilitiesCore.removeConfirm(currentCard))) {
+      var removeCard = currentCard;
+      var removeGen = abilityGen;
+      if (window.confirm(AbilitiesCore.removeConfirm(removeCard))) {
         removeBtn.disabled = true;
-        apiPost("/api/abilities/remove", { id: currentCard.id }).then(function () {
+        apiPost("/api/abilities/remove", { id: removeCard.id }).then(function () {
+          refreshList();
+          if (removeGen !== abilityGen || !currentCard || currentCard.id !== removeCard.id) return;
           closeDetail();
           var chatFrame = $("chatFrame");
           if (chatFrame) chatFrame.hidden = false;
-          refreshList();
         }).catch(function (err) {
+          if (removeGen !== abilityGen || !currentCard || currentCard.id !== removeCard.id) return;
           removeBtn.disabled = false;
           alert("移出失败：" + err.message);
         });

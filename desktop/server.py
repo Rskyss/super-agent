@@ -780,6 +780,24 @@ class Handler(BaseHTTPRequestHandler):
 
         return "ok", ""
 
+    def _safe_result_folder(self, home: str, ability_id: str, run: str) -> Path | None:
+        folder = abilities.result_folder(ability_id, run, home)
+        p1 = Path(home) / abilities.RESULT_DIR
+        p2 = p1 / ability_id
+        p3 = folder
+        if p1.is_symlink() or p2.is_symlink() or p3.is_symlink():
+            return None
+        if not p3.is_dir():
+            return None
+        try:
+            p1_real = p1.resolve()
+            expected = p1_real / ability_id / run
+            if p3.resolve() != expected.resolve():
+                return None
+        except Exception:
+            return None
+        return p3
+
     def _abilities_get(self, path: str, query: dict) -> None:
         try:
             self._abilities_get_inner(path, query)
@@ -845,10 +863,11 @@ class Handler(BaseHTTPRequestHandler):
             block_id = card.get("block", "")
             try:
                 bcard = blocks.load_card(block_id, home)
-                binfo = {"id": block_id, "name": bcard.get("name", block_id), "exists": True, "kind": bcard.get("kind", "")}
+                bmodel = str(bcard.get("model") or "")
+                binfo = {"id": block_id, "name": bcard.get("name", block_id), "exists": True, "kind": bcard.get("kind", ""), "model": bmodel}
             except BlockError:
                 bcard = None
-                binfo = {"id": block_id, "name": block_id, "exists": False, "kind": ""}
+                binfo = {"id": block_id, "name": block_id, "exists": False, "kind": "", "model": ""}
 
             status, status_reason = self._ability_status(card, home)
             models = []
@@ -866,11 +885,21 @@ class Handler(BaseHTTPRequestHandler):
 
             recent_10 = list(reversed(all_runs))[:10]
             running = abilities_run.is_running(ability_id)
-            job_id = self.server.abilities_jobs.get(ability_id, "")
-            if job_id:
-                job = self.server.blocks_jobs.get(job_id)
-                if not job or job.get("done"):
-                    job_id = ""
+            job_info = self.server.abilities_jobs.get(ability_id)
+            job_id = ""
+            job_inputs = {}
+            if job_info:
+                if isinstance(job_info, dict):
+                    jid = job_info.get("job", "")
+                    jinp = job_info.get("inputs", {})
+                else:
+                    jid = str(job_info)
+                    jinp = {}
+                if jid:
+                    job = self.server.blocks_jobs.get(jid)
+                    if job and not job.get("done"):
+                        job_id = jid
+                        job_inputs = jinp
 
             self._json({
                 "ability": card,
@@ -882,6 +911,7 @@ class Handler(BaseHTTPRequestHandler):
                 "runs": recent_10,
                 "running": running,
                 "job": job_id,
+                "job_inputs": job_inputs if job_id else {},
             })
         elif path == "/api/abilities/file":
             ability_id = query.get("id", "")
@@ -894,11 +924,11 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"error": "文件名不对"}, 400)
                 return
             try:
-                folder = abilities.result_folder(ability_id, run, home)
+                folder = self._safe_result_folder(home, ability_id, run)
             except AbilityError:
                 self._json({"error": "运行编号不对"}, 400)
                 return
-            if not folder.is_dir():
+            if not folder:
                 self._json({"error": "没有这个成果文件"}, 404)
                 return
             target = folder / name
@@ -906,7 +936,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"error": "没有这个成果文件"}, 404)
                 return
             try:
-                if target.resolve().parent != folder.resolve():
+                p1 = Path(home) / abilities.RESULT_DIR
+                expected_file = (p1.resolve() / ability_id / run / name).resolve()
+                if target.resolve() != expected_file:
                     self._json({"error": "没有这个成果文件"}, 404)
                     return
             except Exception:
@@ -991,7 +1023,7 @@ class Handler(BaseHTTPRequestHandler):
 
             job_id = self._blocks_job("ability", work)
             with self.server.blocks_lock:
-                self.server.abilities_jobs[ability_id] = job_id
+                self.server.abilities_jobs[ability_id] = {"job": job_id, "inputs": dict(inputs)}
             self._json({"job": job_id})
         elif path == "/api/abilities/model":
             ability_id = body.get("id", "")
@@ -1066,11 +1098,11 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"error": "编号不对"}, 400)
                 return
             try:
-                folder = abilities.result_folder(ability_id, run, home)
+                folder = self._safe_result_folder(home, ability_id, run)
             except AbilityError:
                 self._json({"error": "运行编号不对"}, 400)
                 return
-            if not folder.is_dir():
+            if not folder:
                 self._json({"error": "这次没有成果文件夹"}, 404)
                 return
             opener = self.server.blocks_open
