@@ -110,6 +110,34 @@ def _is_safe_file(path: Path, base_dir: Path) -> bool:
         return False
 
 
+def _check_file_secrets(path: Path, secret_list: list[str]) -> tuple[bool, str]:
+    """检查文件成果是否包含这次使用的密钥。按块读取，返回 (是否安全, 不安全时的中文原因)。"""
+    active_secrets = [s.encode("utf-8") for s in secret_list if s]
+    if not active_secrets:
+        return True, ""
+
+    max_len = max(len(s) for s in active_secrets)
+    chunk_size = 64 * 1024
+    overlap_size = max(max_len - 1, 0)
+
+    try:
+        with open(path, "rb") as f:
+            overlap = b""
+            while True:
+                chunk = f.read(chunk_size)
+                if not chunk:
+                    break
+                buffer = overlap + chunk
+                for s_bytes in active_secrets:
+                    if s_bytes in buffer:
+                        return False, "成果里带了密钥，没有保存"
+                overlap = buffer[-overlap_size:] if overlap_size > 0 else b""
+    except Exception as exc:
+        return False, f"没法检查成果里有没有密钥，没有保存：{exc}"
+
+    return True, ""
+
+
 def _save_deliverables(ability_id: str, run_id: str, root, output_type: str, result, output_file: str | None) -> list[str]:
     """把成果存进 成果/<编号>/<运行编号>/ 文件夹。返回成果文件名列表。"""
     res_dir = abilities.result_folder(ability_id, run_id, root)
@@ -129,15 +157,6 @@ def _save_deliverables(ability_id: str, run_id: str, root, output_type: str, res
             shutil.copy2(result, dest)
             return [output_file]
     return []
-
-
-def _save_deliverables_safe(ability_id: str, run_id: str, root, output_type: str, result, output_file: str | None) -> tuple[bool, list[str], str]:
-    """安全保存成果文件，异常不向外抛，返回 (成功与否, 文件列表, 错误信息)。"""
-    try:
-        files = _save_deliverables(ability_id, run_id, root, output_type, result, output_file)
-        return True, files, ""
-    except Exception as exc:
-        return False, [], f"保存成果文件失败：{exc}"
 
 
 def run(ability_id: str, inputs: dict, root=None, *,
@@ -319,24 +338,28 @@ def run(ability_id: str, inputs: dict, root=None, *,
             except Exception as exc:  # noqa: BLE001
                 return _finish(ok=False, status="error", reason=f"联网搜索出错：{exc}", how="稍后再试", output=None)
 
-            if not raw_results:
-                ok, check_reason = abilities.check_output(card, [], prepared["values"])
-                return _finish(ok=False, status="format", reason=check_reason, how="调整搜索关键词或参数后再试", output=[], files=[])
+            # 从拿到结果起，统一兜底
+            try:
+                if not raw_results:
+                    ok, check_reason = abilities.check_output(card, [], prepared["values"])
+                    return _finish(ok=False, status="format", reason=check_reason or "一条搜索结果都没有",
+                                   how="调整搜索关键词或参数后再试", output=[], files=[])
 
-            formatted = [
-                {"title": item.get("title", ""), "url": item.get("url", ""), "summary": item.get("snippet", "")}
-                for item in raw_results
-            ]
-            formatted = _mask_output(formatted, secret_list)
+                formatted = [
+                    {"title": item.get("title", ""), "url": item.get("url", ""), "summary": item.get("snippet", "")}
+                    for item in raw_results
+                ]
+                formatted = _mask_output(formatted, secret_list)
 
-            ok, check_reason = abilities.check_output(card, formatted, prepared["values"])
-            save_ok, files, err = _save_deliverables_safe(ability_id, run_id, root, "list", formatted, None)
-            if not save_ok:
-                return _finish(ok=False, status="error", reason=err, how="稍后再试", output=formatted, files=[])
+                ok, check_reason = abilities.check_output(card, formatted, prepared["values"])
+                files = _save_deliverables(ability_id, run_id, root, "list", formatted, None)
 
-            if ok:
-                return _finish(ok=True, status="ok", reason="成功完成", how="", output=formatted, files=files)
-            return _finish(ok=False, status="format", reason=check_reason, how="调整搜索关键词或参数后再试", output=formatted, files=files)
+                if ok:
+                    return _finish(ok=True, status="ok", reason="成功完成", how="", output=formatted, files=files)
+                return _finish(ok=False, status="format", reason=check_reason, how="调整搜索关键词或参数后再试",
+                               output=formatted, files=files)
+            except Exception as exc:
+                return _finish(ok=False, status="error", reason=f"处理搜索成果出错：{exc}", how="稍后再试", output=None)
 
         if how_kind == "llm_api":
             key_account = block_card.get("key_account")
@@ -402,16 +425,24 @@ def run(ability_id: str, inputs: dict, root=None, *,
                 return _finish(ok=False, status="error", reason=str(exc) or "模型调用失败",
                                how="稍后再试", output=None, platform_said=words)
 
-            raw_text = reply.get("text", "")
-            text_output = _mask_text(raw_text, secret_list)
-            ok, check_reason = abilities.check_output(card, text_output, prepared["values"])
-            save_ok, files, err = _save_deliverables_safe(ability_id, run_id, root, "text", text_output, None)
-            if not save_ok:
-                return _finish(ok=False, status="error", reason=err, how="稍后再试", output=text_output, files=[])
+            # 从拿到结果起，统一兜底
+            try:
+                raw_text = reply.get("text", "")
+                if not raw_text or not raw_text.strip():
+                    ok, check_reason = abilities.check_output(card, raw_text or "", prepared["values"])
+                    return _finish(ok=False, status="format", reason=check_reason or "没有内容",
+                                   how="调整要求或提示词后再试", output="", files=[])
 
-            if ok:
-                return _finish(ok=True, status="ok", reason="成功完成", how="", output=text_output, files=files)
-            return _finish(ok=False, status="format", reason=check_reason, how="调整要求或提示词后再试", output=text_output, files=files)
+                text_output = _mask_text(raw_text, secret_list)
+                ok, check_reason = abilities.check_output(card, text_output, prepared["values"])
+                files = _save_deliverables(ability_id, run_id, root, "text", text_output, None)
+
+                if ok:
+                    return _finish(ok=True, status="ok", reason="成功完成", how="", output=text_output, files=files)
+                return _finish(ok=False, status="format", reason=check_reason, how="调整要求或提示词后再试",
+                               output=text_output, files=files)
+            except Exception as exc:
+                return _finish(ok=False, status="error", reason=f"处理大模型成果出错：{exc}", how="稍后再试", output=None)
 
         if how_kind == "cli":
             cmd = block_card.get("command", "")
@@ -445,14 +476,21 @@ def run(ability_id: str, inputs: dict, root=None, *,
             is_image = card["output"]["type"] == "image"
 
             existing_images: set[str] = set()
-            if is_image and img_folder.exists():
-                try:
-                    for p in img_folder.rglob("*"):
-                        if p.is_file() and p.suffix.lower() in (".png", ".jpg", ".jpeg"):
-                            existing_images.add(str(p.resolve()))
-                            existing_images.add(str(p))
-                except Exception:
-                    pass
+            can_check_img_folder = True
+            img_folder_skip_reason = ""
+
+            if is_image:
+                if img_folder.exists():
+                    try:
+                        for p in img_folder.rglob("*"):
+                            if p.is_file() and p.suffix.lower() in (".png", ".jpg", ".jpeg"):
+                                existing_images.add(str(p.resolve()))
+                                existing_images.add(str(p))
+                    except Exception as exc:
+                        can_check_img_folder = False
+                        img_folder_skip_reason = f"运行前记录已有图片出错（{exc}），未去图片文件夹检索"
+                else:
+                    can_check_img_folder = False
 
             tmp_dir = tempfile.mkdtemp(prefix="能力运行-")
             cli_start_time = time.time()
@@ -467,7 +505,7 @@ def run(ability_id: str, inputs: dict, root=None, *,
                 target_in_tmp = Path(tmp_dir) / output_file
                 if _is_safe_file(target_in_tmp, Path(tmp_dir)):
                     found_path = target_in_tmp
-                elif is_image and img_folder.exists():
+                elif is_image and can_check_img_folder and img_folder.exists():
                     candidate = None
                     latest_mtime = -1.0
                     for p in img_folder.rglob("*"):
@@ -489,55 +527,49 @@ def run(ability_id: str, inputs: dict, root=None, *,
                         retrieved_elsewhere = True
 
                 if found_path is not None:
-                    out_type = card["output"]["type"]
-                    if out_type == "text":
-                        try:
+                    try:
+                        out_type = card["output"]["type"]
+                        if out_type == "text":
                             raw_text = found_path.read_text(encoding="utf-8")
-                        except Exception as exc:
-                            return _finish(ok=False, status="format", reason=f"读取成果文件出错：{exc}",
-                                           how="检查工具生成的文件编码格式", output=None, platform_said=platform_said, files=[])
+                            if not raw_text or not raw_text.strip():
+                                ok, check_reason = abilities.check_output(card, raw_text, prepared["values"])
+                                return _finish(ok=False, status="format", reason=check_reason or "没有内容",
+                                               how="调整提示词或参数后再试", output="", platform_said=platform_said, files=[])
 
-                        masked_text = _mask_text(raw_text, secret_list)
-                        ok, check_reason = abilities.check_output(card, masked_text, prepared["values"])
-                        save_ok, files, err = _save_deliverables_safe(ability_id, run_id, root, "text", masked_text, None)
-                        if not save_ok:
-                            return _finish(ok=False, status="error", reason=err, how="稍后再试", output=masked_text, platform_said=platform_said, files=[])
+                            masked_text = _mask_text(raw_text, secret_list)
+                            ok, check_reason = abilities.check_output(card, masked_text, prepared["values"])
+                            files = _save_deliverables(ability_id, run_id, root, "text", masked_text, None)
 
-                        if ok:
-                            return _finish(ok=True, status="ok", reason="成功完成", how="", output=masked_text,
-                                           platform_said=platform_said, files=files)
-                        return _finish(ok=False, status="format", reason=check_reason, how="调整画面描述或参数后再试",
-                                       output=masked_text, platform_said=platform_said, files=files)
+                            if ok:
+                                return _finish(ok=True, status="ok", reason="成功完成", how="", output=masked_text,
+                                               platform_said=platform_said, files=files)
+                            return _finish(ok=False, status="format", reason=check_reason, how="调整画面描述或参数后再试",
+                                           output=masked_text, platform_said=platform_said, files=files)
+                        else:
+                            safe, sec_reason = _check_file_secrets(found_path, secret_list)
+                            if not safe:
+                                return _finish(ok=False, status="error", reason=sec_reason,
+                                               how="稍后再试", output=None, platform_said=platform_said, files=[])
 
-                    else:
-                        has_secret = False
-                        try:
-                            data = found_path.read_bytes()
-                            for sec in secret_list:
-                                if sec and sec.encode("utf-8") in data:
-                                    has_secret = True
-                                    break
-                        except Exception:
-                            pass
-                        if has_secret:
-                            return _finish(ok=False, status="error", reason="成果里带了密钥，没有保存",
-                                           how="稍后再试", output=None, platform_said=platform_said, files=[])
+                            ok, check_reason = abilities.check_output(card, found_path, prepared["values"])
+                            files = _save_deliverables(ability_id, run_id, root, out_type, found_path, output_file)
 
-                        ok, check_reason = abilities.check_output(card, found_path, prepared["values"])
-                        save_ok, files, err = _save_deliverables_safe(ability_id, run_id, root, out_type, found_path, output_file)
-                        if not save_ok:
-                            return _finish(ok=False, status="error", reason=err, how="稍后再试", output=output_file, platform_said=platform_said, files=[])
-
-                        if ok:
-                            reason = "Codex 把图存到了别处，已拿回来" if retrieved_elsewhere else "成功完成"
-                            return _finish(ok=True, status="ok", reason=reason, how="", output=output_file,
-                                           platform_said=platform_said, files=files)
-                        how = "调整画面描述或参数后再试" if is_image else "检查工具生成的文件是否符合要求"
-                        return _finish(ok=False, status="format", reason=check_reason, how=how,
-                                       output=output_file, platform_said=platform_said, files=files)
+                            if ok:
+                                reason = "Codex 把图存到了别处，已拿回来" if retrieved_elsewhere else "成功完成"
+                                return _finish(ok=True, status="ok", reason=reason, how="", output=output_file,
+                                               platform_said=platform_said, files=files)
+                            how = "调整画面描述或参数后再试" if is_image else "检查工具生成的文件是否符合要求"
+                            return _finish(ok=False, status="format", reason=check_reason, how=how,
+                                           output=output_file, platform_said=platform_said, files=files)
+                    except Exception as exc:
+                        return _finish(ok=False, status="error", reason=f"处理命令行成果出错：{exc}",
+                                       how="稍后再试", output=None, platform_said=platform_said, files=[])
 
                 if code == 0:
-                    return _finish(ok=False, status="format", reason=f"没有找到 {output_file}",
+                    not_found_reason = f"没有找到 {output_file}"
+                    if img_folder_skip_reason:
+                        not_found_reason += f"（{img_folder_skip_reason}）"
+                    return _finish(ok=False, status="format", reason=not_found_reason,
                                    how="检查工具是否按要求生成了文件", output=None, platform_said=platform_said)
 
                 out_lower = (cli_output or "").lower()
