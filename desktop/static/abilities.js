@@ -272,6 +272,15 @@ var AbilitiesCore = {
     return !!(card && card.how && card.how.kind === "llm_api");
   },
 
+  // 三个模型框的值整理成要存的样子：空的不要、重复的只留一个、和主模型一样的备用去掉
+  modelChoice: function (main, b1, b2) {
+    var backups = [];
+    [b1, b2].forEach(function (m) {
+      if (m && m !== main && backups.indexOf(m) < 0) backups.push(m);
+    });
+    return { model: main, backup_models: backups };
+  },
+
   inputsView: function (inputSchema, inputs) {
     if (!inputs || typeof inputs !== "object") return [];
     inputSchema = inputSchema || {};
@@ -1005,43 +1014,60 @@ if (typeof document !== "undefined") (function () {
         return;
       }
       $("abilityFormError").textContent = "";
-      executeRun(check.inputs, null);
+      var runGen = abilityGen;
+      runBtn.disabled = true; // 等保存的这一会儿也不让连点
+      modelSaving.then(function () { // 刚改的模型还没存完就等它，免得这次用的还是旧模型
+        if (runGen !== abilityGen) return;
+        executeRun(check.inputs, null);
+      });
     });
   }
 
-  var saveModelBtn = $("abilitySaveModel");
-  if (saveModelBtn) {
-    saveModelBtn.addEventListener("click", function () {
-      if (!currentCard) return;
-      var saveCard = currentCard;
-      var saveGen = abilityGen;
-      var modelVal = $("abilityModel").value;
-      var b1 = $("abilityBackup1").value;
-      var b2 = $("abilityBackup2").value;
-      var backups = [];
-      if (b1) backups.push(b1);
-      if (b2) backups.push(b2);
+  // 模型框一改就存（用户选 A，没有保存按钮）。框里显示的永远是“开始”会用的模型：
+  // 存成了按存下来的卡重画，没存成退回存着的值。几次改动按先后一个个存，没存完点“开始”会等它。
+  var modelSaving = Promise.resolve();
 
-      var tip = $("abilitySaveModelTip");
-      tip.textContent = "正在保存…";
-      tip.className = "model-save-tip";
+  function showSavedModels(card) {
+    var backups = (card && card.backup_models) || [];
+    $("abilityModel").value = (card && card.model) || "";
+    $("abilityBackup1").value = backups[0] || "";
+    $("abilityBackup2").value = backups[1] || "";
+  }
 
-      apiPost("/api/abilities/model", {
+  function saveModelChoice() {
+    if (!currentCard) return;
+    var saveCard = currentCard;
+    var saveGen = abilityGen;
+    var choice = AbilitiesCore.modelChoice($("abilityModel").value, $("abilityBackup1").value, $("abilityBackup2").value);
+    var tip = $("abilitySaveModelTip");
+    tip.textContent = "正在保存…";
+    tip.className = "model-save-tip";
+
+    modelSaving = modelSaving.then(function () {
+      return apiPost("/api/abilities/model", {
         id: saveCard.id,
-        model: modelVal,
-        backup_models: backups,
+        model: choice.model,
+        backup_models: choice.backup_models,
       }).then(function (data) {
         if (saveGen !== abilityGen || !currentCard || currentCard.id !== saveCard.id) return;
         tip.textContent = "已保存";
         tip.className = "model-save-tip ok";
         currentCard = data.ability;
+        showSavedModels(currentCard);
         refreshList();
       }).catch(function (err) {
         if (saveGen !== abilityGen || !currentCard || currentCard.id !== saveCard.id) return;
-        tip.textContent = err.message;
+        tip.textContent = "没存上：" + err.message;
         tip.className = "model-save-tip bad";
+        showSavedModels(currentCard);
       });
     });
+  }
+
+  if ($("abilityModel")) {
+    $("abilityModel").addEventListener("change", saveModelChoice);
+    $("abilityBackup1").addEventListener("change", saveModelChoice);
+    $("abilityBackup2").addEventListener("change", saveModelChoice);
   }
 
   var removeBtn = $("abilityRemove");

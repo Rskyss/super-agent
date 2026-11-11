@@ -174,4 +174,13 @@ assert.strictEqual(A.resultView({ ok: true, status: "ok", model: "gpt-6.1-sol", 
 assert.strictEqual(A.resultView({ ok: false, status: "error", seconds: 2, output: null, files: [],
   reason: "工具出错", how: "稍后再试", platform_said: "no such file", next_model: null }, draw).said, "no such file");
 
+// 用户实测后改（选 A）：模型下拉框一改就自动存。三个框的值整理成要存的样子
+assert.strictEqual(typeof A.modelChoice, "function", "AbilitiesCore 要有 modelChoice");
+assert.deepStrictEqual(A.modelChoice("qwen-a", "qwen-b", ""), { model: "qwen-a", backup_models: ["qwen-b"] });
+assert.deepStrictEqual(A.modelChoice("qwen-a", "", "qwen-c"), { model: "qwen-a", backup_models: ["qwen-c"] }, "第一个备用空着，第二个往前补");
+assert.deepStrictEqual(A.modelChoice("qwen-b", "qwen-b", "qwen-c"), { model: "qwen-b", backup_models: ["qwen-c"] },
+  "主模型换成了备用里的那个，那个备用自动去掉，不然存不进去");
+assert.deepStrictEqual(A.modelChoice("qwen-a", "qwen-c", "qwen-c"), { model: "qwen-a", backup_models: ["qwen-c"] }, "两个备用一样只留一个");
+assert.deepStrictEqual(A.modelChoice("qwen-a", "", ""), { model: "qwen-a", backup_models: [] });
+
 console.log("OK");

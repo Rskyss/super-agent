@@ -524,6 +524,19 @@ class PageTest(unittest.TestCase):
             rule = re.search(r"\.%s\s*\{([^}]*)\}" % name, css).group(1)
             self.assertRegex(rule, r"flex:\s*1 1 0", name + " 要分到高度，内容多了在里面滑")
 
+    def test_model_saves_on_change(self):
+        """用户实测：框里选了模型没点“保存模型”，开始照旧用旧模型，页面没提示。用户选 A：一改就自动存，去掉按钮。"""
+        html = read("blocks.html")
+        self.assertNotIn('id="abilitySaveModel"', html, "去掉“保存模型”按钮")
+        self.assertNotIn("保存模型", html)
+        self.assertIn('id="abilitySaveModelTip"', html, "保留旁边小字：正在保存、已保存、失败原因")
+        script = read("abilities.js")
+        self.assertNotIn("abilitySaveModel\")", script.replace('abilitySaveModelTip")', ""), "页面不再找保存按钮")
+        for sel in ("abilityModel", "abilityBackup1", "abilityBackup2"):
+            self.assertRegex(script, r'\$\("%s"\)\.addEventListener\("change"' % sel, sel + " 一改就存")
+        self.assertIn("AbilitiesCore.modelChoice(", script)
+        self.assertIn("modelSaving", script, "几次改动按先后存；没存完点开始，等存完再跑")
+
     def test_page_rules(self):
         script = read("abilities.js")
         self.assertNotRegex(script, r"localStorage|sessionStorage|indexedDB|document\.cookie")
