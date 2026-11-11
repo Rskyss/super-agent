@@ -464,5 +464,155 @@ class General(Case):
         self.assertEqual(sorted(c["id"] for c in blocks.list_cards(self.root)), ["bailian", "codex", "web-search"])
 
 
+# ---------- 第 2 轮补充（Codex 第 1 轮复查查出来的，见施工单“第 2 轮补充”） ----------
+
+def _cli_card(card_id, output_file, output):
+    card = json.loads(json.dumps(abilities.BUILTIN_ABILITIES["draw-image"]))
+    card.update(id=card_id, title="命令行" + card_id, description="测试用")
+    card["how"]["output_file"] = output_file
+    card["how"]["prompt"] = "按要求写：{scene}。存成当前文件夹里的 " + output_file
+    card["output"] = output
+    return card
+
+
+class Round2(Case):
+    runner = Cli.runner
+
+    def setUp(self):
+        super().setUp()
+        abilities.save_ability(_cli_card("cli-note", "输出.txt", {"type": "text", "check": {}}), self.root)
+        abilities.save_ability(_cli_card("cli-file", "报告.md",
+                                         {"type": "file", "check": {"extensions": ["md"]}}), self.root)
+        self.outside = Path(self._tmp.name) / "别处"
+        self.outside.mkdir()
+
+    def folder_files(self, ability_id, r):
+        folder = abilities.result_folder(ability_id, r["run_id"], self.root)
+        return sorted(p for p in folder.rglob("*") if p.is_file()) if folder.exists() else []
+
+    def assertFolderNoSecret(self, ability_id, r):
+        for p in self.folder_files(ability_id, r):
+            data = p.read_bytes()
+            self.assertFalse(TAVILY_KEY.encode() in data or BAILIAN_KEY.encode() in data, f"{p.name} 里有密钥")
+
+    # 1. 成果文件里不能有这次用的密钥
+    def test_secret_not_in_text_result(self):
+        r = self.run_ability("write-article", {"topic": "春天", "words": 800},
+                             client_factory=self.factory(FakeClient(reply="字" * 600 + " " + BAILIAN_KEY)))
+        self.assertTrue(r["ok"], r)
+        self.assertEqual([p.name for p in self.folder_files("write-article", r)], ["结果.txt"])
+        self.assertFolderNoSecret("write-article", r)
+        self.assertNoSecret(r)
+
+    def test_secret_not_in_list_result(self):
+        r = self.run_ability("search-web", {"keywords": "x"},
+                             search_fn=lambda *a: [{"title": "t " + TAVILY_KEY, "url": "https://t.cn",
+                                                    "snippet": "s " + BAILIAN_KEY}])
+        self.assertTrue(r["ok"], r)
+        self.assertFolderNoSecret("search-web", r)
+        self.assertNoSecret(r)
+
+    def test_secret_not_in_file_result(self):
+        r = self.run_ability("cli-file", {"scene": "x"},
+                             runner=self.runner(write=("报告.md", ("报告正文 " + BAILIAN_KEY).encode())))
+        self.assertFolderNoSecret("cli-file", r)
+        self.assertNoSecret(r)
+
+    # 2. 不跟着“文件链接”去拿别处的文件；运行前就在的图不拿（哪怕修改时间被改到以后）
+    def test_link_in_image_folder_not_taken(self):
+        target = self.outside / "外面.png"
+
+        def run(args, folder, timeout):
+            target.write_bytes(png_bytes(512, 512))  # 运行之后才出现，修改时间是新的
+            os.symlink(target, self.images / "link.png")
+            return 0, "OK"
+        r = self.run_ability("draw-image", {"scene": "猫"}, runner=run)
+        self.assertFalse(r["ok"])
+        self.assertEqual(self.folder_files("draw-image", r), [])
+
+    def test_link_in_work_folder_not_taken(self):
+        target = self.outside / "外面.png"
+        target.write_bytes(png_bytes(512, 512))
+
+        def run(args, folder, timeout):
+            os.symlink(target, Path(folder) / "输出.png")
+            return 0, "OK"
+        r = self.run_ability("draw-image", {"scene": "猫"}, runner=run)
+        self.assertFalse(r["ok"])
+        self.assertEqual(self.folder_files("draw-image", r), [])
+
+    def test_old_image_with_future_time_not_taken(self):
+        old = self.images / "old.png"
+        old.write_bytes(png_bytes(512, 512))
+        os.utime(old, (time.time() + 60, time.time() + 60))
+        r = self.run_ability("draw-image", {"scene": "猫"}, runner=self.runner())
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["status"], "format")
+        self.assertEqual(self.folder_files("draw-image", r), [])
+
+    # 3. 不传 client_factory 时，真的能建出大模型客户端（120 秒、按服务商设思考开关）
+    def test_default_client(self):
+        from collab import providers
+        made = []
+
+        class FakeModelClient:
+            def __init__(self, **kw):
+                made.append(kw)
+
+            def chat(self, messages, on_text=None, tools=None):
+                return {"text": "字" * 100, "tool_calls": [], "tokens": None}
+        with mock.patch.object(abilities_run, "ModelClient", FakeModelClient), \
+                mock.patch("desktop.clerk.client.ModelClient", FakeModelClient):
+            r = self.run_ability("write-article", {"topic": "春天", "words": 100})
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(len(made), 1)
+        kw = made[0]
+        self.assertEqual((kw.get("base_url"), kw.get("model"), kw.get("api_key")),
+                         (BAILIAN_URL, "qwen3.7-plus", BAILIAN_KEY))
+        self.assertEqual(kw.get("timeout"), 120)
+        self.assertEqual(bool(kw.get("thinking_off")), bool((providers.find("bailian") or {}).get("thinking_off")))
+
+    # 4. 命令行工具交回文字：读文件里的正文
+    def test_cli_text_card(self):
+        r = self.run_ability("cli-note", {"scene": "x"}, runner=self.runner(write=("输出.txt", "一段正文".encode())))
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(r["output"], "一段正文")
+        self.assertEqual([p.name for p in self.folder_files("cli-note", r)], ["结果.txt"])
+        self.assertEqual(self.folder_files("cli-note", r)[0].read_text(encoding="utf-8"), "一段正文")
+
+    # 5. 拿到了结果但格式不对：结果照样存（status 还是 format）；什么都没拿到才不建文件夹
+    def test_format_result_still_saved(self):
+        r = self.run_ability("write-article", {"topic": "春天", "words": 800},
+                             client_factory=self.factory(FakeClient(reply="太短了")))
+        self.assertEqual(r["status"], "format")
+        self.assertEqual(r["files"], ["结果.txt"])
+        self.assertEqual(self.folder_files("write-article", r)[0].read_text(encoding="utf-8"), "太短了")
+
+        r = self.run_ability("draw-image", {"scene": "猫"}, runner=self.runner(write=("输出.png", png_bytes(100, 100))))
+        self.assertEqual(r["status"], "format")
+        self.assertEqual(r["files"], ["输出.png"])
+        self.assertEqual(abilities.image_size(self.folder_files("draw-image", r)[0]), (100, 100))
+
+        r = self.run_ability("search-web", {"keywords": "x"}, search_fn=lambda *a: [])
+        self.assertEqual(r["status"], "format")
+        self.assertEqual(r["files"], [])
+        self.assertFalse(abilities.result_folder("search-web", r["run_id"], self.root).exists())
+
+    # 6. 存成果失败：不抛出去，算 error、写记录、能再跑
+    def test_save_failure_is_error_and_recorded(self):
+        blocked = abilities.home(self.root) / abilities.RESULT_DIR / "write-article"
+        blocked.parent.mkdir(parents=True, exist_ok=True)
+        blocked.write_text("挡路的文件")
+        before = len(abilities.runs("write-article", self.root))
+        for _ in range(2):
+            r = self.run_ability("write-article", {"topic": "春天", "words": 100},
+                                 client_factory=self.factory(FakeClient(reply="字" * 100)))
+            self.assertFalse(r["ok"])
+            self.assertEqual(r["status"], "error")
+            self.assertRegex(r["reason"], r"[一-鿿]")
+        self.assertEqual(len(abilities.runs("write-article", self.root)), before + 2)
+        self.assertEqual(self.last_run("write-article")["status"], "error")
+
+
 if __name__ == "__main__":
     unittest.main()
