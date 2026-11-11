@@ -614,5 +614,37 @@ class Round2(Case):
         self.assertEqual(self.last_run("write-article")["status"], "error")
 
 
+# ---------- 第 3 轮补充（Codex 第 2 轮复查查出来的，见施工单“第 3 轮补充”） ----------
+
+class Round3(Case):
+    runner = Cli.runner
+
+    def setUp(self):
+        super().setUp()
+        abilities.save_ability(_cli_card("cli-note", "输出.txt", {"type": "text", "check": {}}), self.root)
+
+    def test_check_error_is_error_and_recorded(self):
+        cases = [
+            ("write-article", {"topic": "春天", "words": 100}, {"client_factory": self.factory(FakeClient(reply="字" * 100))}),
+            ("cli-note", {"scene": "x"}, {"runner": self.runner(write=("输出.txt", "正文".encode()))}),
+            ("draw-image", {"scene": "猫"}, {"runner": self.runner(write=("输出.png", png_bytes(512, 512)))}),
+        ]
+        for ability_id, inputs, kw in cases:
+            before = len(abilities.runs(ability_id, self.root))
+            with mock.patch.object(abilities, "check_output", side_effect=OSError("查结果时出错")):
+                r = self.run_ability(ability_id, inputs, **kw)
+            self.assertFalse(r["ok"], ability_id)
+            self.assertEqual(r["status"], "error", ability_id)
+            self.assertRegex(r["reason"], r"[\u4e00-\u9fff]")
+            self.assertEqual(len(abilities.runs(ability_id, self.root)), before + 1, ability_id)
+
+    def test_empty_text_not_saved(self):
+        r = self.run_ability("write-article", {"topic": "春天", "words": 100},
+                             client_factory=self.factory(FakeClient(reply="  \n ")))
+        self.assertEqual(r["status"], "format")
+        self.assertEqual(r["files"], [])
+        self.assertFalse(abilities.result_folder("write-article", r["run_id"], self.root).exists())
+
+
 if __name__ == "__main__":
     unittest.main()
