@@ -486,6 +486,7 @@ select:disabled, input:disabled {
 .detail-label { flex: 0 0 88px; color: var(--dim); font-size: var(--fs-sm); }
 .detail-value { flex: 1; min-width: 0; margin: 0; font-size: var(--fs-base); overflow-wrap: anywhere; }
 code.detail-value { font-family: var(--font-mono); color: var(--text); }
+.detail-list { max-height: 132px; overflow-y: auto; color: var(--dim); font-size: var(--fs-sm); line-height: 1.7; }
 
 .detail-preview { background: var(--bg-side); padding: 12px; border-radius: var(--r-md); font-family: var(--font-mono); margin: 0 0 16px; font-size: var(--fs-sm); white-space: pre-wrap; word-break: break-all; }
 #detailKeyBox { margin-bottom: 16px; }

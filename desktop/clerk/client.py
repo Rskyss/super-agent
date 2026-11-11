@@ -31,6 +31,30 @@ def _http_failure(code: int) -> ModelError:
     return ModelError(f"模型服务商暂时出错了（代码 {code}），请稍后再试。")
 
 
+def _platform_words(exc) -> str:
+    """平台拒绝时回的那句话（常见写法是 {"error": {"message": ...}}），压成一行。读不出就空着，出什么错都不往外抛。
+    这里不截短：要先打码再截短，不然会把半截密钥留下（第二轮复查严重第 1 条），截短交给调用方。"""
+    try:
+        data_bytes = exc.read(4001)
+        raw = data_bytes[:4000].decode("utf-8", "replace")
+        if len(data_bytes) > 4000:  # 没读全：最后那串字可能是半截密钥、半截邮箱，打码认不出来，先去掉（第三轮复查严重）
+            raw = re.sub(r"\S*$", "", raw)
+        try:
+            data = json.loads(raw, strict=False)
+        except ValueError:
+            data = None
+        if isinstance(data, dict):
+            err = data.get("error")
+            text = (err.get("message") or err.get("code")) if isinstance(err, dict) else err
+            if not (isinstance(text, str) and text.strip()):
+                text = data.get("message")
+            if isinstance(text, str) and text.strip():
+                raw = text
+        return " ".join(str(raw).split())
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def _timed_out(reason) -> bool:
     return isinstance(reason, (socket.timeout, TimeoutError))
 
@@ -80,7 +104,10 @@ class ModelClient:
         except ValueError:
             raise ModelError("模型服务地址不对，要以 https:// 开头。") from None
         except urllib.error.HTTPError as exc:
-            raise _http_failure(exc.code) from None
+            failure = _http_failure(exc.code)
+            failure.code = exc.code
+            failure.detail = _platform_words(exc)  # 积木库检测要写出平台的原话（2026-11-11 火山引擎）；用前由调用方打码
+            raise failure from None
         except urllib.error.URLError as exc:
             if _timed_out(exc.reason):
                 raise ModelError("模型回复超时了，请再试一次。") from None

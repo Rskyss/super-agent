@@ -25,9 +25,16 @@ INDEX = "索引.json"
 HISTORY_LIMIT = 40  # 带给模型的最近几句话，够接上话，也不让费用越滚越大
 TITLE_LIMIT = 24
 MAX_TOOL_ROUNDS = 5
+BLOCKS_TOOL_ROUNDS = 8  # 积木库：翻手册、搜、读网页、出卡一套下来步数多（用户真实接高德时 5 步不够，2026-11-10）
+# 模型把工具调用当文字吐出来（DeepSeek 的 DSML、常见的 <tool_call> 等写法）：从这里起都不给用户看
+# 只认这几种协议写法：<｜…（DeepSeek）、<|tool_calls_begin|>、<tool_call>；正常的表格、代码例子不动（复查）
+_TOOL_MARKUP = re.compile(r"<(?:｜|\|[A-Za-z_▁]{1,40}\|>|/?tool_calls?>)", re.I)
+_MAYBE_MARKUP = re.compile(r"<[^\s>]{0,44}$")  # 比协议名最长 40 再多留两边的竖线  # 边打字边显示时，结尾这一截可能是协议写法的开头，先不显示
+_LAST_ROUND = ("（这是系统提示，不是用户说的）这一轮能用的步骤用完了，不能再调用任何工具，也不要写出工具调用。"
+               "用大白话告诉用户做到哪一步、还差什么，请用户说“继续”接着做。")
 
 # 行政说“提议卡/确认框已经弹出来了”这一类话（第 9 项整体验收：模型有时没调用出卡的工具却这么说）
-_CARD = r"(?:提议卡|接法卡|确认框|确认卡)"
+_CARD = r"(?:提议卡|接法卡|安装卡|卡片|确认框|确认卡)"
 _DONE = (r"(?:弹出来了|弹出了|已经?弹出|出来了|出好了|已经?发出|已经?发送|已经?给出|已经?生成|已经?显示|已经?出示"
          r"|已经出了|已出(?![现错结]))")
 _CLAIM_AFTER = re.compile(_CARD + r"([^。！？\n]{0,15}?)" + _DONE)  # “提议卡已经弹出来了”
@@ -61,6 +68,28 @@ def claims_card(text: str) -> bool:
                 if _LATER_AFTER.match(sentence[found.end():found.end() + 2]):
                     continue
                 return True
+    return False
+
+
+# 说得像卡就在屏幕上（“接法卡给你”“卡片已经送到你屏幕上了”“这张卡还在”“填进卡上”）：屏幕上其实没卡时要提醒
+# 用户真实接腾讯云混元时管家没出卡却这么说了三次，上面的 claims_card 一句都没认出来（2026-11-10）
+_CARD_WORD = r"(?:卡片|接法卡|提议卡|安装卡|确认卡|确认框|这张卡|卡)"
+_POINTS = re.compile(
+    _CARD_WORD + r"[^。！？\n]{0,4}?(?:给你|送到|发到|放到|摆在|就在|还在|在你?的?屏幕上|在上面)"
+    r"|(?:屏幕上|上面)的?[^。！？\n]{0,3}?" + _CARD_WORD
+    + r"|(?:填进|填到|填在|写进|写在)" + _CARD_WORD + r"(?:上|里)?"
+    + r"|" + _CARD_WORD + r"(?:上|里)[^。！？\n]{0,6}?(?:填|点确认|点一下|选)")
+_FUTURE = re.compile(r"会|将|再|到时|之后|以后|等|装好|接好|待会|下一步")
+
+
+def points_at_card(text: str) -> bool:
+    """回话说得像屏幕上已经有卡（在问、在说以后的事不算）"""
+    for sentence in re.findall(r"[^，,；;。！？!?\n]+[，,；;。！？!?]?", _PAREN.sub("", text or "")):
+        if _ASKING.search(sentence) or _WAIT_THEN.search(sentence) or _FUTURE.search(sentence):
+            continue
+        found = _POINTS.search(sentence)
+        if found and not _NOT_CARD_ITSELF.search(sentence[found.start():found.end() + 4]):
+            return True
     return False
 
 
@@ -102,6 +131,21 @@ def _section(text: str, heading: str) -> str:
     return "\n".join(lines).strip()
 
 
+def _who(project) -> str:
+    """积木库窗口里叫积木库管家，项目窗口里叫行政（积木库管家方案第一节第 1 条）。"""
+    return "管家" if blocks_tools.is_blocks_home(project) else "行政"
+
+
+class _ThisTurn:
+    """交给出卡的对话：多带一个“是哪一轮出的”，出卡前程序再看一眼这一轮被停掉没有（复查第二轮第 2 条）。"""
+
+    def __init__(self, conv, turn: int):
+        self._conv, self.turn_expected = conv, turn
+
+    def __getattr__(self, name):
+        return getattr(self._conv, name)
+
+
 class _Stopped(Exception):
     """用户点了停止：这一轮后面到的内容都不要了。"""
 
@@ -114,6 +158,7 @@ class _Conversation:
         self.busy = False
         self.turn = 0
         self.deleted = False   # 删掉后，还在路上的回答和标题都不再写
+        self.manuals = []      # 积木库管家这段对话翻开过的手册（按翻开顺序）
 
     def emit(self, event: dict) -> None:
         with self.cond:
@@ -172,6 +217,12 @@ class ClerkDesk:
             if role == "proposal" and isinstance(saved.get("id"), str):
                 lines.append(("proposal", saved["id"]))
                 continue
+            if role == "manual" and saved.get("name") in blocks_tools.MANUALS:
+                lines.append(("manual", saved["name"]))
+                continue
+            if role == "action" and isinstance(saved.get("label"), str) and isinstance(saved.get("text"), str):
+                lines.append(("action", {"label": saved["label"], "text": saved["text"]}))
+                continue
             text = saved.get("text")
             if role in ("user", "assistant", "notice") and isinstance(text, str):
                 lines.append((role, text))
@@ -200,6 +251,24 @@ class ClerkDesk:
             conv.messages.append({"role": role, "content": text})
         self._save_index(conv.project, conv.id, updated=time.time())
 
+    def _record_line(self, conv: _Conversation, line: dict) -> None:
+        """手册、动作这类只留给自己和用户看的行：不进模型的对话，不改“最近更新”。"""
+        if conv.deleted:
+            return
+        folder = self._folder(conv.project)
+        folder.mkdir(parents=True, exist_ok=True)
+        with (folder / f"{conv.id}.jsonl").open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(dict(line, time=time.time()), ensure_ascii=False) + "\n")
+
+    def _open_manual(self, conv: _Conversation, name: str) -> None:
+        if name in conv.manuals:
+            return
+        conv.manuals.append(name)
+        try:
+            self._record_line(conv, {"role": "manual", "name": name})
+        except OSError:
+            pass  # 记不下来只是重开后要再翻一次，不能打断回话
+
     def _conversation(self, project: str, cid: str, create: bool = False):
         if not _ID_SHAPE.fullmatch(cid or ""):
             return None
@@ -221,6 +290,14 @@ class ClerkDesk:
                 continue
             if role == "notice":
                 conv.emit({"type": "notice", "text": payload, "item": f"h{len(conv.events)}", "history": True})
+                continue
+            if role == "manual":
+                if payload not in conv.manuals:
+                    conv.manuals.append(payload)
+                continue
+            if role == "action":
+                conv.emit({"type": "activity", "item": f"h{len(conv.events)}", "label": payload["label"],
+                           "text": payload["text"], "status": "done", "history": True})
                 continue
             conv.messages.append({"role": role, "content": payload})
             kind = "user" if role == "user" else "message"
@@ -316,7 +393,7 @@ class ClerkDesk:
         use_blocks = self._blocks_client is not None and blocks_tools.is_blocks_home(project)
         client = self._blocks_client() if use_blocks else self._client()
         if client is None:
-            raise RuntimeError("行政人员还没配置好，请先填写模型密钥")
+            raise RuntimeError("积木库管家还没连上：请先在设置里绑定" if use_blocks else "行政人员还没配置好，请先填写模型密钥")
         # 积木库里贴了像密钥的字：保存和发给模型之前就换掉（项目窗口不变）
         has_secret = blocks_tools.is_blocks_home(project) and bool(blocks._SECRET_TEXT.search(text))
         if has_secret:
@@ -329,7 +406,7 @@ class ClerkDesk:
             raise RuntimeError("找不到这段对话")
         with conv.cond:
             if conv.busy:
-                raise RuntimeError("行政还在回复：等它说完，或先点“停止”")
+                raise RuntimeError(f"{_who(project)}还在回复：等它说完，或先点“停止”")
             conv.busy = True
             conv.turn += 1
             conv.partial = []
@@ -428,6 +505,16 @@ class ClerkDesk:
     def _prompt(self, conv: _Conversation) -> list:
         if blocks_tools.is_blocks_home(conv.project):
             role = blocks_tools.role_text()
+            for name in conv.manuals:  # 翻过的手册后面每句都带着
+                role += "\n\n" + blocks_tools.manual_block(name)
+            # 管家看不见屏幕：每一句都告诉它屏幕上现在有没有卡，省得它以为自己出过（用户真实遇到，2026-11-10）
+            open_cards = clerk_tasks.open_proposals(conv.project, conv.id)
+            if open_cards:
+                names = "、".join(f"「{clerk_tasks.card_label(c)}」" for c in open_cards[:3])
+                role += (f"\n\n屏幕上现在有一张待处理的卡：{names}，用户还没点。"
+                         "它只管它自己那件事：用户要办的是另一样东西，要另出一张卡。")
+            else:
+                role += "\n\n屏幕上现在没有待处理的卡。要让用户填密钥、点确认，必须先调用 propose_ 开头的工具出卡。"
         else:
             role = ROLE.format(name=Path(conv.project).name)
             hint = team_incomplete_hint(conv.project)
@@ -461,26 +548,47 @@ class ClerkDesk:
         return _AUTH_HEADER.sub(r"\1 [已隐藏]", text)
 
     def _reply(self, conv: _Conversation, client, turn: int, first: bool) -> None:
-        holder = {"item": uuid.uuid4().hex}
+        # done：前几轮已定稿的干净文字；raw：这一轮模型说的原文；sent：已经发给页面的字数
+        holder = {"item": uuid.uuid4().hex, "done": "", "raw": "", "sent": 0}
 
         def on_text(piece: str) -> None:
-            piece = self._scrub(conv, client, piece)
-            with conv.cond:
+            # 边打字边显示也不能露出工具指令：攒着看，只发干净的那部分；点停止时存的也是这部分（复查）
+            holder["raw"] += self._scrub(conv, client, piece)
+            raw = holder["raw"]
+            found = _TOOL_MARKUP.search(raw)
+            safe = holder["done"] + (raw[:found.start()] if found else _MAYBE_MARKUP.sub("", raw))
+            fresh = safe[holder["sent"]:] if len(safe) > holder["sent"] else ""
+            with conv.cond:  # 确认这一轮还在和显示这段字一步完成，停止插不进中间（复查第三轮）
                 if conv.turn != turn:
                     raise _Stopped
-                conv.partial.append(piece)
-            conv.emit({"type": "delta", "item": holder["item"], "text": piece})
+                if fresh:
+                    conv.partial.append(fresh)
+                    holder["sent"] = len(safe)
+                    conv.emit({"type": "delta", "item": holder["item"], "text": fresh})
+
+        def new_round() -> None:
+            """一轮模型回话结束：这一轮的干净部分定稿，乱码只管到这一轮为止（复查：不能压住下一轮的话）。"""
+            raw = holder["raw"]
+            found = _TOOL_MARKUP.search(raw)
+            holder["done"] += raw[:found.start()] if found else raw
+            holder["raw"] = ""
 
         def seal(text: str) -> None:
             words = self._scrub(conv, client, (text or "").strip())
             if not words:
                 return
-            with conv.cond:
+            with conv.cond:  # 停止后才回来的旧回话不能再存、再显示，也不能清掉新一轮的话（复查）
+                if conv.turn != turn:
+                    raise _Stopped
                 conv.partial = []  # 这些话已经存好，点停止时不能再存一遍
-            conv.emit({"type": "message", "item": holder["item"], "text": words})
-            self._keep_reply(conv, words)
-            holder["item"] = uuid.uuid4().hex
+                conv.emit({"type": "message", "item": holder["item"], "text": words})
+                self._keep_reply(conv, words)
+            holder.update(item=uuid.uuid4().hex, done="", raw="", sent=0)
             holder["said"] = True
+            holder["sealed"] = holder.get("sealed", "") + words + "\n"  # 起标题要用（出卡后这一轮不再有回话）
+
+        on_text.new_round = new_round
+        on_text.card_shown = lambda: holder.update(said=True)  # 只出卡不说话也算回过话，不补“没有得到回复”
 
         failure, reply = None, ""
         try:
@@ -488,9 +596,9 @@ class ClerkDesk:
         except _Stopped:
             return
         except ModelError as exc:
-            failure, reply = str(exc), exc.partial
+            failure, reply = str(exc), self._no_markup(conv, exc.partial or "")
         except Exception:  # 回话线程不能悄悄死掉，否则页面一直转
-            failure, reply = "行政这次没回复成功，请再试一次。", "".join(conv.partial)
+            failure, reply = f"{_who(conv.project)}这次没回复成功，请再试一次。", "".join(conv.partial)
         failure, reply = self._scrub(conv, client, failure), self._scrub(conv, client, reply)
         with conv.cond:
             if conv.turn != turn:
@@ -504,8 +612,9 @@ class ClerkDesk:
         if failure:
             conv.emit({"type": "error", "text": failure})
         conv.emit({"type": "turn_done"})
-        if first and reply and not failure:
-            threading.Thread(target=self._name, args=(conv, client, reply), daemon=True).start()
+        named = reply or holder.get("sealed") or ("（出了一张卡）" if holder.get("said") else "")
+        if first and named and not failure:  # 第一句就出了卡也起标题（Codex 复查第 2 条）
+            threading.Thread(target=self._name, args=(conv, client, named), daemon=True).start()
 
     def _tool_loop(self, conv: _Conversation, client, turn: int, on_text, seal) -> str:
         """带工具的多轮：有 tool_calls 就执行后继续问；到上限后再问一次，这次不带工具。"""
@@ -517,10 +626,15 @@ class ClerkDesk:
         # 只在积木库里提醒：项目窗口卡片对话里的修改提议是一轮结束才出框，提醒会让同一条修改记两遍（复查发现）
         can_propose = blocks_tools.is_blocks_home(conv.project) and any(
             str(n or "").startswith("propose_") for n in names)
-        for round_no in range(MAX_TOOL_ROUNDS + 1):
+        limit = BLOCKS_TOOL_ROUNDS if blocks_tools.is_blocks_home(conv.project) else MAX_TOOL_ROUNDS
+        for round_no in range(limit + 1):
             if not self._alive(conv, turn):
                 raise _Stopped
-            use_tools = round_no < MAX_TOOL_ROUNDS
+            use_tools = round_no < limit
+            if not use_tools and round_no:
+                messages.append({"role": "user", "content": _LAST_ROUND})
+            if round_no:
+                getattr(on_text, "new_round", lambda: None)()
             try:
                 answer = client.chat(messages, on_text=on_text, tools=allowed if use_tools else None)
             except ModelError as exc:
@@ -530,17 +644,19 @@ class ClerkDesk:
                     merged = prior if not extra else f"{prior}\n{extra}"
                     raise ModelError(str(exc), partial=merged) from exc
                 raise
-            reply = answer.get("text") or ""
+            reply = self._no_markup(conv, answer.get("text") or "")
             if reply.strip():
                 parts.append(reply.strip())
             calls = answer.get("tool_calls") or []
             if (use_tools and not calls and can_propose and not proposed and not reminded
-                    and round_no < MAX_TOOL_ROUNDS - 1 and claims_card(reply)):
-                reminded = True  # 说出了卡、这一轮却没出：提醒它一次，真出卡或如实说没出；上面有没处理的卡就点名
-                messages.append({"role": "assistant", "content": reply})
-                messages.append({"role": "user", "content": _claim_reminder(
-                    clerk_tasks.open_proposals(conv.project, conv.id))})
-                continue
+                    and round_no < limit - 1
+                    and (claims_card(reply) or points_at_card(reply))):
+                open_now = clerk_tasks.open_proposals(conv.project, conv.id)  # 只读一次（复查）
+                if claims_card(reply) or not open_now:
+                    reminded = True  # 说出了卡、这一轮却没出：提醒它一次，真出卡或如实说没出；上面有没处理的卡就点名
+                    messages.append({"role": "assistant", "content": reply})
+                    messages.append({"role": "user", "content": _claim_reminder(open_now)})
+                    continue
             if not use_tools or not calls:
                 return "\n".join(parts) if parts else reply
             if any(str(call.get("name") or "").startswith("propose_") for call in calls):
@@ -555,16 +671,24 @@ class ClerkDesk:
                     "function": {"name": call.get("name") or "", "arguments": call.get("arguments") or "{}"},
                 } for i, call in enumerate(calls)],
             })
+            shown_now = False
             for i, call in enumerate(calls):
                 if not self._alive(conv, turn):
                     raise _Stopped
+                if shown_now and blocks_tools.is_blocks_home(conv.project):
+                    break  # 积木库：同一批里出卡之后的不再执行，免得刚出的卡被顶掉、卡后还在忙（Codex 复查第 1 条）
                 call_id = call.get("id") or f"call{round_no}_{i}"
                 name = call.get("name") or ""
                 raw = call.get("arguments") or "{}"
+                if blocks_tools.is_blocks_home(conv.project):
+                    raw = self._forget_keys(conv, client, raw)  # 已知密钥原文一进门就去掉（复查第二轮第 1 条）
+                args = {}  # 参数看不懂时下面记动作也要有东西用
                 try:
                     args = json.loads(raw)
                     if not isinstance(args, dict):
                         raise ValueError("not a dict")
+                    if blocks_tools.is_blocks_home(conv.project):  # 转义写法解析后才变回密钥：再去一遍（复查第三轮）
+                        args = self._forget_keys_in(conv, client, args)
                     if name not in names:
                         result = "没有这个工具"
                     elif name == "propose_task":
@@ -576,15 +700,15 @@ class ClerkDesk:
                     elif name == "propose_revise":
                         result = clerk_tasks.propose_revise(conv, args)
                     elif name == "propose_install":
-                        result = clerk_tasks.propose_install(conv, args)
+                        result = clerk_tasks.propose_install(_ThisTurn(conv, turn), args)
                     elif name == "propose_connect_cli":
-                        result = clerk_tasks.propose_connect_cli(conv, args)
+                        result = clerk_tasks.propose_connect_cli(_ThisTurn(conv, turn), args)
                     elif name == "propose_connect_api":
-                        result = clerk_tasks.propose_connect_api(conv, args)
+                        result = clerk_tasks.propose_connect_api(_ThisTurn(conv, turn), args)
                     elif name == "propose_web_install":
-                        result = clerk_tasks.propose_web_install(conv, args)
+                        result = clerk_tasks.propose_web_install(_ThisTurn(conv, turn), args)
                     elif name == "propose_connect_search":
-                        result = clerk_tasks.propose_connect_search(conv, args)
+                        result = clerk_tasks.propose_connect_search(_ThisTurn(conv, turn), args)
                     elif blocks_tools.is_blocks_home(conv.project):
                         result = blocks_tools.run(conv.project, name, args)
                     else:
@@ -594,11 +718,75 @@ class ClerkDesk:
                 except OSError:
                     result = "存不下来：请用户检查磁盘空间或文件夹权限，这次没有生成确认框。"
                 if name.startswith("propose_") and str(result).startswith(_CARD_SHOWN):
-                    proposed = True  # 真出了卡才算；出卡工具返回错误（缺字段、不合格）不算
+                    proposed = shown_now = True  # 真出了卡才算；出卡工具返回错误（缺字段、不合格）不算
                 label = LABELS.get(name, "读 资料")
-                conv.emit({"type": "activity", "item": call_id, "label": label, "status": "done"})
+                activity = {"type": "activity", "item": call_id, "label": label, "status": "done"}
+                if blocks_tools.is_blocks_home(conv.project) and name in names:
+                    if name.startswith("propose_") and not str(result).startswith(_CARD_SHOWN):
+                        label = activity["label"] = "没出卡"  # 被程序拦下的不能算“出了卡”
+                    plain = args if isinstance(args, dict) else {}
+                    said = self._forget_keys(conv, client, blocks_tools.describe(name, plain, str(result)))
+                    activity["text"] = said
+                    # 停止后才回来的结果不记、不改手册、不显示；查和写一步完成，停止插不进中间（复查两轮第 4 条）
+                    with conv.cond:
+                        if conv.turn != turn:
+                            raise _Stopped
+                        result = self._with_manual(conv, name, plain, str(result))
+                        try:
+                            self._record_line(conv, {"role": "action", "name": name, "label": label, "text": said})
+                        except OSError:
+                            pass
+                        conv.emit(activity)
+                else:
+                    conv.emit(activity)
                 messages.append({"role": "tool", "tool_call_id": call_id, "content": result})
+            if shown_now and blocks_tools.is_blocks_home(conv.project):
+                # 积木库：卡一出来这一轮就结束，卡后不再说话（用户 2026-11-10：上面文字、下面卡，卡后的话都是重复）。
+                # 会替换哪块写在卡上，失效的旧卡自己会变样；下一句话的开头也会告诉管家屏幕上有哪张卡
+                getattr(on_text, "card_shown", lambda: None)()
+                return "\n".join(parts)
         return "\n".join(parts)
+
+    @staticmethod
+    def _no_markup(conv: _Conversation, text: str) -> str:
+        """模型把工具调用写成了文字：那一段不给用户看，换成一句大白话。"""
+        found = _TOOL_MARKUP.search(text or "")
+        if not found:
+            return text
+        kept = text[:found.start()].rstrip()
+        note = f"（刚才那一步没真正做成。跟{_who(conv.project)}说“继续”，它会接着做。）"
+        return f"{kept}\n\n{note}" if kept else note
+
+    def _forget_keys(self, conv: _Conversation, client, text: str) -> str:
+        """去掉这次模型连接的密钥、联网搜索的密钥原文（通用写法的密钥另由打码规则管）。"""
+        search_key = clerk_tasks.search_key()
+        if search_key:
+            text = text.replace(search_key, "[已隐藏]")
+        return self._scrub(conv, client, text)
+
+    def _forget_keys_in(self, conv: _Conversation, client, value):
+        """参数里每一处文字都去掉已知密钥（字典、列表一层层往下找）。"""
+        if isinstance(value, str):
+            return self._forget_keys(conv, client, value)
+        if isinstance(value, dict):
+            return {k: self._forget_keys_in(conv, client, v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [self._forget_keys_in(conv, client, v) for v in value]
+        return value
+
+    def _with_manual(self, conv: _Conversation, name: str, args: dict, result: str) -> str:
+        """积木库：翻手册记下来；没翻过这类手册就用了这类工具，把手册附在结果后面（只附一次）。"""
+        if name == "read_manual":
+            wanted = str(args.get("name") or "")
+            if wanted in blocks_tools.MANUALS:
+                self._open_manual(conv, wanted)
+            return result
+        manual = blocks_tools.MANUAL_OF.get(name)
+        if not manual or manual in conv.manuals:
+            return result
+        self._open_manual(conv, manual)
+        return (f"{result}\n\n（你还没翻《{blocks_tools.MANUALS[manual]}》，下面附上，接下来照着办。）\n"
+                + blocks_tools.manual_block(manual))
 
     def notify(self, project: str, conversation: str, text: str) -> bool:
         """往来源对话写一条行政通知并发 message 事件。对话不存在则跳过（由调用方决定是否仍记已汇报）。"""

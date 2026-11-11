@@ -14,6 +14,7 @@ PROVIDERS: List[Dict[str, Any]] = [
         "name": "腾讯云",
         "base_url": TENCENT_BASE_URL,
         "models": [TENCENT_MODEL],
+        "own": ["hunyuan", "hy"],  # 自家模型的名字开头：检测时先试这些（代卖的 DeepSeek 等常要单独开通）
         "thinking_off": True,
     },
     {
@@ -21,6 +22,7 @@ PROVIDERS: List[Dict[str, Any]] = [
         "name": "阿里百炼",
         "base_url": BAILIAN_BASE_URL,
         "models": ["qwen-flash", "qwen-plus", "deepseek-v4.1-flash", "deepseek-v4-pro"],
+        "own": ["qwen", "qwq"],
         "thinking_off": True,
     },
     {

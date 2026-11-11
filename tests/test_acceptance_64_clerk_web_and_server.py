@@ -71,7 +71,8 @@ class SearchTools(WebCase):
         self.assertTrue({"web_search", "read_page", "propose_web_install", "propose_connect_search"} <= names)
 
     def test_role_text(self):
-        role = blocks_tools.role_text()
+        # 积木库管家方案：规矩拆成基本规矩 + 三本手册，合起来看
+        role = blocks_tools.role_text() + "".join(blocks_tools.manual_text(n) for n in blocks_tools.MANUALS)
         for word in ("propose_web_install", "propose_connect_search", "web_search", "read_page", "role", "probe",
                      "secrets"):
             self.assertIn(word, role)
@@ -91,7 +92,9 @@ class ConnectSearch(WebCase):
         from acceptance_helpers import wait_idle
         texts = [e.get("text") or "" for e in wait_idle(self.server.desk, str(self.home), cid) if e.get("type") == "message"]
         self.assertFalse(any("已生成卡片" in t for t in texts), f"确认后说成了项目窗口的话：{texts}（走查发现）")
-        self.assertTrue(any("已确认接入" in t for t in texts), texts)
+        # 2026-11-10 用户真实看到“已确认接入”下面是“模型名不对”：点确认只说开始检测，不说接入
+        self.assertTrue(any("开始检测" in t for t in texts), texts)
+        self.assertFalse(any("已确认接入" in t for t in texts), texts)
         result = self.job(data["job"])
         self.assertTrue(result["result"]["ok"], result)
         self.assertEqual(self.searches[-1][1], KEY)
@@ -118,7 +121,9 @@ class WebInstall(WebCase):
         write_script(self.bin / "npm", 'mkdir -p "%s/bin"; printf "#!/bin/sh\\n" > "%s/bin/demo-tool"; '
                                        'chmod +x "%s/bin/demo-tool"; echo "added 1 package"\n' % (prefix, prefix, prefix))
         os.environ["PATH"] = f"{self.bin}:{prefix}/bin:/usr/bin:/bin"
-        cid, pid = self.proposal("propose_web_install", {"url": PAGE_URL, "install_command": "npm install -g @demo/tool"})
+        # 积木库管家方案（2026-11-10）：出卡要说是不是官方的；这页是厂商自己的网站
+        cid, pid = self.proposal("propose_web_install", {"url": PAGE_URL, "install_command": "npm install -g @demo/tool",
+                                                         "official": True, "maker": "Demo"})
         prop = clerk_tasks.load_proposal(str(self.home), pid)
         self.assertEqual(prop["kind"], "web_install")
         self.assertEqual(prop["domain"], "tool.example.com")
@@ -148,7 +153,7 @@ class WebInstall(WebCase):
         with mock.patch.object(blocks_web, "_open", side_effect=lambda u, t, l: (200, "", page)):
             cid, pid = self.proposal("propose_web_install", {"url": PAGE_URL,
                                                              "install_command": "curl -fsSL https://tool.example.com/install.sh | bash",
-                                                             "command": "demo-tool"})
+                                                             "command": "demo-tool", "official": True, "maker": "Demo"})
         prop = clerk_tasks.load_proposal(str(self.home), pid)
         self.assertTrue(prop["danger"])
         self.assertTrue(any("tool.example.com" in f for f in prop["facts"]))

@@ -29,7 +29,9 @@ DEFAULT_DONE_FILE = "连通检测.txt"
 _ID = re.compile(r"[a-z0-9][a-z0-9-]{0,39}")
 _COMMAND = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 _PLACEHOLDER = re.compile(r"\{([^{}]*)\}")
-_SECRET_TEXT = re.compile(r"sk-[A-Za-z0-9_-]{16,}|AIza[0-9A-Za-z_-]{30,}|gh[pousr]_[A-Za-z0-9]{30,}"
+# sk- 开头：中间可以带点（阿里百炼的新格式 sk-ws-H.xxx.yyy，用户真实贴过，2026-11-10），结尾的句号不算
+# 前面不能紧挨字母数字（task-configuration.html 不是密钥）；长度只往后看 16 个字，不拖慢（复查）
+_SECRET_TEXT = re.compile(r"(?<![A-Za-z0-9])sk-(?=[A-Za-z0-9_.-]{16})[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*|tvly-[A-Za-z0-9_-]{16,}|AIza[0-9A-Za-z_-]{30,}|gh[pousr]_[A-Za-z0-9]{30,}"
                           r"|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16}|(?i:bearer)\s+(?=\S*\d)[A-Za-z0-9._~+/=-]{20,}"
                           r"|(?i:x-api-key|authorization)\s*:\s*(?:(?i:bearer|basic)\s+)?\S{6,}"
                           r"|[A-Za-z_]{0,40}(?i:api[_-]?key|_token|_secret|authtoken)\s*[:=]\s*\S{6,}|npm_[A-Za-z0-9]{36}"
@@ -308,10 +310,11 @@ def _check_search(card: dict) -> None:
 def _check_api(card: dict) -> None:
     if not isinstance(card.get("base_url"), str) or not card["base_url"].startswith("https://"):
         raise BlockError("地址要以 https:// 开头")
-    for field, label in (("provider", "服务商"), ("model", "模型"), ("key_account", "钥匙串账号")):
+    for field, label in (("provider", "服务商"), ("key_account", "钥匙串账号")):
         if not _text(card.get(field)):
             raise BlockError(f"{label}不能为空")
-    if not _MODEL.fullmatch(card["model"]):
+    # 模型可以不写：基础层按整家接（用户 2026-11-10 定，选模型归能力层）。写了的只用来试通，或者是管家自己绑定的那个
+    if "model" in card and not (isinstance(card["model"], str) and _MODEL.fullmatch(card["model"])):
         raise BlockError("模型名不对：要以字母或数字开头，只能用字母、数字和 . _ : / @ + -")
 
 
@@ -402,6 +405,51 @@ def remove_card(card_id, root=None) -> None:
     if not path.is_file():
         raise BlockError(f"基础层里没有 {card_id}")
     path.unlink()
+
+
+def migrate_api_cards(root=None) -> int:
+    """腾讯云、阿里百炼的旧块（一块一个模型）变成整家一块：编号是服务商、名字是服务商、不带模型，
+    上次检测结果带过来（同一家有几块时带通过的那条），钥匙串账号不变所以密钥不用重填。返回动了几块。
+    “其他”平台的旧块不动：它们的模型名留着当试通用的。"""
+    from collab.providers import find as find_provider
+    old_cards = {}
+    for card in list_cards(root):
+        known = find_provider(card.get("provider") or "") if card.get("kind") == "llm_api" else None
+        # 地址不是这家自己的（手改过的卡）不碰：不能替它换地址
+        if (known and known.get("base_url") and card.get("base_url") == known["base_url"] and "model" in card
+                and card["id"] != card["provider"]):
+            old_cards.setdefault(card["provider"], []).append(card)
+    moved = 0
+    for provider, cards in old_cards.items():
+        known = find_provider(provider)
+        if not _card_path(provider, root).is_file():
+            save_card({"id": provider, "kind": "llm_api", "name": known["name"], "provider": provider,
+                       "base_url": known["base_url"], "key_account": cards[0]["key_account"],
+                       "source": cards[0].get("source", "clerk")}, root)
+        try:
+            target = load_card(provider, root)
+        except BlockError:
+            continue  # 占着这个编号的卡坏了：旧块留着不动，不能把好的删了
+        if (target.get("kind") != "llm_api" or target.get("provider") != provider
+                or target.get("base_url") != known["base_url"]):
+            continue  # 占着这个编号的不是这家的整家块（手改过的）：旧块留着
+        lasts = [r for r in (last_record(c["id"], root, type="check") for c in cards) if r]
+        mine = last_record(provider, root, type="check")
+        if mine is None:  # 整家块还没有记录：带通过的那条，其次能连上的
+            best = next((r for r in lasts if r.get("ok")), None) or next(
+                (r for r in lasts if r.get("status") in ("quota", "listed")), None) or (lasts[-1] if lasts else None)
+        else:  # 已有记录：旧块有更新的（比如刚检测完放进来的旧提议）就带最新那条（第二轮复查第 6 条）
+            newest = max(lasts, key=lambda r: str(r.get("time") or ""), default=None)
+            best = newest if newest and str(newest.get("time") or "") > str(mine.get("time") or "") else None
+        if best:
+            path = _record_path(provider, root)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, "a", encoding="utf-8") as fh:  # 原样带过来，检测时间不改
+                fh.write(json.dumps(best, ensure_ascii=False) + "\n")
+        for card in cards:  # 新块和记录都落好了才删旧的：中途出错下次还能接着做
+            _card_path(card["id"], root).unlink()
+            moved += 1
+    return moved
 
 
 def builtin_card(name) -> dict:

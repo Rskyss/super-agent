@@ -1,4 +1,4 @@
-/* 积木库页面（上）：绑定页、左栏（聊天列表、基础层列表）、中间的行政聊天。
+/* 积木库页面（上）：绑定页、左栏（聊天列表、基础层列表）、中间的管家聊天。
    分两层：BlocksCore（规则层，不碰页面，tests/blocks_page_check.js 用 node 直接检查）；页面层。
    密钥规矩：只在密钥框和那一次请求里出现，不存网页、不放地址、不打印。 */
 "use strict";
@@ -78,13 +78,14 @@ var BlocksCore = {
     var st = block && block.status;
     if (st === "ok") return "能用";
     if (st === "quota") return "额度不足";
+    if (st === "listed") return "已接上";
     if (st === "fail") return "不能用";
     return "没检测过";
   },
   statusClass: function (block) {
     var st = block && block.status;
     if (st === "ok") return "ok";
-    if (st === "quota") return "warn";
+    if (st === "quota" || st === "listed") return "warn";
     if (st === "fail") return "bad";
     return "idle";
   },
@@ -108,7 +109,7 @@ var BlocksCore = {
     return { cls: "bad", text: "没接上：" + (res.reason || "") + (res.how ? "。" + res.how : ""), busy: false };
   },
   chatUrl: function (home, token) {
-    var q = new URLSearchParams({ project: String(home || ""), token: String(token || ""), clerk: "1" });
+    var q = new URLSearchParams({ project: String(home || ""), token: String(token || ""), clerk: "1", butler: "1" });
     return "/static/chat.html?" + q.toString();
   },
   esc: function (s) {
@@ -134,7 +135,7 @@ var BlocksCore = {
     var rows = items.map(function (it) {
       var ok = it.status === "有" && it.login !== "没登录" && !it.note;
       var text = it.status === "有" ? (it.version ? shortVersion(it.version, it.label) : "有") + (it.login === "已登录" ? " · 已登录" : (it.login === "没登录" ? " · 没登录" : "")) + (it.note ? " · " + it.note : "") : (it.status === "没有" ? "没有" : "装了，但超级助手找不到");
-      var fix = it.fix || (it.note ? "跟行政说一声，它会帮你查" : "");
+      var fix = it.fix || (it.note ? "跟管家说一声，它会帮你查" : "");
       return { name: it.name, label: it.label, ok: ok, text: text, fix: fix, why: it.why };
     });
     var toHandle = rows.filter(function (r) { return !r.ok && blockMap[r.name] && blockMap[r.name].kind === "cli"; });
@@ -163,16 +164,24 @@ var BlocksCore = {
       rows.push({ label: "命令", text: card.command, code: true });
       rows.push({ label: "版本", text: scanItem ? scanItem.version || "还没查到" : "还没查到" });
       rows.push({ label: "登录", text: scanItem ? (scanItem.login || "查不了") : "还没查到" });
-      rows.push({ label: "来源", text: d.verified ? "预置接法，核实过" : "行政起草，没核实" });
+      rows.push({ label: "来源", text: d.verified ? "预置接法，核实过" : "管家起草，没核实" });
       (d.secrets || []).forEach(function (sec) {
         rows.push({ label: "密钥", text: sec.label + (sec.saved ? " · 已保存" : " · 还没填") });
       });
     } else {
       var provs = { tencent: "腾讯云", bailian: "阿里百炼", other: "其他" };
       rows.push({ label: "服务商", text: provs[card.provider] || card.provider });
-      rows.push({ label: "模型", text: card.model });
       rows.push({ label: "地址", text: card.base_url });
       rows.push({ label: "密钥账号", text: d.key_account });
+      // 按整家接（用户 2026-11-10 定）：不显示单个模型，显示这家的模型名单；选哪个是能力层的事
+      var names = (d.last_check && d.last_check.models) || [];
+      if (names.length) {
+        rows.push({ label: "这家的模型", text: (names.length >= 400 ? "已拿到 " + names.length + " 个，可能没拿全" : names.length + " 个") + "（名单来自平台；具体哪个能用，以后选模型时再验）" });
+        rows.push({ label: "名单", text: names.join("、"), list: true });
+      } else {
+        rows.push({ label: "这家的模型", text: "点一次“检测”后显示名单" });
+      }
+      if (card.model) rows.push({ label: "试通用的模型", text: card.model });
     }
     var time = "没检测过";
     if (d.last_check) {
@@ -182,6 +191,7 @@ var BlocksCore = {
     var status = { cls: "idle", text: "没检测过" };
     if (d.last_check) {
       if (d.last_check.ok) status = { cls: "ok", text: "能用" };
+      else if (d.last_check.status === "listed") status = { cls: "warn", text: "已接上：" + String(d.last_check.reason || "").replace(/^已接上：/, "") + (d.last_check.how ? "。" + d.last_check.how : "") };
       else if (d.last_check.status === "quota") status = { cls: "warn", text: "额度不足：工具能连上，" + d.last_check.reason + (d.last_check.how ? "。" + d.last_check.how : "") };
       else status = { cls: "bad", text: "不能用：" + d.last_check.reason + (d.last_check.how ? "。" + d.last_check.how : "") };
     }
@@ -206,13 +216,14 @@ var BlocksCore = {
     if (job.error) return { state: "fail", text: job.error };
     if (job.result && job.result.ok) return { state: "ok", text: "检测通过 · " + job.result.seconds + " 秒" };
     var res = job.result || {};
+    if (res.status === "listed") return { state: "warn", text: "已接上：" + String(res.reason || "").replace(/^已接上：/, "") + (res.how ? "。" + res.how : "") };
     if (res.status === "quota") return { state: "warn", text: "能连上，但额度不足：" + (res.reason || "") + (res.how ? "。" + res.how : "") };
     var text = (res.reason || "") + (res.how ? (res.reason ? "。" : "") + res.how : "");
-    if (!text) text = "没成功，原因没查出来，跟行政说一声";
+    if (!text) text = "没成功，原因没查出来，跟管家说一声";
     return { state: "fail", text: text };
   },
   removeConfirm: function (name) {
-    return "把「" + name + "」移出基础层？不会卸载工具，也不删密钥。要用时跟行政说一声就能再接回来。";
+    return "把「" + name + "」移出基础层？不会卸载工具，也不删密钥。要用时跟管家说一声就能再接回来。";
   },
   deleteConfirm: function (thread) {
     var words = "删除对话“" + BlocksCore.threadTitle(thread && thread.title) + "”？删除后找不回来。";
@@ -240,7 +251,7 @@ if (typeof document !== "undefined") (function () {
   var scanPending = [], pendingJobs = {}, pendingSecrets = {};  // 待接入的预置工具和它们的检测；详情里新填的工具密钥
   // 60 号单：钥匙串里有这一家的密钥时显示“已保存的密钥 / 换一把”；点了“换一把”或存的没通过才露输入框
   var bindWantNew = false, detailWantNew = false, usedSaved = false;
-  var settingsOpen = false;  // 打开的是“设置”页（行政 + 环境体检），不是第一次绑定或重新连上
+  var settingsOpen = false;  // 打开的是“设置”页（管家 + 环境体检），不是第一次绑定或重新连上
   var SAVED_FAILED = "存的这把没通过，可以换一把";
 
   function withSavedFailed(text) { return String(text || "").replace(/[。.\s]+$/, "") + "。" + SAVED_FAILED; }
@@ -411,7 +422,7 @@ if (typeof document !== "undefined") (function () {
 
     var setting = state && state.setting;
     if (mode === "reconnect" && setting) {
-      $("bindTitle").textContent = "重新连上行政";
+      $("bindTitle").textContent = "重新连上积木库管家";
       populateProviders(state.providers, setting.provider);
       $("bindModel").value = setting.model || "";
       $("bindAddress").value = setting.base_url || "";
@@ -421,7 +432,7 @@ if (typeof document !== "undefined") (function () {
       $("bindAddress").disabled = true;
       $("bindChange").hidden = false;
     } else {
-      $("bindTitle").textContent = settingsOpen ? "设置" : (setting ? "换一个行政：换服务商、模型或密钥" : "先绑定一个大模型，它会当你的行政");
+      $("bindTitle").textContent = settingsOpen ? "设置" : (setting ? "换一个管家：换服务商、模型或密钥" : "先绑定一个大模型，它会当你的积木库管家");
       populateProviders(state ? state.providers : [], setting && setting.provider);
       if (setting && setting.model) $("bindModel").value = setting.model;
       if (setting && setting.base_url && setting.provider === "other") $("bindAddress").value = setting.base_url;
@@ -508,7 +519,7 @@ if (typeof document !== "undefined") (function () {
     if (key === blocksKey) return;
     blocksKey = key;
     if (!items.length && !broken.length && !pending.length) {
-      $("blocksList").innerHTML = '<div class="empty">还没有接进来的工具，跟行政说一声就行</div>';
+      $("blocksList").innerHTML = '<div class="empty">还没有接进来的工具，跟管家说一声就行</div>';
       return;
     }
     var html = items.map(function (b) {
@@ -631,7 +642,7 @@ if (typeof document !== "undefined") (function () {
         lbl.textContent = r.label;
         rowDiv.appendChild(lbl);
         var val = document.createElement(r.code ? "code" : "span");
-        val.className = "detail-value";
+        val.className = "detail-value" + (r.list ? " detail-list" : "");
         val.textContent = r.text;
         rowDiv.appendChild(val);
         rowsEl.appendChild(rowDiv);

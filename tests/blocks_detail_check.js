@@ -20,12 +20,12 @@ function item(name, label, kind, status, extra) {
 function scan(items) { return { time: "2026-11-09T10:00:00", items: items }; }
 
 var node = item("node", "Node", "prereq", "有", { version: "v22.1.0" });
-var brewMissing = item("brew", "Homebrew", "prereq", "没有", { fix: "行政可以带你装 Homebrew" });
+var brewMissing = item("brew", "Homebrew", "prereq", "没有", { fix: "管家可以带你装 Homebrew" });
 var codexOk = item("codex", "Codex", "tool", "有", { version: "codex-cli 0.167.0", login: "已登录" });
 var codexOut = item("codex", "Codex", "tool", "有", { version: "codex-cli 0.167.0", login: "没登录",
-                                                        fix: "Codex 还没登录：在终端里登录一次，行政会告诉你命令" });
-var cursorMissing = item("cursor", "Cursor", "tool", "没有", { fix: "跟行政说“帮我装 Cursor”" });
-var agyMissing = item("agy", "agy", "tool", "没有", { fix: "跟行政说“帮我装 agy”" });
+                                                        fix: "Codex 还没登录：在终端里登录一次，管家会告诉你命令" });
+var cursorMissing = item("cursor", "Cursor", "tool", "没有", { fix: "跟管家说“帮我装 Cursor”" });
+var agyMissing = item("agy", "agy", "tool", "没有", { fix: "跟管家说“帮我装 agy”" });
 var codexBlock = { id: "codex", name: "Codex", kind: "cli", status: "ok" };
 var apiBlock = { id: "bailian-qwen-plus", name: "通义", kind: "llm_api", status: "ok" };
 
@@ -47,7 +47,7 @@ assert.strictEqual(fine.rows[0].ok, true);
 assert.strictEqual(fine.rows[0].text, "v22.1.0");
 assert.strictEqual(fine.rows[1].ok, false);
 assert.strictEqual(fine.rows[1].text, "没有");
-assert.strictEqual(fine.rows[1].fix, "行政可以带你装 Homebrew");
+assert.strictEqual(fine.rows[1].fix, "管家可以带你装 Homebrew");
 assert.strictEqual(fine.rows[1].why, "用 npm 装 Codex 要用");
 assert.strictEqual(fine.rows[2].text, "codex-cli 0.167.0 · 已登录");
 assert.strictEqual(fine.rows[2].label, "Codex");
@@ -63,7 +63,7 @@ assert.ok(bad.rows[2].fix.indexOf("登录") >= 0);
 
 // 4. 基础层里的工具没了、找不到、查版本出错，都算要处理；几个一起列
 var mine = { id: "mytool", name: "我的工具", kind: "cli", status: "ok" };
-var gone = item("codex", "Codex", "tool", "没有", { fix: "跟行政说“帮我装 Codex”" });
+var gone = item("codex", "Codex", "tool", "没有", { fix: "跟管家说“帮我装 Codex”" });
 var lost = item("mytool", "我的工具", "tool", "找不到", { fix: "终端里已经装好，但超级助手还没认到：关掉超级助手再重新打开" });
 var both = B.healthView(scan([gone, lost]), [codexBlock, mine]);
 assert.strictEqual(both.line, "环境体检：基础层里有 2 个工具要处理：Codex、我的工具");
@@ -72,7 +72,7 @@ var slow = item("codex", "Codex", "tool", "有", { note: "查版本超时" });
 var slowView = B.healthView(scan([slow]), [codexBlock]);
 assert.strictEqual(slowView.state, "problem");
 assert.strictEqual(slowView.rows[0].text, "有 · 查版本超时", "没有版本写“有”，有 note 加在后面");
-assert.strictEqual(slowView.rows[0].fix, "跟行政说一声，它会帮你查", "fix 为空但有 note 时要说怎么办");
+assert.strictEqual(slowView.rows[0].fix, "跟管家说一声，它会帮你查", "fix 为空但有 note 时要说怎么办");
 
 // 5. 基础层空着；同名的大模型 API 不算 CLI
 var empty = B.healthView(scan([node, codexOk]), []);
@@ -116,7 +116,7 @@ var dv = B.detailView(drafted, null);
 assert.strictEqual(dv.title, "我的工具<b>x</b>", "名字原样，页面用 textContent 放");
 assert.strictEqual(dv.rows[2].text, "还没查到");
 assert.strictEqual(dv.rows[3].text, "还没查到");
-assert.strictEqual(dv.rows[4].text, "行政起草，没核实");
+assert.strictEqual(dv.rows[4].text, "管家起草，没核实");
 assert.strictEqual(dv.rows[5].text, "没检测过");
 assert.deepStrictEqual(dv.status, { cls: "idle", text: "没检测过" });
 assert.strictEqual(dv.needsApprove, true);
@@ -139,12 +139,12 @@ var apiDetail = {
   verified: false, preview: "", key_account: "bailian", last_check: null, last_install: null,
 };
 var av = B.detailView(apiDetail, null);
-assert.deepStrictEqual(av.rows.map(function (r) { return r.label; }), ["类型", "服务商", "模型", "地址", "密钥账号", "上次检测"]);
+assert.deepStrictEqual(av.rows.map(function (r) { return r.label; }), ["类型", "服务商", "地址", "密钥账号", "这家的模型", "试通用的模型", "上次检测"]);
 assert.strictEqual(av.rows[0].text, "大模型 API");
 assert.strictEqual(av.rows[1].text, "阿里百炼");
-assert.strictEqual(av.rows[2].text, "qwen-plus");
-assert.strictEqual(av.rows[3].text, "https://dashscope.aliyuncs.com/compatible-mode/v1");
-assert.strictEqual(av.rows[4].text, "bailian");
+assert.strictEqual(av.rows[2].text, "https://dashscope.aliyuncs.com/compatible-mode/v1");
+assert.strictEqual(av.rows[3].text, "bailian");
+assert.strictEqual(av.rows[5].text, "qwen-plus");  // 按整家接（2026-11-10）：卡上写的模型只是试通用的
 assert.strictEqual(av.needsKey, true);
 assert.strictEqual(av.needsApprove, false, "API 没有“核实”一说，不要求看命令");
 assert.strictEqual(av.warn, "");
@@ -170,9 +170,9 @@ assert.deepStrictEqual(B.checkView({ kind: "check", done: true, error: "", resul
 assert.deepStrictEqual(B.checkView({ kind: "check", done: true, error: "", result: { ok: false, reason: "", how: "检查密钥" } }),
                        { state: "fail", text: "检查密钥" });
 assert.deepStrictEqual(B.checkView({ kind: "check", done: true, error: "", result: { ok: false } }),
-                       { state: "fail", text: "没成功，原因没查出来，跟行政说一声" });
+                       { state: "fail", text: "没成功，原因没查出来，跟管家说一声" });
 
 // 11. 移出前的确认
-assert.strictEqual(B.removeConfirm("Codex"), "把「Codex」移出基础层？不会卸载工具，也不删密钥。要用时跟行政说一声就能再接回来。");
+assert.strictEqual(B.removeConfirm("Codex"), "把「Codex」移出基础层？不会卸载工具，也不删密钥。要用时跟管家说一声就能再接回来。");
 
 console.log("OK");

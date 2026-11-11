@@ -42,7 +42,7 @@ class ClaimGuard(BlocksCase):
     def test_real_card_no_reminder(self):
         client, events = self.talk([{"text": "", "tool_calls": [tool_call("propose_connect_cli", {"template": "codex"})]},
                                     {"text": CLAIM}])
-        self.assertEqual(len(client.calls), 2, "这一轮真出了卡，不提醒")
+        self.assertEqual(len(client.calls), 1, "这一轮真出了卡：不提醒，出卡后这一轮就结束（2026-11-10）")
         self.assertTrue([e for e in events if e.get("type") == "proposal"])
 
     def test_plain_talk_no_reminder(self):
@@ -81,7 +81,6 @@ class ClaimGuard(BlocksCase):
     def test_open_card_above_reminder_names_it(self):
         """上一轮出的卡还没处理，这一轮说“卡已经出来了，在上面”：提醒里点名上面那张，让它照实说；只多问一次"""
         client = ScriptedClient([{"text": "", "tool_calls": [tool_call("propose_connect_cli", {"template": "codex"})]},
-                                 {"text": "请看确认框。"},
                                  {"text": "提议卡已经出来了，在上面，点确认就行。"},
                                  {"text": "多余的一次"}])
         self.server.blocks_clerk = client
@@ -90,15 +89,14 @@ class ClaimGuard(BlocksCase):
         wait_idle(self.server.desk, str(self.home), cid)
         self.bpost("/api/clerk/send", {"project": str(self.home), "conversation": cid, "text": "卡在哪"})
         wait_idle(self.server.desk, str(self.home), cid)
-        self.assertEqual(len(client.calls), 4, "上面有没处理的卡也提醒一次，只一次")
-        last = client.calls[3][0][-1]["content"]
+        self.assertEqual(len(client.calls), 3, "上面有没处理的卡也提醒一次，只一次（出卡那一轮只问一次模型）")
+        last = client.calls[2][0][-1]["content"]
         self.assertIn("上面还有", last)
         self.assertIn("Codex", last, "提醒里点名上面那张卡")
 
     def test_second_card_claimed_while_first_open(self):
         """连着要两张卡：Codex 卡还没点，又说“Cursor 的接法卡已经弹出来了”却没出——照样提醒，提醒后真出卡"""
         client = ScriptedClient([{"text": "", "tool_calls": [tool_call("propose_connect_cli", {"template": "codex"})]},
-                                 {"text": "请看确认框。"},
                                  {"text": "Cursor 的接法卡已经弹出来了。"},
                                  {"text": "", "tool_calls": [tool_call("propose_connect_cli", {"template": "cursor"},
                                                                        call_id="c2")]},
@@ -112,32 +110,44 @@ class ClaimGuard(BlocksCase):
         names = [e.get("name") for e in events if e.get("type") == "proposal"]
         self.assertIn("Cursor", names, "提醒后 Cursor 卡真的出来了")
 
-    def test_tool_reply_tells_old_card_voided(self):
-        """同一段对话出新卡会作废上面没点的旧卡：要在出卡工具的回话里告诉行政，免得它说“两张都能点”"""
-        client, _ = self.talk([{"text": "", "tool_calls": [tool_call("propose_connect_cli", {"template": "codex"})]},
-                               {"text": "", "tool_calls": [tool_call("propose_connect_cli", {"template": "cursor"},
-                                                                     call_id="c2")]},
-                               {"text": "请看确认框。"}])
-        replies = [m["content"] for m in client.calls[2][0] if m["role"] == "tool"]
-        self.assertIn("「Codex」已经失效", replies[-1])
+    def same_conversation(self, *turns):
+        """同一段对话里说几句，每句一组模型回话；返回全部事件"""
+        cid, events = "", []
+        for steps in turns:
+            self.server.blocks_clerk = ScriptedClient(steps, default="好的。")
+            _, data = self.bpost("/api/clerk/send", {"project": str(self.home), "conversation": cid, "text": "接"})
+            cid = data["conversation"]
+            events = wait_idle(self.server.desk, str(self.home), cid)
+        return events
 
-    def test_voided_install_card_named(self):
-        """安装卡的工具名在 label 里：失效时也要说出是哪张，不能只说“一张卡”"""
-        client, _ = self.talk([{"text": "", "tool_calls": [tool_call("propose_install", {"install_id": "codex-npm"})]},
-                               {"text": "", "tool_calls": [tool_call("propose_connect_cli", {"template": "cursor"},
-                                                                     call_id="c2")]},
-                               {"text": "请看确认框。"}])
-        replies = [m["content"] for m in client.calls[2][0] if m["role"] == "tool"]
-        self.assertIn("「用 npm 装 Codex」已经失效", replies[-1])
+    def test_old_card_voided_on_screen(self):
+        """同一段对话出新卡会作废上面没点的旧卡。出卡后这一轮就结束（2026-11-10），行政不再转述：
+        旧卡在屏幕上自己变成“已换成新的提议”"""
+        events = self.same_conversation(
+            [{"text": "", "tool_calls": [tool_call("propose_connect_cli", {"template": "codex"})]}],
+            [{"text": "", "tool_calls": [tool_call("propose_connect_cli", {"template": "cursor"}, call_id="c2")]}])
+        cards = [e for e in events if e.get("type") == "proposal"]
+        codex = [c for c in cards if c.get("name") == "Codex"][0]
+        done = [e for e in events if e.get("type") == "proposal_done" and e.get("id") == codex["id"]]
+        self.assertEqual(done[-1]["state"], "replaced")
 
-    def test_tool_reply_tells_replacement(self):
-        """卡会替换基础层里的哪一块，要在出卡工具的回话里告诉行政（它看不到卡上的字）"""
+    def test_voided_install_card_on_screen(self):
+        events = self.same_conversation(
+            [{"text": "", "tool_calls": [tool_call("propose_install", {"install_id": "codex-npm"})]}],
+            [{"text": "", "tool_calls": [tool_call("propose_connect_cli", {"template": "cursor"}, call_id="c2")]}])
+        install = [e for e in events if e.get("type") == "proposal" and e.get("proposalKind", e.get("kind")) == "install"]
+        self.assertTrue(install, events)
+        done = [e for e in events if e.get("type") == "proposal_done" and e.get("id") == install[0]["id"]]
+        self.assertEqual(done[-1]["state"], "replaced")
+
+    def test_replacement_on_card(self):
+        """卡会替换基础层里的哪一块写在卡上（行政出卡后不再说话）"""
         from collab import blocks
         blocks.save_card(blocks.builtin_card("codex"))
-        client, _ = self.talk([{"text": "", "tool_calls": [tool_call("propose_connect_cli", {"template": "codex"})]},
+        _, events = self.talk([{"text": "", "tool_calls": [tool_call("propose_connect_cli", {"template": "codex"})]},
                                {"text": "请看确认框。"}])
-        tool_reply = [m for m in client.calls[1][0] if m["role"] == "tool"][0]["content"]
-        self.assertIn("会替换基础层里的「Codex」", tool_reply)
+        card = [e for e in events if e.get("type") == "proposal"][0]
+        self.assertEqual(card.get("replaces") or (card.get("info") or {}).get("replaces"), "Codex", card)
 
     def test_failed_propose_still_counts_as_no_card(self):
         """出卡工具返回错误（缺字段）不算出过卡：接着说“卡出了”照样提醒"""
@@ -146,7 +156,7 @@ class ClaimGuard(BlocksCase):
                                     {"text": "", "tool_calls": [tool_call("propose_connect_cli", {"template": "codex"},
                                                                           call_id="c2")]},
                                     {"text": "请看确认框。"}])
-        self.assertEqual(len(client.calls), 4)
+        self.assertEqual(len(client.calls), 3, "出卡后这一轮就结束（2026-11-10）")
         self.assertTrue([e for e in events if e.get("type") == "proposal"])
 
 
@@ -167,11 +177,12 @@ class WordingFixes(unittest.TestCase):
 
     def test_role_text(self):
         from pathlib import Path
-        role = (Path(__file__).resolve().parent.parent / "desktop" / "clerk" / "roles" / "积木库.md").read_text(encoding="utf-8")
+        from desktop.clerk import blocks_tools  # 积木库管家方案：说明改名并拆成基本规矩 + 三本手册
+        role = blocks_tools.role_text() + "".join(blocks_tools.manual_text(n) for n in blocks_tools.MANUALS)
         self.assertIn("不是云账号的 SecretId、SecretKey", role)
         self.assertIn("已经登录的，接进基础层时不用再登录", role)
         self.assertIn("编号相同才会替换", role)
-        self.assertIn("工具回话里写了会替换", role)
+        self.assertIn("卡上会写", role)  # 出卡后这一轮就结束，会替换哪块由卡上写（2026-11-10）
         self.assertIn("查不了", role)
         self.assertIn("没有调用 propose_ 开头的工具，就不能说", role)
 

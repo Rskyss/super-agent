@@ -2,11 +2,16 @@
 
 CLI：在新建的临时文件夹里让工具干一件小事（建一个文件），以文件真的建出来为准，不听工具自己说。
 没核实过的卡（命令或参数和预置不一样），用户看过完整命令、确认之前一律不跑（用户 2026-11-08 拍板）。
-大模型 API：发一句话；当行政用的（need_tools）还要测会不会用工具。
+大模型 API：发一句话；当管家用的（need_tools）还要测会不会用工具。
 结果写进记录：不存工具原始输出，不存密钥，邮箱和像密钥的字一律打码。同一块同时只跑一个检测。
 """
 from __future__ import annotations
 
+import contextlib
+import difflib
+import json
+import urllib.request
+import urllib.error
 import functools
 import re
 import shlex
@@ -20,7 +25,7 @@ from pathlib import Path
 from collab import blocks, blocks_web
 from collab.agents import QuietTimeout, watched_runner
 from collab.blocks import BlockError
-from collab.blocks_env import _EMAIL, _clean_path, _which
+from collab.blocks_env import _clean_path, _which, mask_emails
 from collab.blocks_env import remove_folder as _remove
 from collab.providers import find as find_provider
 
@@ -64,7 +69,7 @@ def _mask(text: str, secret: str = "") -> str:
     text = text or ""
     if secret:
         text = text.replace(secret, "[已隐藏]")
-    text = _EMAIL.sub("[已隐藏]", text).replace(str(Path.home()), "~")
+    text = mask_emails(text).replace(str(Path.home()), "~")
     return blocks._SECRET_TEXT.sub("[已隐藏]", text)
 
 
@@ -97,7 +102,7 @@ def is_quota(output: str) -> bool:
 
 
 def _explain(output: str, command: str, name: str):
-    """积木库自己的失败说法：(原因, 怎么办)。不提项目里的配置文件，改法一律跟行政说。"""
+    """积木库自己的失败说法：(原因, 怎么办)。不提项目里的配置文件，改法一律跟管家说。"""
     raw = output or ""
     text = raw.lower()
     if raw.startswith("超时"):
@@ -105,7 +110,7 @@ def _explain(output: str, command: str, name: str):
     if raw.startswith("看门人"):
         return "长时间没有任何动静，被停下了", "稍后再检测一次"
     if raw.startswith("运行不了") or "command not found" in text:
-        return "工具运行不起来", f"{name} 可能没装好，跟行政说“帮我重新装 {name}”"
+        return "工具运行不起来", f"{name} 可能没装好，跟管家说“帮我重新装 {name}”"
     if any(k in text for k in ("not logged", "please log in", "please login", "unauthorized",
                                "not authenticated", "authentication failed", "please sign in", "codex login")):
         return "没登录", f"在终端里运行一次 {command}，按提示登录后再检测一次"
@@ -115,7 +120,7 @@ def _explain(output: str, command: str, name: str):
         return QUOTA_REASON, "等额度恢复后再检测一次"
     if "model" in text and any(k in text for k in ("not found", "invalid", "unknown", "does not exist",
                                                    "not supported")):
-        return "模型名不对", "跟行政说换一个这家支持的模型名"
+        return "模型名不对", "跟管家说换一个这家支持的模型名"
     lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
     tail = lines[-1][:120] if lines else "没有输出"
     return "命令跑完了，但没建出文件", f"看看这家工具在自动模式下能不能写文件。它最后说：{tail}"
@@ -223,14 +228,14 @@ def _check_tool(card, root, args, found, verified, keys, runner, timeout, termin
             result = {"ok": True, "status": "ok", "reason": f"通了 · {seconds:g} 秒", "how": ""}
         elif code is None:
             result = {"ok": False, "status": "fail", "reason": "超时：规定时间内没跑完" if output == "超时"
-                      else "工具运行不起来", "how": "稍后再检测一次；还不行就跟行政说"}
+                      else "工具运行不起来", "how": "稍后再检测一次；还不行就跟管家说"}
         else:
             lines = [ln.strip() for ln in (output or "").splitlines() if ln.strip()]
             # 先打码再截短：截断在前会把跨在截断处的半截密钥漏出来（复查第 1 条）
             tail = _mask_cut(_mask_all(lines[-1][:4000], secret_env.values()), 120) if lines else "没有输出"
             reason = "检测命令跑完了，但没看到该有的结果" if code == 0 else f"检测命令出错了（退出码 {code}）"
             result = {"ok": False, "status": "fail", "reason": reason,
-                      "how": f"把这句告诉行政，让它改检测命令或换一把密钥。工具最后说：{tail}"}
+                      "how": f"把这句告诉管家，让它改检测命令或换一把密钥。工具最后说：{tail}"}
         result["reason"] = _mask_all(result["reason"], secret_env.values())
         result["how"] = _mask_all(result["how"], secret_env.values())
         result.update(seconds=seconds, verified=verified)
@@ -320,7 +325,7 @@ class _Unreadable(Exception):
 
 
 def _default_client(base_url, model, api_key, provider=""):
-    """行政已有的模型连接，复用它的报错说法。关不关“思考”跟着服务商走：不认识的服务商不关，免得它不认这个参数。"""
+    """管家已有的模型连接，复用它的报错说法。关不关“思考”跟着服务商走：不认识的服务商不关，免得它不认这个参数。"""
     from desktop.clerk.client import ModelClient
     known = find_provider(provider) if provider else None
     thinking_off = bool(known and known.get("thinking_off"))
@@ -328,52 +333,303 @@ def _default_client(base_url, model, api_key, provider=""):
                        thinking_off=thinking_off)
 
 
-def check_api(card, api_key, root=None, need_tools=False, client_factory=None, record=True) -> dict:
-    """检测一张大模型 API 接法卡：先发一句话；need_tools 时再测会不会用工具。
-    返回 {ok, status(ok/fail/no_tools), reason, how, seconds, tools}。密钥只在这次调用里用，不保存。"""
+class _StayHere(urllib.request.HTTPRedirectHandler):
+    """不跟着跳转：密钥只发给填的那个地址。"""
+
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+_MODELS_OPENER = urllib.request.build_opener(_StayHere)
+MODELS_TIMEOUT = 15      # 整个查询最多等这么久（不是每一小段）
+MODELS_LIMIT = 400       # 最多收这么多个名字
+_MODELS_SCAN = 5000      # 最多看平台回的前这么多条
+_MODELS_BYTES = 2_000_000
+
+
+def _open_models(request, timeout=None):
+    return _MODELS_OPENER.open(request, timeout=timeout)
+
+
+def _download_models(base: str, api_key: str, holder=None):
+    """只管把平台回的东西读回来。出什么错都只说固定的话：错误原文里可能带着平台回显的密钥。
+    holder 拿着这次的连接：查询到点时由 fetch_models 关掉它，读的那边就停了。"""
+    request = urllib.request.Request(base + "/models", headers={"Authorization": "Bearer " + api_key})
+    try:
+        response = _open_models(request, timeout=MODELS_TIMEOUT)
+        if holder is not None:
+            holder["response"] = response
+            if holder.get("late"):  # 已经到点了：不读了
+                response.close()
+                raise BlockError("这家平台回得太慢，没问到模型名单")
+        with contextlib.closing(response):
+            chunks, size = [], 0
+            while size < _MODELS_BYTES:
+                piece = response.read(65536)
+                if not piece:
+                    break
+                chunks.append(piece)
+                size += len(piece)
+            return json.loads(b"".join(chunks)[:_MODELS_BYTES].decode("utf-8", "replace"))
+    except urllib.error.HTTPError as exc:
+        if exc.code == 401:
+            raise BlockError("密钥不对或已失效，问不到这家的模型名单") from None
+        if exc.code == 403:  # 有的平台给聊天权限、不给看名单的权限：不能一口咬定密钥坏了（第二轮复查第 5 条）
+            raise BlockError("这家没让这把密钥看模型名单（返回代码 403）") from None
+        raise BlockError(f"这家没给模型名单（返回代码 {int(exc.code)}）") from None
+    except BlockError:
+        raise
+    except Exception:  # noqa: BLE001 — 协议出错等各种意外，原文一律不往外带
+        raise BlockError("没连上这家平台，问不到模型名单") from None
+
+
+def fetch_models(base_url: str, api_key: str) -> list:
+    """问这家平台它真有哪些模型（大模型平台通用的“模型名单”接口，只读、不花额度）。
+    管家凭记忆写的模型名会错（用户真实接腾讯云混元时写了个不存在的名字，2026-11-10），名字一律以这里为准。
+    整个查询最多等 MODELS_TIMEOUT 秒：放到另一条线上去问，到点就不等了（连得慢、回得慢、慢慢吐都算在内）。
+    名单最多 MODELS_LIMIT 个：正好这么多时，可能还有没拿到的。"""
+    base = str(base_url or "").strip().rstrip("/")
+    if not base.lower().startswith("https://"):
+        raise BlockError("地址要以 https:// 开头，才能问它有哪些模型")
+    secret = str(api_key or "").strip()
+    box = {}
+
+    def work():
+        try:
+            box["data"] = _download_models(base, secret, box)
+        except BlockError as exc:
+            box["error"] = exc
+        except Exception:  # noqa: BLE001
+            box["error"] = BlockError("没连上这家平台，问不到模型名单")
+
+    worker = threading.Thread(target=work, daemon=True)
+    worker.start()
+    worker.join(MODELS_TIMEOUT)
+    if worker.is_alive():  # 到点了：关掉连接，后台那次读取跟着停，不越积越多（第三轮复查第 6 条）
+        box["late"] = True
+        try:
+            if box.get("response") is not None:
+                box["response"].close()
+        except Exception:  # noqa: BLE001
+            pass
+        raise BlockError("这家平台回得太慢，没问到模型名单")
+    if "error" in box:
+        raise box["error"]
+    data = box.get("data")
+    items = data.get("data") if isinstance(data, dict) else None
+    names, seen = [], set()
+    for item in (items if isinstance(items, list) else [])[:_MODELS_SCAN]:
+        name = item.get("id") if isinstance(item, dict) else None
+        if not isinstance(name, str) or name in seen or not blocks._MODEL.fullmatch(name):
+            continue
+        # 平台回的东西不可信：名字里带着这次的密钥、或者长得像密钥的，一律不要（不能让密钥跟着名单传到管家的模型那里）
+        if (secret and secret in name) or blocks._SECRET_TEXT.search(name) or mask_emails(name) != name:
+            continue
+        seen.add(name)
+        names.append(name)
+        if len(names) >= MODELS_LIMIT:
+            break
+    if not names:
+        raise BlockError("这家没给模型名单")
+    return names
+
+
+def _real_models_hint(card: dict, key: str) -> str:
+    """模型名不对时：把这家真有的名字列几个出来（最像的在前）。问不到就不说。"""
+    try:
+        names = fetch_models(card["base_url"], key)
+    except BlockError:
+        return ""
+    wanted = str(card.get("model") or "")
+    if wanted in names:  # 名字是对的：毛病在别处，不能叫用户反复换模型
+        return f"这家有「{wanted}」这个模型，但它不接受这次的请求（服务商返回代码 400），多半是这个模型的参数或用法和普通对话不一样。跟管家说换一个通用的对话模型试试"
+    close = difflib.get_close_matches(wanted, names, n=6, cutoff=0.4)
+    shown = "、".join(close + [n for n in names if n not in close][:10 - len(close)])
+    if len(names) >= MODELS_LIMIT:  # 名单没拿全：不能一口咬定没有
+        return (f"在拿到的前 {len(names)} 个模型名里没找到「{wanted}」（可能没拿全），也可能是参数不对。"
+                f"拿到的有：{shown}。跟管家核对一下名字")
+    return f"这家没有叫「{wanted}」的模型。它有 {len(names)} 个模型，比如：{shown}。跟管家说换成名单里有的"
+
+
+PROBE_TRIES = 6  # 整家接入时最多挑几个模型试通
+# 不会聊天的：向量、画图、视频、3D、语音、翻译、审核等（火山引擎真实名单里的 seedream、seedance、seed3d，2026-11-11）。
+# 按整段词认（第二轮复查第 4 条：swan-chat 不能因为带 wan 被挡掉）；名字里有 chat、instruct 这类词的算聊天
+_NOT_CHAT_WORD = re.compile(r"embed\w*|rerank\w*|image|images|img|video|speech|audio|tts|asr|ocr|voice|whisper|wan[\d.]*|"
+                            r"sd|sdxl|flux|seedream|seedance|\w*3d|t2v|i2v|t2i|paraformer|cosyvoice|sambert|"
+                            r"translat\w*|moderation|gen", re.I)
+_CHAT_WORD = re.compile(r"chat|instruct", re.I)
+_FAMILY = re.compile(r"[a-z]+", re.I)
+
+
+def _is_chat(name: str) -> bool:
+    """名字里明说 chat、instruct 的算聊天；否则带画图、视频这类词的不算（qwen-image-plus 不能因为带 plus 算聊天）"""
+    words = [w for w in re.split(r"[-_/.:]+", name) if w]
+    if any(_CHAT_WORD.fullmatch(w) for w in words):
+        return True
+    return not any(_NOT_CHAT_WORD.fullmatch(w) for w in words)
+
+
+def _probe_order(card: dict, names: list) -> list:
+    """挑哪些模型来试通：卡上写的 → 这家自己的聊天模型（名单里最多的那个系列，如火山的豆包、腾讯的混元；
+    预置的自家模型排前面）→ 预置的代卖模型 → 别家的聊天模型。平台代卖的别家模型常要单独开通。不会聊天的不试。"""
+    known = find_provider(card.get("provider") or "") or {}
+    preset = known.get("models") or []
+    chat = [n for n in names if _is_chat(n)] or list(names)  # 过滤完一个不剩：名单里的照样试（第三轮复查第 3 条）
+    families = {}
+    for n in chat:
+        fam = _FAMILY.match(n.split("/")[-1]) or _FAMILY.match(n)
+        families.setdefault(fam.group(0).lower() if fam else "", []).append(n)
+    if known.get("own"):  # 认得的服务商：自家系列写死在服务商清单里，不靠猜（第三轮复查第 2 条）
+        own = [n for f in known["own"] for n in families.get(f, [])]
+    else:  # 不认得的：名单里最多的那个系列多半是自家的
+        own = max(families.values(), key=len) if families else []
+    model = card.get("model") or ""
+    first = [model] if model and (not names or _is_chat(model)) else []  # 卡上的画图模型也不试；没名单时只有它
+    order = first + [n for n in preset if n in own] + own + [n for n in preset if n in chat] + chat
+    seen, picked = set(), []
+    for name in order:
+        if name not in seen:
+            seen.add(name)
+            picked.append(name)
+    if len(picked) > PROBE_TRIES:  # 自家的会占满：留两个位置给别家的，别家没有就还用自家的补上
+        head = picked[:PROBE_TRIES - 2]
+        others = [n for n in picked if n not in head and n not in own][:2]
+        rest = [n for n in picked if n not in head and n not in others]
+        picked = head + others + rest
+    return picked[:PROBE_TRIES]
+
+
+def _words(exc, key: str) -> str:
+    """平台的原话：先去掉这次的密钥、邮箱和像密钥的字，再截短（截过的去掉最后那串英文，免得留半截）"""
+    text = " ".join(str(getattr(exc, "detail", "") or "").split())
+    return _mask_cut(text.replace(key, "[已隐藏]") if key else text, 160) if text else ""
+
+
+def _ping(card, model, key, client_factory, need_tools=False):
+    """拿一个模型发一句话。返回 (result, tools, retry)：retry 是说“这个模型不行，换一个可能行”。"""
+    tools = None
+    try:
+        if client_factory:
+            client = client_factory(card["base_url"], model, key)
+        else:
+            client = _default_client(card["base_url"], model, key, card["provider"])
+        reply = client.chat([{"role": "user", "content": PING}])
+        if not isinstance(reply, dict):
+            return ({"ok": False, "status": "fail", "reason": "模型回的内容看不懂",
+                     "how": "检查地址是不是这家的对话接口，再检测一次"}, tools, False)
+        if not (reply.get("text") or "").strip():
+            return ({"ok": False, "status": "fail", "reason": "模型没有回话",
+                     "how": "检查模型名对不对，或者换一个模型再检测"}, tools, True)
+        if need_tools:
+            answer = client.chat([{"role": "user", "content": TOOL_ASK}], tools=[_TOOL])
+            if not isinstance(answer, dict):
+                raise _Unreadable()
+            calls = answer.get("tool_calls")
+            tools = any(isinstance(c, dict) and c.get("name") == TOOL_NAME for c in calls or [])
+            return (({"ok": True, "status": "ok", "reason": "通了，也会用工具", "how": ""} if tools else
+                     {"ok": False, "status": "no_tools", "reason": "这个模型不会用工具，当不了积木库管家",
+                      "how": "换一个支持工具调用的模型（例如各家的主力对话模型）"}), tools, False)
+        return {"ok": True, "status": "ok", "reason": "通了", "how": ""}, tools, False
+    except _Unreadable:
+        return ({"ok": False, "status": "fail", "reason": "模型回的内容看不懂",
+                 "how": "检查地址是不是这家的对话接口，再检测一次"}, tools, False)
+    except Exception as exc:  # noqa: BLE001 — 管家的模型连接报错已是中文大白话，其余也不能让检测崩
+        message = str(exc) if getattr(exc, "__module__", "").startswith("desktop.clerk") else "连接出错"
+        code = getattr(exc, "code", None)
+        # 多半是这个模型不行（名字不对、没开通、没权限），换一个可能就行。403 常是“这个模型没开通”，不一定是密钥坏了
+        wrong = "代码 400" in message or "没有这个模型" in message or code == 403
+        quota = "额度用完" in message  # desktop.clerk.client 对 429 的说法：密钥对、能连上，只是没额度
+        return ({"ok": False, "status": "quota" if quota else "fail", "reason": message or "连接出错",
+                 "how": "等额度恢复后再检测一次" if quota else "按提示改好后再检测一次", "wrong_model": wrong,
+                 "words": _words(exc, key), "bad_key": "密钥" in message and code != 403, "code": code}, tools, wrong)
+
+
+def _check_whole(card, key, client_factory, models_fetcher) -> dict:
+    """整家接入（用户 2026-11-10 定）：用密钥拿这家的模型名单，再自动挑几个试通。用哪个模型是能力层的事。
+    拿到名单就算接上（用户 2026-11-11 选 A）：试的都没通只标黄（status=listed），写出平台的原话，不拦。"""
+    names = []
+    try:
+        if models_fetcher:
+            names = list(models_fetcher(card["base_url"], key))
+        elif client_factory:  # 用假连接走查、测试时不碰真网络：当作这家只有预置的那几个
+            names = list((find_provider(card["provider"]) or {}).get("models") or [])
+            if not names:
+                raise BlockError("这家没给模型名单")
+        else:
+            names = fetch_models(card["base_url"], key)
+    except BlockError as exc:
+        no_list = str(exc)
+        if "密钥不对" in no_list:
+            return {"ok": False, "status": "fail", "reason": no_list, "how": "换一把这家平台的 API 密钥再检测"}
+        if not card.get("model"):
+            return {"ok": False, "status": "fail", "reason": f"问不到这家的模型名单，没法自动试通（{no_list}）",
+                    "how": "跟管家说一个这家的模型名，只用来试通"}
+    tried, last = [], None
+    for model in _probe_order(card, names):
+        result, _, retry = _ping(card, model, key, client_factory)
+        tried.append(model)
+        words, bad_key = result.pop("words", "").rstrip(".。 "), result.pop("bad_key", False)
+        result.pop("code", None)
+        result.pop("wrong_model", None)
+        if result["ok"] or result["status"] == "quota":
+            if result["ok"] and names:
+                result["reason"] = (f"通了，拿到 {len(names)} 个模型名（可能没拿全）" if len(names) >= MODELS_LIMIT
+                                    else f"通了，这家有 {len(names)} 个模型")
+            return dict(result, models=names, model=model)
+        last = dict(result, words=words)
+        if bad_key or not names:  # 名单要密钥才给，聊天却说密钥不对：照实说不通；没名单的只有这一个可试
+            how = ("换一把这家平台的 API 密钥再检测" if bad_key else
+                   "跟管家说换一个这家支持的模型名，只用来试通" if retry else result["how"])
+            return dict(result, models=names, model=model, how=how)
+        if not retry:
+            break
+    if not names:
+        return {"ok": False, "status": "fail", "models": names, "reason": "这家没有可以拿来试通的模型",
+                "how": "跟管家说一个这家的模型名，只用来试通"}
+    words, local = (last or {}).get("words") or "", (last or {}).get("reason") or ""
+    said = f"，平台说：{words}" if words else (f"（{local}）" if local else "")  # 没拿到平台原话就不说“平台说”
+    got = (f"拿到 {len(names)} 个模型名（可能没拿全）" if len(names) >= MODELS_LIMIT
+           else f"拿到了这家的模型名单（{len(names)} 个）")
+    return {"ok": False, "status": "listed", "models": names,
+            "reason": f"已接上：{got}。顺手试了 {len(tried)} 个模型都没通{said}",
+            "how": "可以先放进基础层；具体哪个模型能用（有的要先在平台上开通），以后选模型时再验"}
+
+
+def check_api(card, api_key, root=None, need_tools=False, client_factory=None, record=True, whole=False,
+              models_fetcher=None) -> dict:
+    """检测一张大模型 API 接法卡。
+    whole=True（基础层的块）：拿模型名单，再自动挑一个试通，结果里带 models（名单）和 model（试通的那个）。
+    否则（管家绑定自己的模型）：只试卡上写的那一个；need_tools 时再测会不会用工具。
+    返回 {ok, status(ok/fail/no_tools/quota), reason, how, seconds, tools}。密钥只在这次调用里用，不保存。"""
     card = blocks.validate_card(card)
     if card["kind"] != "llm_api":
         raise BlockError("这是 CLI，不是大模型 API，要用 CLI 的检测")
     if not isinstance(api_key, str) or not api_key.strip():
         raise BlockError("还没填密钥：先在密钥框里填好再检测")
+    if not whole and not card.get("model"):
+        raise BlockError("这张卡没写模型，只能按整家检测")
     key = api_key.strip()
     with _OneAtATime(card["id"]):
         started = time.time()
         tools = None
-        try:
-            if client_factory:
-                client = client_factory(card["base_url"], card["model"], key)
-            else:
-                client = _default_client(card["base_url"], card["model"], key, card["provider"])
-            reply = client.chat([{"role": "user", "content": PING}])
-            if not isinstance(reply, dict):
-                result = {"ok": False, "status": "fail", "reason": "模型回的内容看不懂",
-                          "how": "检查地址是不是这家的对话接口，再检测一次"}
-            elif not (reply.get("text") or "").strip():
-                result = {"ok": False, "status": "fail", "reason": "模型没有回话",
-                          "how": "检查模型名对不对，或者换一个模型再检测"}
-            elif need_tools:
-                answer = client.chat([{"role": "user", "content": TOOL_ASK}], tools=[_TOOL])
-                if not isinstance(answer, dict):
-                    raise _Unreadable()
-                calls = answer.get("tool_calls")
-                tools = any(isinstance(c, dict) and c.get("name") == TOOL_NAME for c in calls or [])
-                result = ({"ok": True, "status": "ok", "reason": "通了，也会用工具", "how": ""} if tools else
-                          {"ok": False, "status": "no_tools", "reason": "这个模型不会用工具，当不了行政",
-                           "how": "换一个支持工具调用的模型（例如各家的主力对话模型）"})
-            else:
-                result = {"ok": True, "status": "ok", "reason": "通了", "how": ""}
-        except _Unreadable:
-            result = {"ok": False, "status": "fail", "reason": "模型回的内容看不懂",
-                      "how": "检查地址是不是这家的对话接口，再检测一次"}
-        except Exception as exc:  # noqa: BLE001 — 行政的模型连接报错已是中文大白话，其余也不能让检测崩
-            message = str(exc) if getattr(exc, "__module__", "").startswith("desktop.clerk") else "连接出错"
-            if "代码 400" in message:  # 400 多半是模型名或参数不对，等多久都不会好
-                message = "模型名或参数不对（服务商返回代码 400）：跟行政说换一个这家支持的模型名"
-            quota = "额度用完" in message  # desktop.clerk.client 对 429 的说法：密钥对、能连上，只是没额度
-            result = {"ok": False, "status": "quota" if quota else "fail", "reason": _mask(message, key) or "连接出错",
-                      "how": "等额度恢复后再检测一次" if quota else "按提示改好后再检测一次"}
-        result["reason"] = _mask(result["reason"], key)
+        if whole:
+            result = _check_whole(card, key, client_factory, models_fetcher)
+        else:
+            result, tools, _ = _ping(card, card["model"], key, client_factory, need_tools)
+            result["words_kept"] = result.pop("words", "")
+            result.pop("bad_key", None)
+            if result.get("code") == 403:
+                words = result.get("words_kept") or ""
+                result["reason"] = "服务商拒绝了这个模型（返回代码 403），多半是这个模型在你账号上没开通" + (f"，平台说：{words}" if words else "")
+                result["how"] = "到平台上开通这个模型，或者换一个已开通的模型名"
+                result.pop("wrong_model", None)
+            if result.pop("wrong_model", False):
+                result["reason"] = "模型名或参数不对（服务商返回代码 400）：跟管家说换一个这家支持的模型名"
+                if not client_factory:  # 真连平台时，顺手问它真有哪些模型
+                    result["reason"] = _real_models_hint(card, key) or result["reason"]
+        result.pop("words_kept", None)
+        result.pop("code", None)
+        result["reason"] = _mask_cut(" ".join(result["reason"].split()).replace(key, "[已隐藏]"), 400) or "连接出错"
         result["how"] = _mask(result["how"], key)
         result.update(seconds=round(time.time() - started, 1), tools=tools)
         return _save(card["id"], result, root, record)

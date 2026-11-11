@@ -1,6 +1,6 @@
 """积木库：读网页、联网搜索、安装命令核对、安装包底细（62 号单）。
 
-行政自己打不开网页，一律由程序读；“命令在官网原文里”由程序重新读页面核对，不信行政的转述。
+管家自己打不开网页，一律由程序读；“命令在官网原文里”由程序重新读页面核对，不信管家的转述。
 读网页只许 https，域名解析后挡住本机、局域网这类私有地址（每次跳转都查），免得借读网页去碰本机服务。
 只认三种安装写法：npm 全局安装、Homebrew 官方目录、curl 下载脚本交给 sh/bash；解析成参数列表，不经过 shell。
 剩余风险：解析和真正连接之间域名可能被换到别的地址（DNS 重绑定），这一层没堵，靠只许 https 降低。
@@ -22,7 +22,7 @@ from datetime import date
 
 from collab.blocks import BlockError, _COMMAND, _SECRET_TEXT
 
-ALLOW_LOCAL_ENV = "SUPER_AGENT_BLOCKS_ALLOW_LOCAL"  # 只给走查用：放行本机地址和 http，行政和页面都设不了
+ALLOW_LOCAL_ENV = "SUPER_AGENT_BLOCKS_ALLOW_LOCAL"  # 只给走查用：放行本机地址和 http，管家和页面都设不了
 MAX_PAGE_BYTES = 2 * 1024 * 1024
 MAX_REDIRECTS = 5
 PAGE_TIMEOUT = 15
@@ -272,7 +272,7 @@ def _parse_brew(words) -> dict:
         raise BlockError("Homebrew 一次只装一个，也不能带别的开关")
     name = rest[0]
     if "/" in name:
-        raise BlockError("这是 Homebrew 的第三方仓库，不在官方目录里，查不了底细，这一轮不支持：行政会带你自己装")
+        raise BlockError("这是 Homebrew 的第三方仓库，不在官方目录里，查不了底细，这一轮不支持：管家会带你自己装")
     if not _BREW_NAME.fullmatch(name):
         raise BlockError(f"{name} 不像 Homebrew 里的名字")
     args = ["brew", "install"] + (["--cask"] if cask else []) + [name]

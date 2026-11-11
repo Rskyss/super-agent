@@ -81,8 +81,8 @@ _CARD_ID = re.compile(r"^[A-Za-z0-9_-]+$")
 _BLOCK_KINDS = clerk_tasks._BLOCK_KINDS  # 只在 desktop/clerk/tasks.py 定义一次
 _JOB_LIMIT = 100         # 积木库做完的后台任务最多留这么多
 def _blocks_connected(result: dict) -> bool:
-    """检测通过，或只是额度不足（能连上，所选模型没额度；用户 2026-11-09 定也算接上了）"""
-    return bool(result.get("ok")) or result.get("status") == "quota"
+    """检测通过、只是额度不足、或拿到了模型名单只是试的模型没通（用户 2026-11-11 选 A）（用户 2026-11-09 定也算接上了）"""
+    return bool(result.get("ok")) or result.get("status") in ("quota", "listed")
 
 
 # 和 Mac 窗口 BlocksWindow.isValidAccount 一样；tavily 和 cli:编号:名字 是沙盒接入 64 号单加的
@@ -366,6 +366,15 @@ class Handler(BaseHTTPRequestHandler):
         """积木库资料夹只由程序定，页面传的不认；第一次用到时建好资料夹本身。"""
         home = blocks.home()
         home.mkdir(parents=True, exist_ok=True)
+        if str(home) not in self.server.blocks_migrated:  # 旧的“一块一个模型”变成整家一块，每个资料夹只做一次
+            with self.server.blocks_lock:
+                if str(home) not in self.server.blocks_migrated:
+                    try:
+                        blocks.migrate_api_cards(home)
+                    except Exception:  # noqa: BLE001 — 合并不成不能挡住整个窗口，下次打开再试
+                        pass
+                    else:
+                        self.server.blocks_migrated.add(str(home))
         return str(home)
 
     def _blocks_path(self, fresh: bool = False) -> str:
@@ -424,13 +433,14 @@ class Handler(BaseHTTPRequestHandler):
         def work(job):
             terminal = self._blocks_path()
             if card["kind"] == "llm_api":
-                return blocks_check.check_api(card, api_key, root=home,
-                                              client_factory=self.server.blocks_client_factory)
+                return blocks_check.check_api(card, api_key, root=home, whole=True,
+                                              client_factory=self.server.blocks_client_factory,
+                                              models_fetcher=self.server.blocks_models_fetcher)
             if card["kind"] == "search":
                 return blocks_check.check_search(card, api_key, root=home)
             if not blocks.is_verified(card) and approved != blocks_check.preview(card):
                 return {"ok": False, "status": "changed", "reason": "要跑的命令和你确认时看到的不一样",
-                        "how": "跟行政说重新提议，确认新的完整命令"}
+                        "how": "跟管家说重新提议，确认新的完整命令"}
             result = blocks_check.check_cli(card, root=home, approved=approved, terminal_path=terminal, keys=keys)
             if auto_save and _blocks_connected(result):  # “待接入”点一下：通过就直接放进基础层（用户 2026-11-09 选 A）
                 with self.server.blocks_lock:
@@ -517,9 +527,10 @@ class Handler(BaseHTTPRequestHandler):
                               "category": blocks.category(card),
                               "verified": blocks.is_verified(card),
                               "status": "never" if not last else ("ok" if last.get("ok") else
-                                                                    ("quota" if last.get("status") == "quota" else "fail")),
+                                                                    (last.get("status") if last.get("status") in ("quota", "listed") else "fail")),
                               "reason": (last or {}).get("reason") or "", "time": (last or {}).get("time") or "",
-                              "seconds": (last or {}).get("seconds") or 0})
+                              "seconds": (last or {}).get("seconds") or 0,
+                              "models": len((last or {}).get("models") or []) if card["kind"] == "llm_api" else 0})
             self._json({"blocks": items, "broken": broken, "pending": self._blocks_pending(home, items, broken)})
         elif path == "/api/blocks/detail":
             card_id = query.get("id", "")
@@ -593,11 +604,11 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"error": "没有密钥"}, 400)
                 return
             if not setting:
-                self._json({"error": "还没绑定行政"}, 409)
+                self._json({"error": "还没绑定积木库管家"}, 409)
                 return
             if body.get("check") is True:  # 用户手填的密钥先发一句试试；窗口从钥匙串自动重连的不测，不多花额度
                 try:
-                    card = {"id": "connect-" + uuid.uuid4().hex[:8], "kind": "llm_api", "name": "行政",
+                    card = {"id": "connect-" + uuid.uuid4().hex[:8], "kind": "llm_api", "name": "积木库管家",
                             "provider": setting["provider"], "base_url": base_url, "model": setting["model"],
                             "key_account": account_for(setting["provider"], base_url)}
                     result = blocks_check.check_api(card, key, record=False,
@@ -611,7 +622,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 client = self._blocks_client(setting["provider"], base_url, setting["model"], key)
             except Exception:  # noqa: BLE001 — 原文可能带着密钥
-                self._json({"error": "连不上行政的模型，请到行政设置里重新绑定"}, 409)
+                self._json({"error": "连不上积木库管家的模型，请到设置里重新绑定"}, 409)
                 return
             self.server.blocks_clerk = client
             self._json({"ok": True})
@@ -701,7 +712,7 @@ class Handler(BaseHTTPRequestHandler):
         if not account:
             self._json({"error": "地址不对"}, 400)
             return
-        card = {"id": "bind-" + uuid.uuid4().hex[:8], "kind": "llm_api", "name": "行政", "provider": provider,
+        card = {"id": "bind-" + uuid.uuid4().hex[:8], "kind": "llm_api", "name": "积木库管家", "provider": provider,
                 "base_url": base_url, "model": model, "key_account": account}
         try:
             result = blocks_check.check_api(card, key, need_tools=True, record=False,
@@ -731,11 +742,19 @@ class Handler(BaseHTTPRequestHandler):
         with self.server.blocks_lock:  # 查编号和写入之间不能被别的保存插进来
             if not job.get("saved"):
                 if blocks._card_path(card["id"], home).is_file() and not job.get("replaces"):
-                    self._json({"error": "基础层里已经有同编号的一块：跟行政说重新提议"}, 409)
+                    self._json({"error": "基础层里已经有同编号的一块：跟管家说重新提议"}, 409)
                     return
                 blocks.save_card(card, home)
                 job["saved"] = True
-        self._json({"ok": True, "id": card["id"], "key_account": card.get("key_account", "")})
+                try:  # 升级前留下的旧提议（一块一个模型）放进来后，立刻并成整家一块
+                    if card["kind"] == "llm_api" and blocks.migrate_api_cards(home) and not blocks._card_path(card["id"], home).is_file():
+                        job["saved_id"] = card["provider"]
+                        # 这次的检测结果就是最新的：直接记到整家块上，不靠只精确到秒的时间比先后（第三轮复查第 4 条）
+                        fresh = {k: v for k, v in (job.get("result") or {}).items() if k != "type"}
+                        blocks.add_record(card["provider"], dict(fresh, type="check"), home)
+                except Exception:  # noqa: BLE001
+                    pass
+        self._json({"ok": True, "id": job.get("saved_id") or card["id"], "key_account": card.get("key_account", "")})
 
     def _blocks_proposal(self, project: str, conversation: str, body: dict) -> None:
         """积木库的提议卡：确认后真的去安装或检测。整段排队做，两次确认同时到也不会乱。"""
@@ -1030,7 +1049,7 @@ class Handler(BaseHTTPRequestHandler):
                     self._json({"error": "没能保存，请检查磁盘和权限"}, 500)
                 return
             if path in ("/api/clerk/setting", "/api/clerk/config", "/api/clerk/test"):
-                self._json({"error": "积木库的行政要在积木库窗口里绑定（会检测它会不会用工具）"}, 400)
+                self._json({"error": "积木库管家要在积木库窗口里绑定（会检测它会不会用工具）"}, 400)
                 return
         if path == "/api/clerk/preview":
             card_id = str(body.get("card") or "").strip()
@@ -1270,6 +1289,8 @@ def make_server(port: int = 0, token=None, hub=None) -> ThreadingHTTPServer:
     server.blocks_saved_keys = {}  # Mac 窗口从钥匙串交来的密钥：账号 -> 密钥，只在内存里（60 号单）
     clerk_tasks.key_source = lambda account: server.blocks_saved_keys.get(account, "")  # 行政的联网搜索用
     server.blocks_client_factory = None
+    server.blocks_models_fetcher = None  # 测试、走查时换成假的模型名单
+    server.blocks_migrated = set()
     server.terminal_path = terminal_path
     server.blocks_jobs = {}            # 积木库后台任务：编号 -> 状态
     server.blocks_proposal_jobs = {}   # 提议编号 -> 任务编号：同一个提议点两次拿到同一个任务

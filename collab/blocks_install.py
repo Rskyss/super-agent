@@ -1,7 +1,7 @@
 """积木库：核实名单和安装执行（53 号单）。
 
-只有名单里的安装方式能由程序执行，每条都核对过官方来源（2026-11-08）；行政只能按编号选，不能自己写命令。
-Cursor 官方只给“下载脚本直接执行”的方式，agy 没查到官方安装说明，都不进名单，由行政带用户自己装。
+只有名单里的安装方式能由程序执行，每条都核对过官方来源（2026-11-08）；管家只能按编号选，不能自己写命令。
+Cursor 官方只给“下载脚本直接执行”的方式，agy 没查到官方安装说明，都不进名单，由管家带用户自己装。
 执行：先查前提工具；按参数执行，不经过 shell；输入关着，要密码的会直接失败而不是卡住；
 限时，超时先请整组自己退出，过一会儿还不退就强行关掉；要管理员权限就停下说明，不自动提权；装完再找一次；
 结果写记录，不存原始输出；同一时间只装一个（npm、brew 都不喜欢同时装）。
@@ -50,8 +50,8 @@ LONG_LINE = "……这一行太长，不显示……"
 _BREW_ENV = {"HOMEBREW_NO_AUTO_UPDATE": "1", "HOMEBREW_NO_INSTALL_CLEANUP": "1", "HOMEBREW_NO_ENV_HINTS": "1"}
 _LINE_BREAK = re.compile(r"\r\n|\r|\n")
 _NEEDS_HOW = {
-    "npm": "先装 Node（自带 npm）：跟行政说“帮我装 Node”",
-    "brew": "Homebrew 要输电脑密码，只能在终端里装：行政会一步步带你做",
+    "npm": "先装 Node（自带 npm）：跟管家说“帮我装 Node”",
+    "brew": "Homebrew 要输电脑密码，只能在终端里装：管家会一步步带你做",
 }
 _NEEDS_NAME = {"npm": "npm（装 Node 时自带）", "brew": "Homebrew"}
 # 要管理员权限的说法按工具分开认：brew 会提醒“不要用 sudo 跑 brew”，npm 包名里也可能有 sudo，单个词不算
@@ -63,9 +63,9 @@ _ADMIN_WORDS = {
              "a terminal is required", "a password is required"),
 }
 _ADMIN_HOW = {
-    "npm": "换一种安装方式（比如用 Homebrew 装），或者让行政带你在终端里处理",
+    "npm": "换一种安装方式（比如用 Homebrew 装），或者让管家带你在终端里处理",
     "script": "安装脚本要电脑密码或管理员权限，超级助手不替你输：按官网说明在终端里自己装",
-    "brew": "Homebrew 的文件夹权限不对，要在终端里修：让行政带你一步步做",
+    "brew": "Homebrew 的文件夹权限不对，要在终端里修：让管家带你一步步做",
 }
 
 _lock = threading.Lock()
@@ -80,12 +80,12 @@ def installing() -> bool:
 
 def _item(install_id) -> dict:
     if not isinstance(install_id, str) or install_id not in INSTALLS:
-        raise BlockError(f"安装方式 {install_id!r} 不在核实名单里：名单外的工具要你按官网自己装，行政带着你做")
+        raise BlockError(f"安装方式 {install_id!r} 不在核实名单里：名单外的工具要你按官网自己装，管家带着你做")
     return INSTALLS[install_id]
 
 
 def options(tool) -> list:
-    """某个工具在核实名单里的安装方式，给行政挑。"""
+    """某个工具在核实名单里的安装方式，给管家挑。"""
     return [describe(k) for k in sorted(INSTALLS) if INSTALLS[k]["tool"] == tool]
 
 
@@ -210,7 +210,7 @@ def run_install(install_id, root=None, path=None, timeout=DEFAULT_TIMEOUT, prefi
                 force=False, record=True) -> dict:
     """按核实名单装一个工具。返回 {ok, status, reason, how, seconds, found}。
     status：ok / already（已经装了，没跑）/ missing_prereq / needs_admin / timeout / fail。
-    path 是找命令的路径，只能由程序给（超级助手自己的或终端的），不能来自行政或页面。
+    path 是找命令的路径，只能由程序给（超级助手自己的或终端的），不能来自管家或页面。
     prefix 只给走查用：npm 装进这个文件夹，装没装也在它的 bin 里找。"""
     item = _item(install_id)
     _check_timeout(timeout)
@@ -337,10 +337,10 @@ def _judge(item, code, output, lookup) -> dict:
                     "reason": "要管理员权限才能装，超级助手不会自动提权", "how": _ADMIN_HOW[tool]}
         lines = [ln.strip() for ln in _LINE_BREAK.split(output or "") if ln.strip()]
         tail = _mask_cut(lines[-1], 120) if lines else "没有输出"
-        how = f"稍后再试一次；还不行就跟行政说。安装程序最后说：{tail}"
+        how = f"稍后再试一次；还不行就跟管家说。安装程序最后说：{tail}"
         if tool == "brew":
             how = ("Homebrew 的软件目录可能太旧：在终端里运行一次 brew update 再试；"
-                   f"还不行就跟行政说。安装程序最后说：{tail}")
+                   f"还不行就跟管家说。安装程序最后说：{tail}")
         return {"ok": False, "status": "fail", "found": False, "reason": "安装没成功", "how": how}
     found = bool(_which(item["command"], lookup))
     return {"ok": True, "status": "ok", "found": found, "reason": f"{item['tool']} 装好了",

@@ -13,11 +13,11 @@
 <section class="bind-wrap" id="bindWrap" hidden>
   <div class="bind-card" id="bindCard">
     <div class="bind-head">
-      <h1 id="bindTitle">先绑定一个大模型，它会当你的行政</h1>
+      <h1 id="bindTitle">先绑定一个大模型，它会当你的积木库管家</h1>
       <button type="button" class="btn ghost" id="bindBack" hidden>返回</button>
     </div>
-    <h2 class="bind-sub" id="bindSub" hidden>行政</h2>
-    <p class="bind-note">行政要的是<strong>按用量付费的 API 密钥</strong>，ChatGPT 这类会员<strong>订阅</strong>不能直接用。</p>
+    <h2 class="bind-sub" id="bindSub" hidden>积木库管家</h2>
+    <p class="bind-note">管家要的是<strong>按用量付费的 API 密钥</strong>，ChatGPT 这类会员<strong>订阅</strong>不能直接用。</p>
 
     <div class="field">
       <label for="bindProvider">服务商</label>
@@ -40,7 +40,7 @@
 
     <div class="bind-actions">
       <button type="button" class="btn primary" id="bindCheck">检测</button>
-      <button type="button" class="btn ghost" id="bindChange" hidden>换一个行政</button>
+      <button type="button" class="btn ghost" id="bindChange" hidden>换一个管家</button>
       <span class="bind-result" id="bindResult"></span>
     </div>
     <div class="settings-health" id="settingsHealth" hidden>
@@ -84,7 +84,7 @@
       <span class="topbar-title">积木库</span>
       <button type="button" class="btn small" id="settingsBtn">设置</button>
     </header>
-    <iframe class="chat-frame" id="chatFrame" title="积木库行政对话"></iframe>
+    <iframe class="chat-frame" id="chatFrame" title="积木库管家对话"></iframe>
     <section class="block-detail" id="blockDetail" hidden>
       <div class="detail-inner">
         <div class="detail-top">

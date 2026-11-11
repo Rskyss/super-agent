@@ -99,8 +99,8 @@ var ChatCore = (function () {
         if (!acts || acts.type !== "acts") { acts = { type: "acts", list: [], open: false }; ai.parts.push(acts); }
         var hit = null;
         for (i = 0; i < acts.list.length; i++) if (acts.list[i].id === ev.item) hit = acts.list[i];
-        if (hit) { hit.label = ev.label; hit.status = ev.status; hit.detail = ev.detail || hit.detail; }
-        else acts.list.push({ id: ev.item, label: ev.label, status: ev.status, detail: ev.detail || "" });
+        if (hit) { hit.label = ev.label; hit.status = ev.status; hit.detail = ev.detail || hit.detail; hit.text = ev.text || hit.text; }
+        else acts.list.push({ id: ev.item, label: ev.label, status: ev.status, detail: ev.detail || "", text: ev.text || "" });
         this._touch(ai); break;
       case "image":
         ai = this._ai();
@@ -131,7 +131,7 @@ var ChatCore = (function () {
         if (isBlockKind(pkind)) {
           pblock.info = {};
           ["install", "tool", "label", "command", "source", "needs", "minutes", "block", "name", "verified", "preview", "replaces", "provider", "model",
-           "category", "secrets", "domain", "danger", "new", "facts", "found_by", "key_account"].forEach(function (k) {
+           "category", "secrets", "domain", "danger", "new", "facts", "found_by", "key_account", "official", "maker", "risk"].forEach(function (k) {
             if (ev[k] != null) pblock.info[k] = ev[k];
           });
         }
@@ -162,10 +162,18 @@ var ChatCore = (function () {
 
   // 每种动作怎么说（按标签开头认），顺序就是摘要里出现的顺序
   var KINDS = [
+    // 积木库管家的动作（名字不带空格，和下面项目窗口的分开）
+    [/^查电脑/, "查了电脑"], [/^查安装/, "查了 {n} 次安装"], [/^读帮助/, "读了帮助说明"], [/^看基础层/, "看了基础层"],
+    [/^翻手册/, "翻了 {n} 次手册"], [/^查模型/, "查了模型名单"], [/^搜网上/, "搜了网上 {n} 次"], [/^读网页/, "读了 {n} 个网页"], [/^出卡/, "出了 {n} 张卡"], [/^没出卡/, "{n} 次没出成卡"],
     [/^读 /, "读了 {n} 个文件"], [/^看文件夹/, "看了 {n} 个文件夹"], [/^搜索 /, "在项目里搜索 {n} 次"],
     [/^搜索网页/, "搜索网页 {n} 次"], [/^改 /, "改了 {n} 处文件"], [/^运行 /, "运行了 {n} 条命令"],
     [/^用工具/, "用了 {n} 次工具"], [/^看图片/, "看了 {n} 张图片"], [/^画/, "画了 {n} 张图"]
   ];
+
+  /** 展开后每一行：有大白话（积木库管家记下的）就显示大白话 */
+  function actLine(a) {
+    return (a && a.text) || (a && a.label) || "";
+  }
 
   /** 一组动作的摘要：“读了 2 个文件 · 运行了 1 条命令”。 */
   function actsSummary(list) {
@@ -257,17 +265,25 @@ var ChatCore = (function () {
         { label: "网站", text: info.domain, strong: true },
         { label: "原文核对", text: "✓ 这条命令在这一页的原文里找到了" + (info.found_by === "tavily" ? "（由联网搜索读出页面）" : "") }
       ];
+      var unofficial = info.official === false;  // 积木库管家之前出的旧卡没有这一项：不显示，也不当成非官方
+      if (typeof info.official === "boolean") {
+        var maker = info.maker ? " · " + (info.official ? "厂商：" : "作者：") + info.maker : "";
+        rows.splice(2, 0, { label: "谁做的", text: (info.official ? "官方" : "非官方（别人做的）") + maker });
+      }
       (info.facts || []).forEach(function (f) { rows.push({ label: "安装包底细", text: f }); });
+      if (info.risk) rows.push({ label: "风险", text: info.risk, danger: true });
       if (info.new) rows.push({ label: "提醒", text: "刚发布不久，多留个心" });
       rows.push({ label: "会执行的命令", text: info.command, code: true });
       var warnText = info.danger
-        ? "这种方式会运行厂商的安装脚本，脚本做什么程序管不住。只在你确定这是官网时确认"
-        : "不在核实名单里，来自网上。请看清下面的网站是不是这个工具的官网";
+        ? (unofficial ? "这是别人做的安装脚本，会直接运行，脚本做什么程序管不住。看清下面写的风险再确认"
+                      : "这种方式会运行厂商的安装脚本，脚本做什么程序管不住。只在你确定这是官网时确认")
+        : (unofficial ? "不在核实名单里，是别人做的，不是厂商官方的。看清下面写的风险再确认"
+                      : "不在核实名单里，来自网上。请看清下面的网站是不是这个工具的官网");
       return { title: info.label, rows: rows, needsKey: false, confirmText: "确认安装", warn: warnText,
                warnLevel: info.danger ? "danger" : "caution" };
     }
     if (b.proposalKind === "connect_search") {
-      var srows = [{ label: "用途", text: "让行政能上网找官网和安装说明" }, { label: "服务", text: "Tavily（免费版每月 1000 次）" }];
+      var srows = [{ label: "用途", text: "让管家能上网找官网和安装说明" }, { label: "服务", text: "Tavily（免费版每月 1000 次）" }];
       if (info.replaces) srows.push({ label: "会替换", text: "基础层里的「" + info.replaces + "」" });
       return { title: "接进基础层：" + info.name, rows: srows, needsKey: true, confirmText: "检测", warn: "",
                keyAccount: info.key_account || "tavily", keyHint: "在这里填入 Tavily 密钥（tvly- 开头）" };
@@ -282,8 +298,10 @@ var ChatCore = (function () {
                secrets: info.secrets || [] };
     }
     if (b.proposalKind === "connect_api") {
-      var prov = { tencent: "腾讯云", bailian: "阿里百炼", other: "其他" }[info.provider] || info.provider;
-      var rows = [{ label: "服务商", text: prov }, { label: "模型", text: info.model }, { label: "地址", text: info.block.base_url }];
+      // 按整家接：卡上没有“模型”一栏；只有平台不给名单、管家另给了一个试通用的才显示。
+      // 不放“服务商”一行：标题已经是这家的名字，“其他”两个字只让人困惑；地址留着，密钥就发到这里（用户 2026-11-10）
+      var rows = [{ label: "地址", text: info.block.base_url }];
+      if (info.model) rows.push({ label: "试通用的模型", text: info.model });
       if (info.replaces) rows.push({ label: "会替换", text: "基础层里的「" + info.replaces + "」" });
       return { title: "接进基础层：" + info.name, rows: rows, needsKey: true, confirmText: "检测", warn: "",
                keyAccount: (info.block && info.block.key_account) || "" };
@@ -291,16 +309,27 @@ var ChatCore = (function () {
     return { title: b.title, rows: ChatCore.cardInfoRows(b), needsKey: false, confirmText: "确认" };
   }
 
-  function blockDoneTitle(b) {
+  /** 点过确认的卡的标题。有结果（view 是 jobView 的返回）就照结果说：没通过不能写“已确认接入” */
+  function blockDoneTitle(b, view) {
     if (b.state === "confirmed") {
-        if (b.proposalKind === "install" || b.proposalKind === "web_install") return "已确认安装：" + b.info.label;
-        if (b.proposalKind === "connect" || b.proposalKind === "connect_api" || b.proposalKind === "connect_search") return "已确认接入：" + b.info.name;
+        var st = view && view.state;
+        if (b.proposalKind === "install" || b.proposalKind === "web_install") {
+          var head = { running: "正在安装：", fail: "没装成：", ok: "已装好：" }[st] || "已确认安装：";
+          return head + b.info.label;
+        }
+        if (b.proposalKind === "connect" || b.proposalKind === "connect_api" || b.proposalKind === "connect_search") {
+          var head2 = { running: "正在检测：", fail: "没接上：", ok: "已接入：", warn: "已接入：",
+                        lost: "已点确认，结果没留下来：" }[st] || "已确认接入：";
+          if (st === "ok" && view.canSave) head2 = "检测通过，还没放进基础层：";
+          if (st === "warn" && view.canSave) head2 = view.head || "能连上但额度不足，还没放进基础层：";
+          return head2 + b.info.name;
+        }
     }
     return { cancelled: "好的，先不做。", replaced: "已换成新的提议" }[b.state] || b.title;
   }
 
   function jobView(job) {
-    if (!job) return { state: "lost", text: "这次的结果没留下来（超级助手重开过）。可以在左边基础层里看，或者跟行政说重新提议", lines: [], canSave: false };
+    if (!job) return { state: "lost", text: "这次的结果没留下来（超级助手重开过）。可以在左边基础层里看，或者跟管家说重新提议", lines: [], canSave: false };
     if (!job.done) return { state: "running", text: job.kind === "install" ? "正在安装…" : "正在检测…", lines: job.kind === "install" ? (job.tail || []) : [], canSave: false };
     if (job.error) return { state: "fail", text: job.error, lines: job.tail || [], canSave: false };
     var res = job.result || {};
@@ -308,15 +337,20 @@ var ChatCore = (function () {
       var short = "能连上，但额度不足：" + (res.reason || "") + (res.how ? "。" + res.how : "");
       return { state: "warn", text: job.saved ? short + " · 已放进基础层" : short + "。可以先放进基础层", lines: [], canSave: !job.saved };
     }
+    if (job.kind !== "install" && res.status === "listed") {  // 拿到模型名单、试的模型没通：也算接上（用户 2026-11-11 选 A）
+      var said = String(res.reason || "").replace(/^已接上：/, "");
+      return { state: "warn", text: job.saved ? said + " · 已放进基础层" : said + "。可以先放进基础层", lines: [], canSave: !job.saved,
+               head: "已接上（试的模型没通），还没放进基础层：" };
+    }
     if (!res.ok) {
-      var why = res.reason ? res.reason + "。" + (res.how || "") : (res.how || "没成功，原因没查出来，跟行政说一声");
+      var why = res.reason ? res.reason + "。" + (res.how || "") : (res.how || "没成功，原因没查出来，跟管家说一声");
       return { state: "fail", text: why, lines: job.tail || [], canSave: false };
     }
-    if (job.kind === "install") return { state: "ok", text: res.how || (res.reason + "。跟行政说一声，它会接着帮你接进基础层"), lines: job.tail || [], canSave: false };
+    if (job.kind === "install") return { state: "ok", text: res.how || (res.reason + "。跟管家说一声，它会接着帮你接进基础层"), lines: job.tail || [], canSave: false };
     return { state: "ok", text: (job.saved ? "检测通过 · " + res.seconds + " 秒 · 已放进基础层" : "检测通过 · " + res.seconds + " 秒"), lines: [], canSave: !job.saved };
   }
 
-  return { esc: esc, md: md, Model: Model, actsSummary: actsSummary, usageText: usageText, modelFrom: modelFrom, needsOpen: needsOpen, cardInfoRows: cardInfoRows, afterThreadDeleted: afterThreadDeleted, isBlockKind: isBlockKind, keyProblem: keyProblem, blockCard: blockCard, blockDoneTitle: blockDoneTitle, jobView: jobView };
+  return { esc: esc, md: md, Model: Model, actsSummary: actsSummary, actLine: actLine, usageText: usageText, modelFrom: modelFrom, needsOpen: needsOpen, cardInfoRows: cardInfoRows, afterThreadDeleted: afterThreadDeleted, isBlockKind: isBlockKind, keyProblem: keyProblem, blockCard: blockCard, blockDoneTitle: blockDoneTitle, jobView: jobView };
 })();
 
 if (typeof module !== "undefined") module.exports = ChatCore;
@@ -328,6 +362,7 @@ if (typeof document !== "undefined") (function () {
   var project = params.get("project") || "", dispatcher = params.get("dispatcher") || "", token = params.get("token") || "";
   var names = { codex: "Codex", claude: "Claude" }, faces = { codex: "Cx", claude: "Cl" };
   var clerkMode = params.get("clerk") === "1";   // 聊天找行政人员：走 API，不连 Codex
+  var butlerMode = clerkMode && params.get("butler") === "1";  // 积木库窗口里：同一套聊天，名字叫积木库管家
   var model = new ChatCore.Model(), drawn = [];
   var $ = function (id) { return document.getElementById(id); };
   var list = $("msgs");
@@ -352,7 +387,7 @@ if (typeof document !== "undefined") (function () {
   var confirming = {};  // 确认请求还没回话的提议：这时服务器还没登记任务，不按提议去查
   // 60 号单：钥匙串里有这一家的密钥时，提议卡显示“已保存的密钥 / 换一把”
   var savedAccounts = null, savedLoading = false, keyWanted = {}, usedSavedKey = {};
-  var SAVED_FAILED = "存的这把没通过，可以换一把：跟行政说重新提议，在新的提议卡上点“换一把”填新的";
+  var SAVED_FAILED = "存的这把没通过，可以换一把：跟管家说重新提议，在新的提议卡上点“换一把”填新的";
 
   function loadSavedAccounts() {
     if (savedLoading) return;
@@ -475,7 +510,7 @@ if (typeof document !== "undefined") (function () {
 
   function renderBlock(b, idx) {
     var el = document.createElement("div");
-    var face = faces[dispatcher] || "调";
+    var face = butlerMode ? "管" : (clerkMode ? "行" : (faces[dispatcher] || "调"));
     if (b.kind === "sys") {
       el.className = "sys";
       el.innerHTML = "超级助手自动交代<button type=\"button\" data-sys>看全文</button><pre hidden></pre>";
@@ -493,7 +528,7 @@ if (typeof document !== "undefined") (function () {
         } else if (p.type === "acts") {
           html += "<div class=\"acts\"><button type=\"button\" data-acts=\"" + idx + ":" + pi + "\" aria-expanded=\"" + p.open + "\">" +
             ChatCore.esc(ChatCore.actsSummary(p.list)) + "</button>" + (p.open ? "<ul>" + p.list.map(function (a) {
-              return "<li class=\"" + ChatCore.esc(a.status) + "\" title=\"" + ChatCore.esc(a.detail) + "\">" + ChatCore.esc(a.label) + "</li>";
+              return "<li class=\"" + ChatCore.esc(a.status) + "\" title=\"" + ChatCore.esc(a.detail) + "\">" + ChatCore.esc(ChatCore.actLine(a)) + "</li>";
             }).join("") + "</ul>" : "") + "</div>";
         } else if (p.type === "image") {
           html += "<figure class=\"img\"><a href=\"" + ChatCore.esc(imageUrl(p.path)) + "\" target=\"_blank\"><img alt=\"" +
@@ -547,6 +582,9 @@ if (typeof document !== "undefined") (function () {
               var st = document.createElement("strong");
               st.textContent = r.text || "";
               p.appendChild(st);
+            } else if (r.danger) {
+              p.className = "risk";
+              p.textContent = "🔴 " + (r.text || "");
             } else if (r.code) {
               var cd = document.createElement("code");
               cd.textContent = r.text || "";
@@ -623,10 +661,12 @@ if (typeof document !== "undefined") (function () {
           el.querySelector(".btns").before(errP);
         } else if (b.state === "confirmed") {
           el.innerHTML = "<h3></h3>";
-          el.querySelector("h3").textContent = ChatCore.blockDoneTitle(b);
           ensureProposalJob(b.id);
           var rec = proposalJobs[b.id];
           var vw = rec && rec.view;
+          el.querySelector("h3").textContent = ChatCore.blockDoneTitle(b, vw);
+          if (vw && vw.state === "fail") el.classList.add("failed");
+          if (vw && vw.state === "lost") el.classList.add("unknown");
           if (vw) {
             if (vw.lines && vw.lines.length) {
               var preOut = document.createElement("pre");
@@ -646,7 +686,7 @@ if (typeof document !== "undefined") (function () {
             if (rec.keyMissing) {
               var missP = document.createElement("p");
               missP.className = "prop-warn";
-              missP.textContent = "密钥没带上（页面刷新过）：这块暂时用不了。跟行政说重新提议，再填一次密钥";
+              missP.textContent = "密钥没带上（页面刷新过）：这块暂时用不了。跟管家说重新提议，再填一次密钥";
               el.appendChild(missP);
             }
             if (rec.saveError) {
@@ -934,7 +974,7 @@ if (typeof document !== "undefined") (function () {
   var connectFailed = false;                    // 当前这段没连上，再点一次要重连
   var blankChat = false;                        // 新对话还没说话：Codex 还没存档，接不回来
   var viewingCard = false, mainThread = null;   // 正在看任务对话；回去时接着这段主对话
-  var clerkPlaceholder = "跟行政说…";
+  var clerkPlaceholder = butlerMode ? "跟管家说…" : "跟行政说…";
 
   function pause() {
     stopped = true;
@@ -1156,11 +1196,18 @@ if (typeof document !== "undefined") (function () {
   if (!project || !token) {
     $("status").textContent = "请从超级助手窗口打开聊天";
   } else if (clerkMode) {
-    $("whoFace").textContent = "行";
-    $("who").textContent = "行政";
     $("input").placeholder = clerkPlaceholder;
-    $("input").setAttribute("aria-label", "给行政的消息");  // 读屏软件念的名字跟着变
-    if ($("chatMain")) $("chatMain").setAttribute("aria-label", "和行政的对话");
+    if (butlerMode) {
+      $("whoFace").textContent = "管";
+      $("who").textContent = "积木库管家";
+      $("input").setAttribute("aria-label", "给积木库管家的消息");
+      if ($("chatMain")) $("chatMain").setAttribute("aria-label", "和积木库管家的对话");
+    } else {
+      $("whoFace").textContent = "行";
+      $("who").textContent = "行政";
+      $("input").setAttribute("aria-label", "给行政的消息");  // 读屏软件念的名字跟着变
+      if ($("chatMain")) $("chatMain").setAttribute("aria-label", "和行政的对话");
+    }
     fetch("/api/clerk/list?" + new URLSearchParams({ project: project, token: token }).toString())
       .then(function (r) { return r.json(); })
       .then(function (d) {

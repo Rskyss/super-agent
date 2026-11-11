@@ -64,7 +64,7 @@ class ScanTest(EnvCase):
         self.assertTrue(items["node"]["path"].endswith("/node"))
         self.assertEqual(items["brew"]["version"], "Homebrew 4.6.0", "只取第一行")
         self.assertEqual(items["npm"]["status"], "没有")
-        self.assertIn("行政", items["npm"]["fix"])
+        self.assertIn("管家", items["npm"]["fix"])
         for name in ("node", "npm", "brew", "git"):
             self.assertRegex(items[name]["why"], r"[一-鿿]", "每个前提工具都要写清做什么用")
 
@@ -94,7 +94,7 @@ class ScanTest(EnvCase):
         cursor = self.by_name(self.run_scan())["cursor"]
         self.assertEqual(cursor["status"], "没有")
         self.assertIsNone(cursor["login"])
-        self.assertIn("行政", cursor["fix"])
+        self.assertIn("管家", cursor["fix"])
 
     def test_slow_item_times_out_and_scan_stays_fast(self):
         started = time.monotonic()

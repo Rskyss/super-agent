@@ -90,12 +90,15 @@ assert.strictEqual(rowText(verifiedCli, "会替换"), null);
 
 var c3 = C.blockCard(api);
 assert.ok(c3.title.indexOf("通义") >= 0, c3.title);
-assert.strictEqual(rowText(c3, "服务商").text, "阿里百炼");
-assert.strictEqual(rowText(c3, "模型").text, "qwen-plus");
+assert.strictEqual(rowText(c3, "服务商"), null, "标题已有名字，不放服务商一行（2026-11-10）");
+assert.strictEqual(rowText(c3, "模型"), null, "按整家接：卡上没有模型一栏（2026-11-10）");
 assert.strictEqual(rowText(c3, "地址").text, "https://dashscope.aliyuncs.com/compatible-mode/v1");
 assert.strictEqual(c3.needsKey, true, "接大模型 API 要密钥框");
-assert.strictEqual(C.blockCard({ proposalKind: "connect_api", info: { provider: "tencent", block: {} } }).rows[0].text, "腾讯云");
-assert.strictEqual(rowText(C.blockCard({ proposalKind: "connect_api", info: { provider: "other", block: {} } }), "服务商").text, "其他");
+var volc = C.blockCard({ proposalKind: "connect_api", info: { provider: "other", name: "火山引擎",
+  block: { base_url: "https://ark.cn-beijing.volces.com/api/v3" } } });
+assert.ok(volc.title.indexOf("火山引擎") >= 0, volc.title);
+assert.ok(volc.rows.every(function (r) { return r.text !== "其他"; }), "不出现“其他”");
+assert.strictEqual(rowText(volc, "地址").text, "https://ark.cn-beijing.volces.com/api/v3", "地址留着");
 
 // 处理过的卡的标题
 assert.ok(C.blockDoneTitle(ins).indexOf("用 npm 装 Codex") >= 0);
@@ -115,7 +118,7 @@ var insOk = C.jobView({ kind: "install", done: true, error: "", tail: ["done"],
   result: { ok: true, status: "ok", reason: "codex 装好了", how: "" } });
 assert.strictEqual(insOk.state, "ok");
 assert.ok(insOk.text.indexOf("codex 装好了") >= 0);
-assert.ok(insOk.text.indexOf("行政") >= 0, "装好后告诉用户跟行政说一声，接着接入：" + insOk.text);
+assert.ok(insOk.text.indexOf("管家") >= 0, "装好后告诉用户跟管家说一声，接着接入：" + insOk.text);
 assert.strictEqual(insOk.canSave, false, "装好不等于接进基础层");
 assert.deepStrictEqual(insOk.lines, ["done"], "装完后还能看到最后几行");
 

@@ -33,7 +33,14 @@ LINE_SCAN = 500
 
 
 # 每段都有上限：没有上限时，一长串字母会让打码越跑越慢（20 万字要几分钟）
+# 最后一段要是字母（含中文）：node-x@1.0.0 这类包名不算；后面紧跟中文也照样认（复查：a@b.co已成功）
 _EMAIL = re.compile(r"[\w.+-]{1,64}@[\w-]{1,63}(?:\.[\w-]{1,63})+")
+_VERSION_AFTER_AT = re.compile(r"@v?\d+\.\d+\.\d+")  # npm 的“包名@版本号”（含 1.0.0-alpha.beta）不是邮箱
+
+
+def mask_emails(text: str) -> str:
+    """邮箱打码；“包名@版本号”留着，排查安装问题要看（用户真实装高德时 npm 的提示被遮掉，2026-11-10）。"""
+    return _EMAIL.sub(lambda m: m.group(0) if _VERSION_AFTER_AT.search(m.group(0)) else "[已隐藏]", text)
 _VERSIONISH = re.compile(r"\d+\.\d+")
 
 
@@ -108,7 +115,7 @@ def _version_line(text: str) -> str:
     lines = [l.strip()[:LINE_SCAN] for l in (text or "").splitlines() if l.strip()]  # 每行先截短，超长的一行不卡
     pick = next((l for l in lines if _VERSIONISH.search(l) and "@" not in l), None) \
         or next((l for l in lines if _VERSIONISH.search(l)), None) or (lines[0] if lines else "")
-    return blocks._SECRET_TEXT.sub("[已隐藏]", _EMAIL.sub("[已隐藏]", pick))[:VERSION_LIMIT]
+    return blocks._SECRET_TEXT.sub("[已隐藏]", mask_emails(pick))[:VERSION_LIMIT]
 
 
 def _targets(root):
@@ -166,11 +173,11 @@ def _login(check, exe, path, runner, timeout) -> str:
 def _fix(item) -> str:
     label = item["label"]
     if item["status"] == "没有":
-        return f"行政可以带你装 {label}" if item["kind"] == "prereq" else f"跟行政说“帮我装 {label}”"
+        return f"管家可以带你装 {label}" if item["kind"] == "prereq" else f"跟管家说“帮我装 {label}”"
     if item["status"] == "找不到":
         return "终端里已经装好，但超级助手还没认到：关掉超级助手再重新打开"
     if item["login"] == "没登录":
-        return f"{label} 还没登录：在终端里登录一次，行政会告诉你命令"
+        return f"{label} 还没登录：在终端里登录一次，管家会告诉你命令"
     return ""
 
 

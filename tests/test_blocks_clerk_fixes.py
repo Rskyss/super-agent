@@ -38,7 +38,8 @@ class ReadToolFixes(BlocksCase):
 
     def test_listed_options_have_no_stray_line(self):
         _, _, results = self.call("install_options", {"tool": "codex"})
-        self.assertNotIn("官网", results[0])
+        listed = results[0].split("（你还没翻")[0]  # 积木库管家方案：第一次查安装方式会附上手册，只看名单本身
+        self.assertNotIn("官网", listed)
 
 
 class InstallProposalFixes(BlocksCase):
@@ -141,11 +142,12 @@ class ConnectApiFixes(BlocksCase):
     def test_ids_do_not_collide_with_saved_cards(self):
         _, a, _ = self.api(provider="bailian", model="qwen-plus")
         blocks.save_card(a["block"], root=self.home)
-        _, b, _ = self.api(provider="bailian", model="qwen.plus")
-        self.assertNotEqual(a["block"]["id"], b["block"]["id"], "不同的模型不能用同一个编号")
+        _, b, _ = self.api(provider="other", model="m-1", base_url="https://a.example/v1")
+        _, c, _ = self.api(provider="other", model="m-1", base_url="https://a-example.com/v1")
+        self.assertEqual(len({a["block"]["id"], b["block"]["id"], c["block"]["id"]}), 3, "不同的平台不能用同一个编号")
         blocks.validate_card(b["block"])
-        _, again, _ = self.api(provider="bailian", model="qwen-plus")
-        self.assertEqual(again["block"]["id"], a["block"]["id"], "同一个模型再接一次，就是替换原来那块")
+        _, again, _ = self.api(provider="bailian", model="qwen.plus")
+        self.assertEqual(again["block"]["id"], a["block"]["id"], "按整家接（2026-11-10）：同一家再接一次，就是替换原来那块")
         self.assertTrue(again["replaces"])
 
 

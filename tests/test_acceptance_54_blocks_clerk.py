@@ -9,18 +9,24 @@ import json
 import os
 import tempfile
 from pathlib import Path
+from unittest import mock
 
 from acceptance_helpers import ProjectCase, ScriptedClient, tool_call, wait_idle, write_script
 from collab import blocks
 from collab.providers import TENCENT_BASE_URL
 from desktop.clerk import blocks_tools, tasks as clerk_tasks
 from desktop.clerk.desk import ClerkDesk
+from desktop.clerk.blocks_tools import is_blocks_home as is_home
 
 KEY = "sk-abcdefghijklmnopqrstuvwxyz0123456789"
 EXPECTED_TOOLS = {"scan_environment", "check_installed", "read_help", "list_blocks", "install_options",
                   "propose_install", "propose_connect_cli", "propose_connect_api",
                   # 沙盒接入 64 号单按已批准的方案加的四样（用户 2026-11-09 批准）：上网搜、读网页、网上安装卡、接联网搜索
-                  "web_search", "read_page", "propose_web_install", "propose_connect_search"}
+                  "web_search", "read_page", "propose_web_install", "propose_connect_search",
+                  # 积木库管家方案（2026-11-10，用户授权）：规矩拆成手册，按需翻开
+                  "read_manual",
+                  # 2026-11-10 用户真实接腾讯云混元时管家猜错模型名：加“查这家真有哪些模型”
+                  "list_models"}
 
 
 class BlocksCase(ProjectCase):
@@ -31,6 +37,17 @@ class BlocksCase(ProjectCase):
         os.environ["SUPER_AGENT_BLOCKS_HOME"] = str(self.home)
         self.client = ScriptedClient()
         self.desk = ClerkDesk(lambda: self.client)
+        # 积木库出卡后这一轮就结束（用户 2026-11-10），出卡工具的回话不会再交给模型：测试从这里看
+        self.card_replies = []
+        for name in ("propose_install", "propose_connect_cli", "propose_connect_api",
+                     "propose_web_install", "propose_connect_search"):
+            def wrapped(*a, _orig=getattr(clerk_tasks, name), **k):
+                reply = _orig(*a, **k)
+                self.card_replies.append(reply)
+                return reply
+            patcher = mock.patch.object(clerk_tasks, name, wrapped)
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     def talk(self, text="你好", cid="", where=None):
         where = where or str(self.home)
@@ -49,8 +66,12 @@ class BlocksCase(ProjectCase):
 
     def call(self, name, args, text="好的"):
         self.client.steps = [{"tool_calls": [tool_call(name, args)]}, {"text": text}]
+        self.card_replies = []
         cid, events = self.talk("帮我办")
-        return cid, events, self.tool_results(len(self.client.calls) - 1)  # 同一个测试里调多次，取最后这一轮
+        seen = self.tool_results(len(self.client.calls) - 1)  # 同一个测试里调多次，取最后这一轮
+        if self.proposals(events) and is_home(self.home):  # 出了卡这一轮就结束，模型没再被问：看出卡工具的回话
+            return cid, events, self.card_replies
+        return cid, events, seen  # 没出成卡：只认真正交给模型的那句（Codex 复查第 3 条）
 
 
 class ModeTest(BlocksCase):
@@ -75,7 +96,9 @@ class ModeTest(BlocksCase):
         self.assertNotIn("超级助手的行政人员，用户的前台和行政", system["content"], "不用项目窗口那份说明")
 
     def test_role_file_rules(self):
-        text = Path(blocks_tools.ROLE_FILE).read_text(encoding="utf-8")
+        # 积木库管家方案：基本规矩 + 三本手册合起来看
+        text = Path(blocks_tools.ROLE_FILE).read_text(encoding="utf-8") + "".join(
+            blocks_tools.manual_text(n) for n in blocks_tools.MANUALS)
         for word in ("体检", "核实名单", "密钥框", "确认", "不能"):
             self.assertIn(word, text)
         self.assertNotIn("Claude Code", text, "Claude 订阅不参与")

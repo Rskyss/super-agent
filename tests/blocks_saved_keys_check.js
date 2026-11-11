@@ -63,7 +63,7 @@ assert.strictEqual(B.bindResultText({ ok: false, reason: "密钥不对。", how:
 [B.keyProblem, C.keyProblem].forEach(function (f) {
   assert.strictEqual(f("模型密钥不对或已失效，请到设置里重新填写。"), true);
   assert.strictEqual(f("模型额度用完了，或请求太频繁。"), true);
-  assert.strictEqual(f("这个模型不会用工具，当不了行政"), false);
+  assert.strictEqual(f("这个模型不会用工具，当不了积木库管家"), false);
   assert.strictEqual(f("这家服务商没有这个模型，或服务地址不对。"), false);
   assert.strictEqual(f("连不上模型服务，请检查网络。"), false);
   assert.strictEqual(f(""), false);

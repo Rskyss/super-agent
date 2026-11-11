@@ -40,6 +40,8 @@ class _FakeClient:
         self.owner.chats.append(json.dumps(messages, ensure_ascii=False))
         if self.owner.mode == "bad_key":
             raise ModelError("模型密钥不对或已失效")
+        if self.owner.mode == "bad_model":
+            raise ModelError("这家服务商没有这个模型，或服务地址不对。请检查模型名和地址。")
         if tools and any(t["function"]["name"] == TOOL_NAME for t in tools):
             if self.owner.mode == "no_tools":
                 return {"text": "好的", "tool_calls": [], "tokens": 1}
@@ -105,8 +107,8 @@ class BlocksCase(ServerCase):
 
     def api_card(self, block_id="tongyi"):
         return {"id": block_id, "kind": "llm_api", "name": "通义", "provider": "bailian",
-                "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1", "model": "qwen-plus",
-                "key_account": "bailian", "source": "clerk"}
+                "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                "key_account": "bailian", "source": "clerk"}  # 按整家接：不带模型（2026-11-10）
 
     # ---- 用假行政在积木库里出提议 ----
     def proposal(self, name, arguments):
@@ -161,14 +163,14 @@ class BindTest(BlocksCase):
         self.assertEqual(state["setting"]["provider"], "tencent")
         self.assertEqual(state["setting"]["model"], "deepseek/deepseek-flash")
         self.assertEqual(state["key_account"], "tencent")
-        self.assertIsNone(self.server.clerk, "项目窗口的行政不受影响")
+        self.assertIsNone(self.server.clerk, "项目窗口的管家不受影响")
 
     def test_bind_model_without_tools(self):
         self.fake.mode = "no_tools"
         status, data = self.bind()
         self.assertEqual(status, 200)
         self.assertFalse(data["ok"])
-        self.assertIn("当不了行政", data["reason"])
+        self.assertIn("当不了积木库管家", data["reason"])
         _, state = self.bget("/api/blocks/state")
         self.assertFalse(state["connected"])
         self.assertIsNone(state["setting"], "没通过就不保存")
@@ -216,14 +218,14 @@ class BindTest(BlocksCase):
         status, _ = self.bpost("/api/clerk/config", {"project": self.project, "provider": "tencent",
                                                      "model": "deepseek/deepseek-flash", "api_key": "sk-project"})
         self.assertEqual(status, 200)
-        self.assertIs(self.server.blocks_clerk, blocks_client, "项目窗口配行政不能换掉积木库的")
+        self.assertIs(self.server.blocks_clerk, blocks_client, "项目窗口配管家不能换掉积木库的")
         status, data = self.bpost("/api/clerk/send", {"project": str(self.home), "conversation": "",
                                                       "text": "你好，积木库"})
         self.assertEqual(status, 200, "积木库的聊天不能被“这句话属于另一个项目”拦住")
         wait_idle(self.server.desk, str(self.home), data["conversation"])
         self.assertTrue(any("你好，积木库" in c for c in self.fake.chats), "积木库的聊天用积木库的模型")
         self.bpost("/api/clerk/clear", {})
-        self.assertIs(self.server.blocks_clerk, blocks_client, "项目窗口清掉行政不能清掉积木库的")
+        self.assertIs(self.server.blocks_clerk, blocks_client, "项目窗口清掉管家不能清掉积木库的")
 
 
 class ListTest(BlocksCase):

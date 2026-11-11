@@ -1,6 +1,7 @@
 """行政提议与后台任务：模型只能提议，用户确认才建卡；后台子进程与本机服务分离。"""
 from __future__ import annotations
 
+import contextlib
 import errno
 import fcntl
 import hashlib
@@ -171,10 +172,18 @@ def card_label(data: dict) -> str:
                or data.get("title") or "一张卡")
 
 
+_NO_WAIT = contextlib.nullcontext()
+
+
 def _publish_block(conv, data: dict) -> str:
     """积木库的三种提议共用：先存新提议，再把旧的标成被替换；新的存不上时旧的不动。
     接法卡放在 block 字段；card 字段在提议里只表示项目窗口的任务卡编号，这里永远是空的。"""
-    with _lock:
+    expected = getattr(conv, "turn_expected", None)
+    cond = getattr(conv, "cond", None)
+    with _lock, (cond if expected is not None and cond is not None else _NO_WAIT):
+        # 积木库：出卡要花时间核对，这期间用户点了停止，旧卡就不出了，也不顶掉新卡（锁的先后和确认卡片一致）
+        if expected is not None and getattr(conv, "turn", expected) != expected:
+            return "没有出卡：用户已经停止了这一轮。"
         olds = _open_in_conversation(conv.project, conv.id)
         pid = uuid.uuid4().hex
         data = dict(data, id=pid, conversation=conv.id, card="", state="open", time=time.time())
@@ -256,6 +265,30 @@ def propose_install(conv, args: dict) -> str:
     return _publish_block(conv, dict(info, kind="install", install=install_id))
 
 
+# 管家起草接法卡的样子：写错时附在回话里，照着改一次就对（用户真实接高德时连错 3 次，2026-11-10）
+CARD_EXAMPLE = json.dumps({"id": "amap-gui", "kind": "cli", "name": "高德地图", "command": "amap-gui", "role": "tool",
+                           "probe": ["status"], "ok_words": ["running"], "version_args": [],
+                           "secrets": [{"env": "AMAP_KEY", "label": "高德 Key"}]}, ensure_ascii=False)
+
+
+def _fill_card(drafted: dict, project) -> dict:
+    """程序推得出来的项替管家补上：类别默认 cli；编号默认按命令名，和基础层里别的工具撞了就加尾号（复查）。"""
+    card = dict(drafted, source="clerk")
+    card.setdefault("kind", "cli")
+    command = card.get("command")
+    if "id" not in card and isinstance(command, str):
+        slug = re.sub(r"[^a-z0-9-]+", "-", command.lower()).strip("-")[:36]
+        if slug:
+            for candidate in [slug] + [f"{slug}-{n}" for n in range(2, 10)]:
+                saved = _saved_block(project, candidate)
+                if saved is None or saved.get("command") == command:
+                    card["id"] = candidate
+                    break
+            else:  # 都被别的工具占了：不自动起编号，交给下面的检查报“编号不对”，管家自己起一个
+                card["id"] = None
+    return card
+
+
 def propose_connect_cli(conv, args: dict) -> str:
     """模型调用 propose_connect_cli：预置模板直接用；起草的卡来源强制写成 clerk，没核实过的要亮出完整命令。"""
     template = args.get("template")
@@ -264,11 +297,14 @@ def propose_connect_cli(conv, args: dict) -> str:
         if template:
             block = blocks.builtin_card(template)
         elif drafted is not None:
-            block = blocks.validate_card(dict(drafted, source="clerk") if isinstance(drafted, dict) else drafted)
+            block = blocks.validate_card(_fill_card(drafted, conv.project) if isinstance(drafted, dict) else drafted)
         else:
             return "要填 template（codex、cursor 或 agy），或者起草好的 card。"
     except BlockError as exc:
-        return str(exc)
+        if template:
+            return str(exc)
+        return (f"{exc}。照这个样子重写接法卡再出卡（只能有这些项；AI 助手把 role、probe、ok_words 换成 "
+                f"\"run\": [\"{{prompt}}\"] 这样的写法）：{CARD_EXAMPLE}")
     verified = blocks.is_verified(block)
     if not template and not verified:
         if block["id"] in blocks.BUILTIN:
@@ -289,23 +325,30 @@ def propose_connect_cli(conv, args: dict) -> str:
     return _publish_block(conv, data)
 
 
-def _api_id(project: str, provider: str, model: str, base_url: str) -> str:
-    """编号由程序起：服务商加模型名。基础层里同编号的卡接的是别的地址或模型时，加一段短码区分。"""
-    slug = re.sub(r"[^a-z0-9]+", "-", f"{provider}-{model}".lower()).strip("-")[:40].strip("-")
-    saved = _saved_block(project, slug)
-    if saved is None or (saved.get("base_url"), saved.get("model")) == (base_url, model):
+def _api_id(project: str, provider: str, account: str) -> str:
+    """编号由程序起，一家只占一块（用户 2026-11-10 定）：腾讯云、阿里百炼就是服务商编号；其他平台按网址起。
+    两个网址变成编号后一样（a-b.example 和 a.b.example）、或者太长被截短时，加一段按原网址算的短码区分。"""
+    if provider != "other":
+        return provider
+    host = account.split(":", 1)[-1].lower()
+    for card in blocks.list_cards(root=project):  # 同一个网址已经有一块：就用它的编号（第二轮复查第 7 条）
+        if card.get("kind") == "llm_api" and card.get("key_account") == account:
+            return card["id"]
+    slug = "other-" + re.sub(r"[^a-z0-9]+", "-", host).strip("-")
+    saved = _saved_block(project, slug) if len(slug) <= 40 else {}
+    if saved is None or saved.get("key_account") == account:
         return slug
-    digest = hashlib.sha1(f"{base_url}\n{model}".encode("utf-8")).hexdigest()[:6]
-    return f"{slug[:33].strip('-')}-{digest}"
+    return f"{slug[:33].strip('-')}-{hashlib.sha1(host.encode('utf-8')).hexdigest()[:6]}"
 
 
 def propose_connect_api(conv, args: dict) -> str:
-    """模型调用 propose_connect_api：认得的服务商用它固定的地址；不认得的按“其他”处理，必须给 https 地址。"""
+    """模型调用 propose_connect_api：按整家接，不选模型。认得的服务商用它固定的地址和名字；
+    不认得的按“其他”处理，必须给 https 地址，model 只在平台不给名单时用来试通。"""
     if blocks._has_secret(args):
         return "参数里有像密钥的东西。密钥只能由用户填在提议卡的密钥框里，不要放进参数，也不要让用户贴在聊天里。"
     provider = str(args.get("provider") or "").strip().lower()
     model = str(args.get("model") or "").strip()
-    name = str(args.get("name") or "").strip() or model[:40]
+    name = str(args.get("name") or "").strip()
     base_url = str(args.get("base_url") or "").strip()
     known = find_provider(provider)
     if known is None or provider == "other":
@@ -314,18 +357,28 @@ def propose_connect_api(conv, args: dict) -> str:
             return "这家不在预置名单里，要填它官方文档里写的接口地址，以 https:// 开头，后面跟网址，不能有空格。"
     else:
         base_url = known["base_url"]  # 认得的服务商地址固定，行政改不了，密钥不会被引到别处
+        name = known["name"]  # 整家一块：名字就是服务商
+        # 不带模型。例外：这家上次检测没通过（自动试的几个都不行），用户另给的那个要留着试通，不然永远试同样几个（复查第 1 条）
+        last = blocks.last_record(provider, conv.project, type="check")
+        if not (last and not last.get("ok") and last.get("status") == "fail"):  # 已接上、额度不足的不用（第二轮复查第 8 条）
+            model = ""
     try:
         account = account_for(provider, base_url)
     except ValueError:
         return "接口地址不对，要以 https:// 开头，后面跟网址。"
-    block = {"id": _api_id(conv.project, provider, model, base_url), "kind": "llm_api", "name": name,
-             "provider": provider, "base_url": base_url, "model": model, "key_account": account,
+    name = (name or account.split(":", 1)[-1])[:40]
+    block = {"id": _api_id(conv.project, provider, account), "kind": "llm_api", "name": name,
+             "provider": provider, "base_url": base_url, "key_account": account,
              "source": "clerk"}
+    if model:
+        block["model"] = model
     try:
         block = blocks.validate_card(block)
     except BlockError as exc:
         return str(exc)
-    data = {"kind": "connect_api", "block": block, "name": name, "provider": provider, "model": model}
+    data = {"kind": "connect_api", "block": block, "name": name, "provider": provider}
+    if model:
+        data["model"] = model
     saved = _saved_block(conv.project, block["id"])
     if saved is not None:
         data["replaces"] = saved.get("name") or block["id"]
@@ -348,18 +401,59 @@ def search_key() -> str:
     return str(key_source(card["key_account"]) or "")
 
 
+# 代码托管站、个人主页：不管管家怎么说，一律算非官方（积木库管家方案第三节，用户选“从严”）
+_CODE_HOSTS = ("github.com", "gitee.com", "gitlab.com", "npmjs.com", "bitbucket.org", "sourceforge.net",
+               "github.io", "gitee.io", "gitlab.io")
+_MAKER_LIMIT, _RISK_LIMIT = 60, 120
+
+
+def code_hosting(url: str) -> bool:
+    from urllib.parse import urlsplit
+    try:
+        host = (urlsplit(str(url or "").strip()).hostname or "").lower()
+    except ValueError:
+        return False
+    try:  # 全角句号、大写这类写法先规范成一种（复查第 1 条）
+        host = host.encode("idna").decode("ascii").lower()
+    except UnicodeError:
+        host = host.replace("。", ".").replace("．", ".").replace("｡", ".")
+    host = host.rstrip(".")
+    return any(host == h or host.endswith("." + h) for h in _CODE_HOSTS)
+
+
+def _one_line(value, limit: int) -> str:
+    text = " ".join(blocks_check._mask(str(value or "")).split())  # 管家写的话：先打码（复查第 3 条）
+    return text if len(text) <= limit else text[:limit - 1] + "…"
+
+
+def _need_risk(on_code_host: bool) -> str:
+    why = "网址在代码托管站上（或跳转到了那里），" if on_code_host else ""
+    return (f"没有出卡：{why}这个算非官方（别人做的），要在 risk 里写清风险（比如读浏览器登录、破解接口、可能封号、"
+            "个人维护可能停更），用户才知道自己在装什么。先跟用户说清，再带上 risk 重新出卡。")
+
+
 def propose_web_install(conv, args: dict) -> str:
-    """模型调用 propose_web_install：程序自己读页面核对命令、查安装包底细，都过了才出卡。"""
+    """模型调用 propose_web_install：程序自己读页面核对命令、查安装包底细，都过了才出卡。
+    官方不官方：管家说是、而且不在代码托管站上才算官方；非官方必须写风险（积木库管家方案第三、四节）。"""
     args = args or {}
     url = str(args.get("url") or "").strip()
     line = str(args.get("install_command") or "").strip()
     command = str(args.get("command") or "").strip() or None
+    official = args.get("official") is True and not code_hosting(url)
+    maker = _one_line(args.get("maker"), _MAKER_LIMIT)
+    risk = _one_line(args.get("risk"), _RISK_LIMIT)
+    if not official and not risk:
+        return _need_risk(args.get("official") is True)
     try:
         spec = blocks_web.verify_install(url, line, command=command, search_key=search_key() or None)
     except BlockError as exc:
         return f"没有出卡：{exc}"
     except Exception:  # noqa: BLE001 — 网站、npm 回的东西什么样都有，不能让行政这一轮断掉（复查第 8 条）
         return "没有出卡：核对时出了意外，换一页官网再试，或者请用户自己装"
+    if official and code_hosting(spec.get("source")):  # 跳转到了代码托管站：按最后到的那一页算（复查第 1 条）
+        official = False
+        if not risk:
+            return _need_risk(True)
     package = spec.get("package") or {}
     facts = []
     if spec["type"] == "npm":
@@ -373,7 +467,7 @@ def propose_web_install(conv, args: dict) -> str:
     data = {"kind": "web_install", "label": f"从网上装 {spec['command']}", "tool": spec["command"],
             "command": spec["command_text"], "source": spec["source"], "domain": spec["domain"],
             "danger": spec["danger"], "new": bool(package.get("new")), "facts": facts,
-            "found_by": spec["found_by"], "spec": spec}
+            "found_by": spec["found_by"], "spec": spec, "official": official, "maker": maker, "risk": risk}
     return _publish_block(conv, data)
 
 
@@ -399,7 +493,8 @@ def _block_result(data: dict, repeat: bool) -> dict:
         result["reply"] = f"已确认：{data.get('label') or ''}。"
     else:
         result["block"] = data.get("block")
-        result["reply"] = f"已确认接入「{data.get('name') or ''}」。"
+        # 点确认只是开始检测，不等于接好了（用户真实看到“已确认接入”下面是“模型名不对”，2026-11-10）
+        result["reply"] = f"你点了确认，开始检测「{data.get('name') or ''}」。接上了才能放进基础层，结果看上面那张卡。"
     if kind == "connect":
         result["approved"] = data.get("preview")
     return result
@@ -669,7 +764,7 @@ def event_from_proposal(data: dict) -> dict:
     elif kind in _BLOCK_KINDS:
         for key in ("install", "tool", "label", "command", "source", "needs", "minutes", "block", "name",
                     "verified", "preview", "replaces", "provider", "model", "category", "secrets", "domain",
-                    "danger", "new", "facts", "found_by", "key_account"):
+                    "danger", "new", "facts", "found_by", "key_account", "official", "maker", "risk"):
             if key in data:
                 base[key] = data[key]
     else:

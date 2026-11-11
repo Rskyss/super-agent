@@ -46,8 +46,8 @@ assert.deepStrictEqual(B.modelChoices(providers, "nobody"), []);
 
 // 5. 绑定结果用大白话说
 assert.strictEqual(B.bindResultText({ ok: true }), "绑定好了");
-var no = B.bindResultText({ ok: false, reason: "这个模型不会用工具，当不了行政", how: "换一个支持工具调用的模型" });
-assert.ok(no.indexOf("当不了行政") >= 0 && no.indexOf("换一个") >= 0);
+var no = B.bindResultText({ ok: false, reason: "这个模型不会用工具，当不了积木库管家", how: "换一个支持工具调用的模型" });
+assert.ok(no.indexOf("当不了积木库管家") >= 0 && no.indexOf("换一个") >= 0);
 assert.ok(B.bindResultText({ ok: false, reason: "", how: "" }).length > 0, "没有原因也要说点什么");
 
 // 6. 基础层列表：状态和类型

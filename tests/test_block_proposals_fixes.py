@@ -38,7 +38,7 @@ class RulesTest(unittest.TestCase):
     def test_installed_normal_words_unchanged(self):
         v = self.view({"kind": "install", "done": True, "error": "", "tail": [],
                        "result": {"ok": True, "reason": "codex 装好了", "how": ""}})
-        self.assertEqual(v["text"], "codex 装好了。跟行政说一声，它会接着帮你接进基础层")
+        self.assertEqual(v["text"], "codex 装好了。跟管家说一声，它会接着帮你接进基础层")
 
     def test_fail_without_reason_no_leading_mark(self):
         v = self.view({"kind": "check", "done": True, "error": "", "result": {"ok": False, "reason": "", "how": "检查密钥"}})
