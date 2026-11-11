@@ -608,6 +608,7 @@ if (typeof document !== "undefined") (function () {
   }
 
   function openDetail(id, keepResult) {
+    window.AbilitiesPage && window.AbilitiesPage.close();
     if (!keepResult) {
       clearCheckState();
       currentDetail = null;  // 新详情回来前不留上一块的内容，免得点到上一块的按钮
@@ -691,6 +692,7 @@ if (typeof document !== "undefined") (function () {
   }
 
   function openBrokenDetail(id, problem) {
+    window.AbilitiesPage && window.AbilitiesPage.close();
     clearCheckState();
     $("detailResult").textContent = "";
     $("detailResult").className = "detail-result";
@@ -708,16 +710,25 @@ if (typeof document !== "undefined") (function () {
 
   $("detailBack").addEventListener("click", backToChat);
 
-  function backToChat() {
+  function closeBlockStage() {
     clearCheckState();
     activeBlock = null;
     currentDetail = null;
     drawBlocks({ blocks: scanBlocks, broken: scanBroken });
     $("blockDetail").hidden = true;
-    $("chatFrame").hidden = false;
     $("detailKey").value = "";
     $("detailResult").textContent = "";
     $("detailResult").className = "detail-result";
+  }
+
+  window.BlocksStage = {
+    closeBlock: closeBlockStage,
+  };
+
+  function backToChat() {
+    window.AbilitiesPage && window.AbilitiesPage.close();
+    closeBlockStage();
+    $("chatFrame").hidden = false;
   }
 
   $("detailCheck").addEventListener("click", function () {

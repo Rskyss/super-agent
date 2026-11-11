@@ -53,7 +53,8 @@ from collab.scope import read_allowed  # noqa: E402
 from collab.state import Card, InvalidTransition  # noqa: E402
 from collab.workspace import has_blanks, profile_path, render_board  # noqa: E402
 from desktop.chat import ChatHub  # noqa: E402
-from collab import blocks, blocks_check, blocks_env, blocks_install
+from collab import abilities, abilities_run, blocks, blocks_check, blocks_env, blocks_install
+from collab.abilities import AbilityError
 from collab.blocks import BlockError
 from desktop.clerk import blocks_tools, tasks as clerk_tasks
 from desktop.clerk.client import DEFAULT_BASE_URL, DEFAULT_MODEL, ModelClient, ModelError  # noqa: E402
@@ -756,6 +757,331 @@ class Handler(BaseHTTPRequestHandler):
                     pass
         self._json({"ok": True, "id": job.get("saved_id") or card["id"], "key_account": card.get("key_account", "")})
 
+    def _ability_status(self, card: dict, home: str) -> tuple[str, str]:
+        block_id = card.get("block", "")
+        try:
+            bcard = blocks.load_card(block_id, home)
+        except BlockError:
+            return "unusable", f"用的积木块「{block_id}」已经移出基础层"
+
+        last = blocks.last_record(block_id, home, type="check")
+        if last is not None and not last.get("ok") and last.get("status") not in ("quota", "listed"):
+            bname = bcard.get("name", block_id)
+            return "unusable", f"积木块「{bname}」上次检测没通过"
+
+        try:
+            abilities.fits_block(card, bcard)
+        except AbilityError as exc:
+            return "unusable", str(exc)
+
+        recent = abilities.runs(card["id"], home, limit=1)
+        if recent and not recent[-1].get("ok"):
+            return "failed", recent[-1].get("reason", "")
+
+        return "ok", ""
+
+    def _abilities_get(self, path: str, query: dict) -> None:
+        try:
+            self._abilities_get_inner(path, query)
+        except (AbilityError, BlockError) as exc:
+            self._json({"error": str(exc)}, 409)
+        except OSError:
+            self._json({"error": "积木库资料夹读写出错，请检查磁盘和权限"}, 500)
+
+    def _abilities_get_inner(self, path: str, query: dict) -> None:
+        home = self._blocks_home()
+        abilities.ensure_builtin(home)
+        if path == "/api/abilities/list":
+            raw_list = abilities.list_abilities(home)
+            items, broken = [], []
+            for item in raw_list:
+                if "problem" in item:
+                    broken.append({"id": item["id"], "problem": item["problem"]})
+                    continue
+                block_id = item.get("block", "")
+                try:
+                    bcard = blocks.load_card(block_id, home)
+                    bname = bcard.get("name", block_id)
+                except BlockError:
+                    bcard = None
+                    bname = block_id
+
+                kind = item.get("how", {}).get("kind", "")
+                if kind == "search":
+                    model = None
+                elif kind == "cli":
+                    model = item.get("model") or (bcard.get("model") if bcard else None) or (blocks.BUILTIN.get(block_id, {}).get("model"))
+                else:
+                    model = item.get("model")
+
+                status, status_reason = self._ability_status(item, home)
+                recent = abilities.runs(item["id"], home, limit=1)
+                last_time = recent[-1].get("time", "") if recent else ""
+
+                items.append({
+                    "id": item["id"],
+                    "title": item.get("title", ""),
+                    "description": item.get("description", ""),
+                    "block": block_id,
+                    "block_name": bname,
+                    "model": model,
+                    "kind": kind,
+                    "output_type": item.get("output", {}).get("type", ""),
+                    "status": status,
+                    "status_reason": status_reason,
+                    "last_time": last_time,
+                })
+            self._json({"abilities": items, "broken": broken})
+        elif path == "/api/abilities/detail":
+            ability_id = query.get("id", "")
+            if not blocks._ID.fullmatch(ability_id):
+                self._json({"error": "编号不对"}, 400)
+                return
+            try:
+                card = abilities.load_ability(ability_id, home)
+            except AbilityError:
+                self._json({"error": "能力层里没有这张能力卡片"}, 404)
+                return
+            block_id = card.get("block", "")
+            try:
+                bcard = blocks.load_card(block_id, home)
+                binfo = {"id": block_id, "name": bcard.get("name", block_id), "exists": True, "kind": bcard.get("kind", "")}
+            except BlockError:
+                bcard = None
+                binfo = {"id": block_id, "name": block_id, "exists": False, "kind": ""}
+
+            status, status_reason = self._ability_status(card, home)
+            models = []
+            if binfo["kind"] == "llm_api":
+                last_check = blocks.last_record(block_id, home, type="check") or {}
+                models = list(last_check.get("models") or [])
+
+            all_runs = abilities.runs(ability_id, home)
+            example = None
+            if card.get("example_run"):
+                for r in all_runs:
+                    if r.get("run_id") == card.get("example_run"):
+                        example = r
+                        break
+
+            recent_10 = list(reversed(all_runs))[:10]
+            running = abilities_run.is_running(ability_id)
+            job_id = self.server.abilities_jobs.get(ability_id, "")
+            if job_id:
+                job = self.server.blocks_jobs.get(job_id)
+                if not job or job.get("done"):
+                    job_id = ""
+
+            self._json({
+                "ability": card,
+                "block": binfo,
+                "status": status,
+                "status_reason": status_reason,
+                "models": models,
+                "example": example,
+                "runs": recent_10,
+                "running": running,
+                "job": job_id,
+            })
+        elif path == "/api/abilities/file":
+            ability_id = query.get("id", "")
+            run = query.get("run", "")
+            name = query.get("name", "")
+            if not blocks._ID.fullmatch(ability_id):
+                self._json({"error": "编号不对"}, 400)
+                return
+            if not name or "/" in name or "\\" in name or name.startswith(".") or len(name) > 100:
+                self._json({"error": "文件名不对"}, 400)
+                return
+            try:
+                folder = abilities.result_folder(ability_id, run, home)
+            except AbilityError:
+                self._json({"error": "运行编号不对"}, 400)
+                return
+            if not folder.is_dir():
+                self._json({"error": "没有这个成果文件"}, 404)
+                return
+            target = folder / name
+            if target.is_symlink() or not target.is_file():
+                self._json({"error": "没有这个成果文件"}, 404)
+                return
+            try:
+                if target.resolve().parent != folder.resolve():
+                    self._json({"error": "没有这个成果文件"}, 404)
+                    return
+            except Exception:
+                self._json({"error": "没有这个成果文件"}, 404)
+                return
+
+            ext = target.suffix.lower()
+            if ext == ".png":
+                ctype = "image/png"
+            elif ext in (".jpg", ".jpeg"):
+                ctype = "image/jpeg"
+            elif ext == ".txt":
+                ctype = "text/plain; charset=utf-8"
+            elif ext == ".json":
+                ctype = "application/json; charset=utf-8"
+            else:
+                ctype = "application/octet-stream"
+            try:
+                body = target.read_bytes()
+            except OSError:
+                self._json({"error": "积木库资料夹读写出错，请检查磁盘和权限"}, 500)
+                return
+            self._send(200, body, ctype)
+        else:
+            self._json({"error": "没有这个地址"}, 404)
+
+    def _abilities_post(self, path: str, body: dict) -> None:
+        try:
+            self._abilities_post_inner(path, body)
+        except (AbilityError, BlockError) as exc:
+            self._json({"error": str(exc)}, 409)
+        except OSError:
+            self._json({"error": "积木库资料夹读写出错，请检查磁盘和权限"}, 500)
+
+    def _abilities_post_inner(self, path: str, body: dict) -> None:
+        home = self._blocks_home()
+        abilities.ensure_builtin(home)
+        if path == "/api/abilities/run":
+            ability_id = body.get("id", "")
+            if not blocks._ID.fullmatch(ability_id):
+                self._json({"error": "编号不对"}, 400)
+                return
+            try:
+                card = abilities.load_ability(ability_id, home)
+            except AbilityError:
+                self._json({"error": "能力层里没有这张能力卡片"}, 404)
+                return
+
+            model = body.get("model")
+            if model is not None and model != "":
+                backup_models = card.get("backup_models") or []
+                if model not in backup_models:
+                    self._json({"error": "这个模型不是这张卡的备用模型"}, 400)
+                    return
+            else:
+                model = None
+
+            inputs = body.get("inputs")
+            if inputs is None or not isinstance(inputs, dict):
+                inputs = {}
+            try:
+                abilities.prepare(card, inputs)
+            except (AbilityError, BlockError) as exc:
+                self._json({"error": str(exc)}, 400)
+                return
+
+            if abilities_run.is_running(ability_id):
+                self._json({"error": "这张能力卡片正在用，等这次跑完"}, 409)
+                return
+
+            def work(job):
+                self._blocks_path()
+                return abilities_run.run(
+                    ability_id, inputs, home, model=model, kind="run",
+                    keys=dict(self.server.blocks_saved_keys),
+                    search_fn=self.server.abilities_search_fn,
+                    client_factory=self.server.blocks_client_factory,
+                    runner=self.server.abilities_runner,
+                    path=os.environ.get("PATH", ""),
+                    codex_images=self.server.abilities_codex_images,
+                )
+
+            job_id = self._blocks_job("ability", work)
+            with self.server.blocks_lock:
+                self.server.abilities_jobs[ability_id] = job_id
+            self._json({"job": job_id})
+        elif path == "/api/abilities/model":
+            ability_id = body.get("id", "")
+            if not blocks._ID.fullmatch(ability_id):
+                self._json({"error": "编号不对"}, 400)
+                return
+            try:
+                card = abilities.load_ability(ability_id, home)
+            except AbilityError:
+                self._json({"error": "能力层里没有这张能力卡片"}, 404)
+                return
+            if card.get("how", {}).get("kind") != "llm_api":
+                self._json({"error": "这张卡这一版不能换模型"}, 400)
+                return
+            block_id = card.get("block", "")
+            try:
+                bcard = blocks.load_card(block_id, home)
+                bname = bcard.get("name", block_id)
+            except BlockError:
+                bname = block_id
+            last_rec = blocks.last_record(block_id, home, type="check") or {}
+            models = last_rec.get("models") or []
+            if not models:
+                self._json({"error": f"还没有模型名单：先去基础层检测「{bname}」"}, 409)
+                return
+
+            model = body.get("model")
+            backup_models = body.get("backup_models")
+            if not model or model not in models:
+                self._json({"error": f"主模型「{model}」不在可用模型名单里"}, 400)
+                return
+            if not isinstance(backup_models, list):
+                self._json({"error": "备用模型必须是列表"}, 400)
+                return
+            if len(backup_models) > 2:
+                self._json({"error": "备用模型最多设置 2 个"}, 400)
+                return
+            if len(set(backup_models)) != len(backup_models):
+                self._json({"error": "备用模型不能重复"}, 400)
+                return
+            if model in backup_models:
+                self._json({"error": "备用模型不能包含主模型"}, 400)
+                return
+            for m in backup_models:
+                if m not in models:
+                    self._json({"error": f"备用模型「{m}」不在可用模型名单里"}, 400)
+                    return
+
+            card["model"] = model
+            card["backup_models"] = list(backup_models)
+            abilities.save_ability(card, home)
+            self._json({"ok": True, "ability": card})
+        elif path == "/api/abilities/remove":
+            ability_id = body.get("id", "")
+            if not blocks._ID.fullmatch(ability_id):
+                self._json({"error": "编号不对"}, 400)
+                return
+            try:
+                card = abilities.load_ability(ability_id, home)
+            except AbilityError:
+                self._json({"error": "能力层里没有这张能力卡片"}, 404)
+                return
+            if abilities_run.is_running(ability_id):
+                self._json({"error": "这张能力卡片正在用，等这次跑完再移出"}, 409)
+                return
+            abilities.remove_ability(ability_id, home)
+            self._json({"ok": True})
+        elif path == "/api/abilities/reveal":
+            ability_id = body.get("id", "")
+            run = body.get("run", "")
+            if not blocks._ID.fullmatch(ability_id):
+                self._json({"error": "编号不对"}, 400)
+                return
+            try:
+                folder = abilities.result_folder(ability_id, run, home)
+            except AbilityError:
+                self._json({"error": "运行编号不对"}, 400)
+                return
+            if not folder.is_dir():
+                self._json({"error": "这次没有成果文件夹"}, 404)
+                return
+            opener = self.server.blocks_open
+            if opener is not None:
+                opener(str(folder))
+            else:
+                subprocess.run(["/usr/bin/open", str(folder)], check=False, timeout=10)
+            self._json({"ok": True})
+        else:
+            self._json({"error": "没有这个地址"}, 404)
+
     def _blocks_proposal(self, project: str, conversation: str, body: dict) -> None:
         """积木库的提议卡：确认后真的去安装或检测。整段排队做，两次确认同时到也不会乱。"""
         server, desk = self.server, self.server.desk
@@ -829,6 +1155,9 @@ class Handler(BaseHTTPRequestHandler):
             elif url.path.startswith("/api/blocks/"):
                 if self._block_allowed(query):
                     self._blocks_get(url.path, query)
+            elif url.path.startswith("/api/abilities/"):
+                if self._block_allowed(query):
+                    self._abilities_get(url.path, query)
             elif url.path == "/api/view":
                 if not project or not Path(project).is_dir():
                     self._json({"error": "项目文件夹不存在"}, 400)
@@ -1197,7 +1526,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):  # noqa: N802
         url = urlparse(self.path)
-        if not url.path.startswith(("/api/chat/", "/api/team/", "/api/clerk/", "/api/blocks/")):
+        if not url.path.startswith(("/api/chat/", "/api/team/", "/api/clerk/", "/api/blocks/", "/api/abilities/")):
             self._json({"error": "没有这个地址"}, 404)
             return
         if not self._chat_allowed():  # 没口令：已经回了 403
@@ -1217,6 +1546,10 @@ class Handler(BaseHTTPRequestHandler):
         if url.path.startswith("/api/blocks/"):
             if self._block_allowed():
                 self._blocks_post(url.path, body)
+            return
+        if url.path.startswith("/api/abilities/"):
+            if self._block_allowed():
+                self._abilities_post(url.path, body)
             return
         if url.path.startswith("/api/clerk/"):
             self._clerk_post(url.path, body)
@@ -1306,6 +1639,11 @@ def make_server(port: int = 0, token=None, hub=None) -> ThreadingHTTPServer:
     server.watcher = TaskWatcher(server.desk)
     server.preview = PreviewHub()
     server.checks = {}            # (项目, 第几次检测) -> 这次检测连通的进度
+    server.abilities_search_fn = None
+    server.abilities_runner = None
+    server.abilities_codex_images = None
+    server.abilities_jobs = {}
+    server.blocks_open = None
     return server
 
 

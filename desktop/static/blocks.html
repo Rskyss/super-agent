@@ -77,6 +77,12 @@
       </div>
       <div class="blocks-list" id="blocksList"></div>
     </div>
+    <div class="side-section side-abilities">
+      <div class="sec-head">
+        <span>能力层</span>
+      </div>
+      <div class="blocks-list" id="abilitiesList"></div>
+    </div>
   </aside>
 
   <main class="stage">
@@ -111,9 +117,83 @@
         </details>
       </div>
     </section>
+    <section class="block-detail ability-detail" id="abilityDetail" hidden>
+      <div class="detail-inner">
+        <div class="detail-top">
+          <button class="btn ghost small" id="abilityBack" type="button">← 返回聊天</button>
+        </div>
+        <h2 id="abilityTitle"></h2>
+        <div class="detail-status" id="abilityStatus"></div>
+        <p class="detail-desc" id="abilityDesc"></p>
+        <div class="detail-rows" id="abilityRows">
+          <div class="detail-row" id="abilityBlockRow">
+            <span class="detail-label">用哪个积木块</span>
+            <span class="detail-value" id="abilityBlockVal"></span>
+          </div>
+          <div class="detail-row" id="abilityModelRow">
+            <span class="detail-label">用哪个模型</span>
+            <div class="detail-value" id="abilityModelVal">
+              <div class="model-select-group" id="abilityModelGroup">
+                <select id="abilityModel"></select>
+                <span class="detail-tip" id="abilityModelTip" hidden></span>
+                <div class="backup-models" id="abilityBackupGroup">
+                  <span class="backup-label">备用模型</span>
+                  <select id="abilityBackup1"></select>
+                  <select id="abilityBackup2"></select>
+                </div>
+                <div class="model-save-actions">
+                  <button type="button" class="btn small" id="abilitySaveModel">保存模型</button>
+                  <span class="model-save-tip" id="abilitySaveModelTip"></span>
+                </div>
+              </div>
+              <span id="abilityCliModelVal" hidden></span>
+            </div>
+          </div>
+          <div class="detail-row" id="abilityOutputRow">
+            <span class="detail-label">交回什么</span>
+            <span class="detail-value" id="abilityOutputVal"></span>
+          </div>
+          <div class="detail-row" id="abilityCheckRow">
+            <span class="detail-label">怎么算干成了</span>
+            <span class="detail-value" id="abilityCheckVal"></span>
+          </div>
+        </div>
+
+        <div class="detail-section" id="abilityExampleSection">
+          <h3 class="detail-sec-title">试做示例</h3>
+          <div class="detail-example-box" id="abilityExampleBox">还没有试做示例</div>
+        </div>
+
+        <div class="detail-section" id="abilityRunSection">
+          <h3 class="detail-sec-title">用一次</h3>
+          <div class="ability-form" id="abilityForm"></div>
+          <div class="ability-form-actions">
+            <button class="btn primary" id="abilityRun" type="button">开始</button>
+            <span class="ability-form-error" id="abilityFormError"></span>
+          </div>
+        </div>
+
+        <div class="ability-result" id="abilityResult" hidden></div>
+
+        <div class="detail-section" id="abilityRunsSection">
+          <h3 class="detail-sec-title">最近几次</h3>
+          <div class="ability-runs-list" id="abilityRuns">还没用过</div>
+        </div>
+
+        <details class="detail-card ability-prompt-details" id="abilityPrompt" hidden>
+          <summary>交代原文</summary>
+          <pre id="abilityPromptPre"></pre>
+        </details>
+
+        <div class="detail-actions">
+          <button class="btn" id="abilityRemove" type="button">移出能力层</button>
+        </div>
+      </div>
+    </section>
   </main>
 </div>
 
+<script src="/static/abilities.js"></script>
 <script src="/static/blocks.js"></script>
 </body>
 </html>

@@ -42,6 +42,12 @@ class _OneAtATime:
             _running.discard(self.ability_id)
 
 
+def is_running(ability_id: str) -> bool:
+    """这张卡是不是正在跑。"""
+    with _lock:
+        return ability_id in _running
+
+
 def _calc_next_model(card: dict, current_model: str | None, status: str) -> str | None:
     if status != "model":
         return None
