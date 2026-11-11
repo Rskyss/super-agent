@@ -908,64 +908,81 @@ def prepare(card: dict, inputs: dict) -> dict:
     return result
 
 
-def image_size(path: Path | str) -> tuple[int, int] | None:
-    """只读文件头获取 PNG 或 JPEG 图片的宽高 (宽, 高)。PNG 必须有完整 IHDR（至少 33 字节）；JPEG 前 64KB 扫描。读不全、读不出返回 None。"""
+def _inspect_image(path: Path | str) -> tuple[tuple[int, int] | None, str]:
+    """单次读取文件头检查图片格式及尺寸。返回 ((宽, 高), "") 或 (None, "失败原因")。"""
     path = Path(path)
     if not path.is_file():
-        return None
+        return None, f"没有找到 {path.name}"
+
     try:
         with open(path, "rb") as f:
             header = f.read(33)
-            # PNG 检查: 必须有完整 IHDR 前 33 字节
+            if not header:
+                return None, f"{path.name} 不是 PNG 或 JPG 图片"
+
+            # 1. PNG 检查: 必须以 \x89PNG\r\n\x1a\n 开头且有完整 IHDR
             if header.startswith(b"\x89PNG\r\n\x1a\n"):
                 if len(header) >= 33 and header[12:16] == b"IHDR":
                     w, h = struct.unpack(">II", header[16:24])
-                    return (w, h)
-                return None
-            # JPEG 检查: \xff\xd8 开头，扫描最多前 64KB
+                    return (w, h), ""
+                return None, f"打不开 {path.name}"
+
+            # 2. JPEG 检查: 必须以 \xff\xd8 开头，扫描上限为文件前 65536 字节
             if header.startswith(b"\xff\xd8"):
                 f.seek(2)
-                scanned = 2
-                while scanned < 65536:
+                while f.tell() < 65536:
                     b = f.read(1)
-                    scanned += 1
                     if not b:
-                        return None
+                        return None, f"打不开 {path.name}"
                     if b != b"\xff":
                         continue
                     while b == b"\xff":
+                        if f.tell() >= 65536:
+                            return None, f"打不开 {path.name}"
                         b = f.read(1)
-                        scanned += 1
                         if not b:
-                            return None
+                            return None, f"打不开 {path.name}"
                     marker = b[0]
                     # SOF markers: 0xC0 .. 0xCF, 除了 0xC4, 0xC8, 0xCC
                     if (0xc0 <= marker <= 0xcf) and marker not in (0xc4, 0xc8, 0xcc):
+                        if f.tell() + 7 > 65536:
+                            return None, f"打不开 {path.name}"
                         length_bytes = f.read(2)
-                        scanned += 2
                         if len(length_bytes) < 2:
-                            return None
+                            return None, f"打不开 {path.name}"
                         data = f.read(5)
-                        scanned += 5
                         if len(data) < 5:
-                            return None
+                            return None, f"打不开 {path.name}"
                         _, h, w = struct.unpack(">BHH", data)
-                        return (w, h)
+                        return (w, h), ""
                     elif marker in (0xd8, 0xd9, 0xda):
-                        return None
+                        return None, f"打不开 {path.name}"
                     else:
+                        if f.tell() + 2 > 65536:
+                            return None, f"打不开 {path.name}"
                         length_bytes = f.read(2)
-                        scanned += 2
                         if len(length_bytes) < 2:
-                            return None
+                            return None, f"打不开 {path.name}"
                         length = struct.unpack(">H", length_bytes)[0]
                         if length < 2:
-                            return None
+                            return None, f"打不开 {path.name}"
+                        target = f.tell() + length - 2
+                        if target > 65536:
+                            return None, f"打不开 {path.name}"
                         f.seek(length - 2, os.SEEK_CUR)
-                        scanned += (length - 2)
+
+                return None, f"打不开 {path.name}"
+
+            # 3. 既不是 PNG 签名也不是 JPEG 签名
+            return None, f"{path.name} 不是 PNG 或 JPG 图片"
     except Exception:
-        return None
-    return None
+        return None, f"打不开 {path.name}"
+
+
+def image_size(path: Path | str) -> tuple[int, int] | None:
+    """只读文件头获取 PNG 或 JPEG 图片的宽高 (宽, 高)。PNG 必须有完整 IHDR（至少 33 字节）；JPEG 前 64KB 扫描。读不全、读不出返回 None。"""
+    size, _ = _inspect_image(path)
+    return size
 
 
 def check_output(card: dict, result, values: dict) -> tuple[bool, str]:
@@ -1030,18 +1047,9 @@ def check_output(card: dict, result, values: dict) -> tuple[bool, str]:
         if not path.is_file():
             return False, f"没有找到 {path.name}"
 
-        try:
-            with open(path, "rb") as f:
-                head = f.read(16)
-        except Exception:
-            return False, f"无法读取 {path.name}"
-
-        if not head.startswith(b"\x89PNG\r\n\x1a\n") and not head.startswith(b"\xff\xd8"):
-            return False, f"{path.name} 不是 PNG 或 JPG 图片"
-
-        size = image_size(path)
+        size, reason = _inspect_image(path)
         if size is None:
-            return False, f"打不开 {path.name}"
+            return False, reason
 
         w, h = size
         min_side = check.get("min_side", 256)

@@ -534,8 +534,8 @@ def _record_path(card_id, root) -> Path:
 
 def append_jsonl(path, record) -> dict:
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
     line = json.dumps(record, ensure_ascii=False) + "\n"
+    path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a", encoding="utf-8") as fh:
         fh.write(line)
     return record
