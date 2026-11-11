@@ -174,6 +174,8 @@ select:disabled, input:disabled {
   height: 100%;
   display: grid;
   grid-template-columns: 240px minmax(0, 1fr);
+  /* 锁在窗口高度里，详情再长也只在自己里面滑，不把整页撑出去 */
+  grid-template-rows: minmax(0, 1fr);
 }
 
 .side {
@@ -194,11 +196,12 @@ select:disabled, input:disabled {
 }
 
 .side-chat {
-  flex: 1 1 50%;
+  flex: 1 1 0;
 }
 
+/* 左栏三段（聊天、基础层、能力层）平分高度，哪段内容多就在哪段里滑 */
 .side-blocks {
-  flex: 1 1 50%;
+  flex: 1 1 0;
   border-top: 1px solid var(--line);
   padding-top: 12px;
 }
@@ -544,7 +547,9 @@ code.detail-value { font-family: var(--font-mono); color: var(--text); }
 
 /* 能力层样式 */
 .side-abilities {
-  margin-top: 16px;
+  flex: 1 1 0;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
 }
 
 /* 左栏能力卡片的小字，和基础层的状态字一样大小和颜色 */

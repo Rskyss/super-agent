@@ -489,6 +489,16 @@ class PageTest(unittest.TestCase):
         self.assertIn("window.BlocksStage", blocks_js)
         self.assertGreaterEqual(blocks_js.count("AbilitiesPage"), 3, "打开基础层详情、坏卡详情、回到聊天时都关能力卡片详情")
 
+    def test_panes_scroll_inside_window(self):
+        """用户实测：详情一长，左栏和右边都被撑出窗口、整页被切掉、哪里都滑不动。
+        整页只有一行，这一行要锁在窗口高度里；左栏三段都要分到高度，各自滑。"""
+        css = read("blocks.css")
+        layout = re.search(r"\.main-layout\s*\{([^}]*)\}", css).group(1)
+        self.assertRegex(layout, r"grid-template-rows:\s*minmax\(0,\s*1fr\)", "整页那一行不能被内容撑高")
+        for name in ("side-chat", "side-blocks", "side-abilities"):
+            rule = re.search(r"\.%s\s*\{([^}]*)\}" % name, css).group(1)
+            self.assertRegex(rule, r"flex:\s*1 1 0", name + " 要分到高度，内容多了在里面滑")
+
     def test_page_rules(self):
         script = read("abilities.js")
         self.assertNotRegex(script, r"localStorage|sessionStorage|indexedDB|document\.cookie")
