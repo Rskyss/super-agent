@@ -138,7 +138,7 @@ class ClaimWords(unittest.TestCase):
             self.assertTrue(self.claims(text), text)
 
     def test_new_words_point(self):
-        for text in ("提议就在上面", "把密钥填进提议里", "提议在你屏幕上"):
+        for text in ("提议就在上面", "把密钥填进提议里", "提议在你屏幕上", "提议给你：平台选腾讯云", "提议给你了，点确认就行"):
             self.assertTrue(self.points(text), text)
 
     def test_old_words_still_claimed(self):
@@ -147,7 +147,10 @@ class ClaimWords(unittest.TestCase):
         self.assertTrue(self.points("接法卡给你：平台选腾讯云"))
 
     def test_not_claims(self):
-        for text in ("我提议你先装 Node。", "我提议先查一下电脑。", "我提议给你换个模型。", "我只是提议给你换个模型。", "其实我是提议给你换个模型。", "要我出一个提议吗？",
+        for text in ("我提议你先装 Node。", "我提议先查一下电脑。", "我提议给你换个模型。", "我只是提议给你换个模型。", "其实我是提议给你换个模型。",
+                     # 复查第 2 轮：前面换个词就又误认了，要按“提议后面跟着要做的事”来认动词，不是一个个排除前面的词
+                     "我想提议给你换个模型。", "我刚才提议给你换个模型。", "我也提议给你换个模型。", "我个人提议给你换一个模型。",
+                     "我倒是提议你先装 Node。", "要我出一个提议吗？",
                      "等提议出来了再填密钥", "提议里的命令已经出错了", "如果提议出来了，点确认就行"):
             self.assertFalse(self.claims(text), text)
             self.assertFalse(self.points(text), text)
