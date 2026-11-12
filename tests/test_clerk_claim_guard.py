@@ -160,16 +160,18 @@ class ClaimGuard(BlocksCase):
         self.assertTrue([e for e in events if e.get("type") == "proposal"])
 
 
-class ProjectWindowUntouched(ProjectCase):
-    """项目窗口的行政不做这个提醒（卡片对话里的修改会被记两遍；那边没走查过）"""
+class ProjectWindowMainChat(ProjectCase):
+    """流程修理 ⑥（2026-11-12）：项目窗口主对话里行政说“点确认就建成任务”却没出确认框，也提醒一次。
+    卡片对话照旧不提醒（那里的修改提议一轮结束才出框，提醒会把同一条修改记两遍），见 test_flowfix_13。"""
 
-    def test_no_reminder_in_project_window(self):
+    def test_reminder_in_project_main_chat(self):
         from desktop.clerk.desk import ClerkDesk
-        client = ScriptedClient([{"text": "确认框已经出好了，你看一下"}, {"text": "多余的一次"}])
+        client = ScriptedClient([{"text": "确认框已经出好了，你看一下"}, {"text": "刚才其实没出，我现在出。"}])
         desk = ClerkDesk(lambda: client)
         cid = desk.send(self.project, "", "我的修改呢")
         wait_idle(desk, self.project, cid)
-        self.assertEqual(len(client.calls), 1)
+        self.assertEqual(len(client.calls), 2)
+        self.assertIn("这是系统提示", client.calls[1][0][-1]["content"])
 
 
 class WordingFixes(unittest.TestCase):

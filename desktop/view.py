@@ -144,6 +144,26 @@ def _last_line(path: Path) -> str:
     return lines[-1] if lines else ""
 
 
+def live_hint(path: Path, limit: int = 60) -> str:
+    """实时输出里干活的人最近说的一句话（Codex 每段话前面单独一行 codex）。没有就空。"""
+    try:
+        with Path(path).open("rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            size = fh.tell()
+            fh.seek(max(0, size - 16384))
+            tail = fh.read().decode("utf-8", errors="replace")
+    except OSError:
+        return ""
+    lines = [_ANSI.sub("", ln).strip() for ln in tail.splitlines()]
+    for i in range(len(lines) - 1, -1, -1):
+        if lines[i] == "codex":
+            for ln in lines[i + 1:]:
+                if ln:
+                    return ln if len(ln) <= limit else ln[:limit - 1] + "…"
+            return ""
+    return ""
+
+
 def _newest_in(worktree: Path):
     hit = _activity_cache.get(str(worktree))
     if hit and time.time() - hit[0] < 10:
@@ -504,7 +524,12 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
             and not chat_live and not open_ev and not testing):
         now_text = phase.get("label") or now_text
         tone = tone_map.get(phase.get("tone"), tone)
-    view["now"] = {"text": now_text, "tone": tone}
+    working = bool(open_ev) and not interrupted_run and state not in TERMINAL_STATES
+    detail = live_hint(cdir / open_ev["live"]) if working and open_ev.get("live") else ""
+    view["now"] = {"text": now_text, "tone": tone, "detail": detail}
+    # 卡片标题下那一行“此刻在干什么”用（流程修理 ⑪）
+    view["live"] = working
+    view["quiet"] = int(quiet) if working and quiet is not None else None
     if code in ("review", "merge_failed"):
         start = {}
         start_path = cdir / "开工.json"

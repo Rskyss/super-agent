@@ -100,6 +100,20 @@ def points_at_card(text: str) -> bool:
     return False
 
 
+# 项目窗口的行政说“你点确认我就建成任务”却没出确认框（试跑记录 ⑥，2026-11-11 用户截图）
+_TASK_CLAIM = re.compile(r"点(?:一下|个)?[“\"「]?确认[”\"」]?(?:按钮)?[^。！？\n]{0,12}?(?:建|生成|变成|开成|做成)[^。！？\n]{0,6}?(?:任务|卡片|卡)")
+
+
+def claims_task_box(text: str) -> bool:
+    """回话里像是确认框已经在屏幕上了（“点确认就建成任务卡片”）；在问、在说以后的事不算。"""
+    for sentence in re.findall(r"[^。！？!?\n]+[。！？!?]?", _PAREN.sub("", text or "")):
+        if _ASKING.search(sentence) or _WAIT_THEN.search(sentence) or re.search(r"如果|要是|一旦|等到|的话|之后|以后", sentence):
+            continue
+        if _TASK_CLAIM.search(sentence):
+            return True
+    return False
+
+
 def _claim_reminder(open_cards: list) -> str:
     """上面还有没处理的提议时，点名那个：说的是它就照实说在上面，说的是新提议就现在出"""
     if not open_cards:
@@ -631,8 +645,9 @@ class ClerkDesk:
         names = {tool.get("function", {}).get("name") for tool in allowed}
         parts = []
         proposed = reminded = False  # 这一轮出过提议没有；“说出了提议却没出”提醒过没有（只提醒一次）
-        # 只在积木库里提醒：项目窗口卡片对话里的修改提议是一轮结束才出框，提醒会让同一条修改记两遍（复查发现）
-        can_propose = blocks_tools.is_blocks_home(conv.project) and any(
+        # 积木库和项目窗口主对话都提醒；卡片对话不提醒：那里的修改提议是一轮结束才出框，提醒会让同一条修改记两遍（复查发现）
+        in_blocks = blocks_tools.is_blocks_home(conv.project)
+        can_propose = (in_blocks or not self._card_of(conv)) and any(
             str(n or "").startswith("propose_") for n in names)
         limit = BLOCKS_TOOL_ROUNDS if blocks_tools.is_blocks_home(conv.project) else MAX_TOOL_ROUNDS
         for round_no in range(limit + 1):
@@ -658,9 +673,9 @@ class ClerkDesk:
             calls = answer.get("tool_calls") or []
             if (use_tools and not calls and can_propose and not proposed and not reminded
                     and round_no < limit - 1
-                    and (claims_card(reply) or points_at_card(reply))):
+                    and (claims_card(reply) or points_at_card(reply) or (not in_blocks and claims_task_box(reply)))):
                 open_now = clerk_tasks.open_proposals(conv.project, conv.id)  # 只读一次（复查）
-                if claims_card(reply) or not open_now:
+                if claims_card(reply) or claims_task_box(reply) or not open_now:
                     reminded = True  # 说出了提议、这一轮却没出：提醒它一次，真出提议或如实说没出；上面有没处理的提议就点名
                     messages.append({"role": "assistant", "content": reply})
                     messages.append({"role": "user", "content": _claim_reminder(open_now)})

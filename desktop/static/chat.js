@@ -214,6 +214,17 @@ var ChatCore = (function () {
   // 点左栏一段对话时要不要去连：换了对话，或这段上次没连上
   function needsOpen(id, current, failed) { return id !== current || !!failed; }
 
+  // 卡片标题下那一行：此刻在干什么 · 已干多久 · 多久前有动静（流程修理 ⑪）
+  function cardNowLine(v) {
+    var now = (v && v.now) || {};
+    var text = String(now.text || "");
+    if (now.detail) text += "：" + now.detail;
+    if (!v || !v.live) return text;
+    var min = Math.floor((v.elapsed || 0) / 60);
+    text += " · 已干 " + (min < 1 ? "不到 1 分钟" : min + " 分钟");
+    if (v.quiet != null) text += " · " + (v.quiet < 60 ? "刚刚有动静" : Math.floor(v.quiet / 60) + " 分钟前有动静");
+    return text;
+  }
   function cardInfoRows(info) {
     var rows = [];
     if (!info) return rows;
@@ -350,7 +361,7 @@ var ChatCore = (function () {
     return { state: "ok", text: (job.saved ? "检测通过 · " + res.seconds + " 秒 · 已放进基础层" : "检测通过 · " + res.seconds + " 秒"), lines: [], canSave: !job.saved };
   }
 
-  return { esc: esc, md: md, Model: Model, actsSummary: actsSummary, actLine: actLine, usageText: usageText, modelFrom: modelFrom, needsOpen: needsOpen, cardInfoRows: cardInfoRows, afterThreadDeleted: afterThreadDeleted, isBlockKind: isBlockKind, keyProblem: keyProblem, blockCard: blockCard, blockDoneTitle: blockDoneTitle, jobView: jobView };
+  return { esc: esc, md: md, Model: Model, actsSummary: actsSummary, actLine: actLine, usageText: usageText, modelFrom: modelFrom, needsOpen: needsOpen, cardInfoRows: cardInfoRows, cardNowLine: cardNowLine, afterThreadDeleted: afterThreadDeleted, isBlockKind: isBlockKind, keyProblem: keyProblem, blockCard: blockCard, blockDoneTitle: blockDoneTitle, jobView: jobView };
 })();
 
 if (typeof module !== "undefined") module.exports = ChatCore;
@@ -1060,6 +1071,8 @@ if (typeof document !== "undefined") (function () {
     var box = document.getElementById("cardInfo");
     if (head) { head.hidden = true; head.textContent = ""; }
     if (box) { box.hidden = true; box.textContent = ""; }
+    var nowLine = document.getElementById("cardNow");
+    if (nowLine) { nowLine.hidden = true; nowLine.textContent = ""; }
     if (window.__cardPhaseTimer) clearInterval(window.__cardPhaseTimer);
   }
 
@@ -1098,8 +1111,27 @@ if (typeof document !== "undefined") (function () {
       }
       viewingCard = true;
       if (info.conversation) clerkOpen(info.conversation);
+      var nowLine = document.getElementById("cardNow");
+      if (!nowLine && head && head.parentNode) {
+        nowLine = document.createElement("div");
+        nowLine.id = "cardNow";
+        head.parentNode.insertBefore(nowLine, head.nextSibling);
+      }
+      function showNow() {
+        if (!nowLine || !info.id) return;
+        fetch("/api/view?project=" + encodeURIComponent(project) + "&card=" + encodeURIComponent(info.id))
+          .then(function (r) { return r.json(); }).then(function (v) {
+            if (!v || v.error || !viewingCard) return;
+            var line = ChatCore.cardNowLine(v);
+            nowLine.hidden = !line;
+            nowLine.textContent = line;
+            nowLine.className = "now-" + ((v.now && v.now.tone) || "idle");
+          }).catch(function () {});
+      }
+      showNow();
       if (window.__cardPhaseTimer) clearInterval(window.__cardPhaseTimer);
       window.__cardPhaseTimer = setInterval(function () {
+        showNow();
         if (!info.conversation) return;
         fetch("/api/cards?project=" + encodeURIComponent(project)).then(function (r) { return r.json(); }).then(function (cards) {
           if (!Array.isArray(cards) || !head) return;
