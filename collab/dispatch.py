@@ -738,7 +738,7 @@ def run_card(card: Card, collab_dir, worktree, test_command, dev_adapter, test_a
             _log_step(cdir, step_name, dev_adapter, worktree)
 
         if effective_allowed is not None:
-            changed = changed_fn(worktree)
+            changed = [p for p in changed_fn(worktree) if not is_cache(p)]  # 缓存和给工具的放行设置不算改动
             bad = out_of_scope(changed, effective_allowed)
             if bad:
                 # 越界改动由程序直接撤销（开发员在自动模式下不能执行命令，删不掉文件），不算返工

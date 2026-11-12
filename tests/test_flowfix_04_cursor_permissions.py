@@ -75,5 +75,26 @@ class OnlyForCursor(unittest.TestCase):
             self.assertTrue(seen["cursor"])
 
 
+class NotCounted(unittest.TestCase):
+    def test_scope_record_does_not_count_permission_file(self):
+        """2026-11-12 端到端试跑：“改动范围正常（3 个文件）”把 .cursor/cli.json 也算进去了"""
+        from collab.flow import read_flow
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            wt = root / "wt"
+            wt.mkdir()
+            cdir = root / ".collab" / "cards" / "CARD-001"
+            cdir.mkdir(parents=True)
+            (cdir / "需求卡.md").write_text("# 卡\n", encoding="utf-8")
+
+            def ask_fn(adapter, prompt, cwd, **kw):
+                return AgentResult(ok=True, output="", attempts=1, final="结论：通过" if "只读复查" in prompt else "好了")
+            run_card(Card("CARD-001", state="待派发"), root / ".collab", wt, CMD, "cursor", "codex", ask_fn=ask_fn,
+                     judge_fn=lambda *a, **k: Verdict(PASS, 0, "ok"), reviewer_adapter="codex", allowed=["calc.py"],
+                     changed_fn=lambda w: ["calc.py", ".cursor/cli.json"], revert_fn=lambda w, p: None)
+            scope = [e for e in read_flow(cdir) if e.get("kind") == "范围"][0]
+            self.assertIn("1 个文件", scope["summary"])
+
+
 if __name__ == "__main__":
     unittest.main()
