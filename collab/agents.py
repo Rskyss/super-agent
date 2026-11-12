@@ -35,7 +35,8 @@ def kill_current_tool_process_group() -> None:
 def cursor_command(prompt: str, model: str = DEFAULT_MODELS["cursor"]):
     """沙箱一律打开：派活时会放行本卡测试命令（流程修理 ⑯），沙箱保证它只能写施工副本和临时文件夹。
     2026-11-12 实测：开沙箱后 python3 能跑、能写副本和临时文件夹，写不到用户主目录。"""
-    return ["agent", "-p", "--trust", "--sandbox", "enabled", "--model", model, "--output-format", "json", prompt]
+    # stream-json：边干边吐一行一行的进展（标题下“此刻在干什么”能看到它在读哪个文件、跑什么命令），最后一行仍是结果
+    return ["agent", "-p", "--trust", "--sandbox", "enabled", "--model", model, "--output-format", "stream-json", prompt]
 
 
 def codex_command(prompt: str, model: str = DEFAULT_MODELS["codex"],

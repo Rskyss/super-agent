@@ -220,7 +220,8 @@ var ChatCore = (function () {
     var text = String(now.text || "");
     if (now.detail) text += "：" + now.detail;
     if (!v || !v.live) return text;
-    var min = Math.floor((v.elapsed || 0) / 60);
+    var spent = v.worker_elapsed != null ? v.worker_elapsed : (v.elapsed || 0);  // 当前这个人干了多久（复查第 1 轮）
+    var min = Math.floor(spent / 60);
     text += " · 已干" + (min < 1 ? "不到 1 分钟" : " " + min + " 分钟");
     if (v.quiet != null) text += " · " + (v.quiet < 60 ? "刚刚有动静" : Math.floor(v.quiet / 60) + " 分钟前有动静");
     return text;
@@ -1065,8 +1066,10 @@ if (typeof document !== "undefined") (function () {
       .then(function () { if (myGen === gen && !stopped) poll(myGen); });
   }
 
+  var nowCard = "", nowBusy = false;   // 卡片标题下那一行：正在看哪张卡、有没有请求还在路上
   function hideCard() {
     viewingCard = false;
+    nowCard = "";
     var head = document.getElementById("cardHead");
     var box = document.getElementById("cardInfo");
     if (head) { head.hidden = true; head.textContent = ""; }
@@ -1117,16 +1120,22 @@ if (typeof document !== "undefined") (function () {
         nowLine.id = "cardNow";
         head.parentNode.insertBefore(nowLine, head.nextSibling);
       }
+      // 切卡时先清掉上一张卡的那一行；上一次还没回来就不再发；回来的不是当前这张卡的就丢掉（复查第 1 轮）
+      nowCard = info.id || "";
+      nowBusy = false;
+      if (nowLine) { nowLine.hidden = true; nowLine.textContent = ""; }
       function showNow() {
-        if (!nowLine || !info.id) return;
-        fetch("/api/view?project=" + encodeURIComponent(project) + "&card=" + encodeURIComponent(info.id))
+        if (!nowLine || !info.id || nowBusy) return;
+        var forCard = info.id;
+        nowBusy = true;
+        fetch("/api/view?project=" + encodeURIComponent(project) + "&card=" + encodeURIComponent(forCard))
           .then(function (r) { return r.json(); }).then(function (v) {
-            if (!v || v.error || !viewingCard) return;
+            if (forCard !== nowCard || !v || v.error || !viewingCard) return;
             var line = ChatCore.cardNowLine(v);
             nowLine.hidden = !line;
             nowLine.textContent = line;
             nowLine.className = "now-" + ((v.now && v.now.tone) || "idle");
-          }).catch(function () {});
+          }).catch(function () {}).then(function () { if (forCard === nowCard) nowBusy = false; });
       }
       showNow();
       if (window.__cardPhaseTimer) clearInterval(window.__cardPhaseTimer);

@@ -144,6 +144,28 @@ def _last_line(path: Path) -> str:
     return lines[-1] if lines else ""
 
 
+def _stream_hint(ev: dict) -> str:
+    """Cursor 边干边吐的一行，翻成大白话：说的话，或正在读/改哪个文件、跑什么命令。"""
+    if not isinstance(ev, dict):
+        return ""
+    if ev.get("type") == "assistant":
+        parts = (ev.get("message") or {}).get("content") or []
+        text = "".join(c.get("text", "") for c in parts if isinstance(c, dict) and c.get("type") == "text").strip()
+        return text.splitlines()[-1].strip() if text else ""
+    if ev.get("type") == "tool_call" and ev.get("subtype") == "started":
+        call = ev.get("tool_call") or {}
+        for key, verb in (("readToolCall", "正在看"), ("editToolCall", "正在改"), ("writeToolCall", "正在写"),
+                          ("deleteToolCall", "正在删"), ("grepToolCall", "正在查找"), ("globToolCall", "正在找文件")):
+            if key in call:
+                args = (call[key] or {}).get("args") or {}
+                target = str(args.get("path") or args.get("pattern") or args.get("globPattern") or "")
+                return f"{verb} {Path(target).name or target}".strip()
+        if "shellToolCall" in call:
+            cmd = str(((call["shellToolCall"] or {}).get("args") or {}).get("command") or "").strip()
+            return f"正在跑：{cmd}" if cmd else "正在跑命令"
+    return ""
+
+
 def live_hint(path: Path, limit: int = 60) -> str:
     """实时输出里干活的人最近说的一句话（Codex 每段话前面单独一行 codex）。没有就空。"""
     try:
@@ -155,6 +177,16 @@ def live_hint(path: Path, limit: int = 60) -> str:
     except OSError:
         return ""
     lines = [_ANSI.sub("", ln).strip() for ln in tail.splitlines()]
+    for ln in reversed(lines):  # Cursor 一行一个 JSON：最近一次说的话或动作
+        if not (ln.startswith("{") and ln.endswith("}")):
+            continue
+        try:
+            ev = json.loads(ln)
+        except ValueError:
+            continue
+        said = _stream_hint(ev)
+        if said:
+            return said if len(said) <= limit else said[:limit - 1] + "…"
     for i in range(len(lines) - 1, -1, -1):
         if lines[i] == "codex":
             for ln in lines[i + 1:]:
@@ -532,6 +564,8 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
     # 卡片标题下那一行“此刻在干什么”用（流程修理 ⑪）
     view["live"] = working
     view["quiet"] = int(quiet) if working and quiet is not None else None
+    started_now = _when(open_ev) if working else None
+    view["worker_elapsed"] = int((now - started_now).total_seconds()) if started_now else None  # 当前这个人干了多久
     if code in ("review", "merge_failed"):
         start = {}
         start_path = cdir / "开工.json"

@@ -104,12 +104,18 @@ def points_at_card(text: str) -> bool:
 _TASK_CLAIM = re.compile(r"点(?:一下|个)?[“\"「]?确认[”\"」]?(?:按钮)?[^。！？\n]{0,12}?(?:建|生成|变成|开成|做成)[^。！？\n]{0,6}?(?:任务|卡片|卡)")
 
 
+_TASK_ASKING = re.compile(r"吗|？|\?|要不要|能不能")
+_TASK_NOT = re.compile(r"(?:不要|别|先别|不用|不必)[^。！？\n]{0,4}点")  # “请先不要点确认”不是说框已经在了
+
+
 def claims_task_box(text: str) -> bool:
     """回话里像是确认框已经在屏幕上了（“点确认就建成任务卡片”）；在问、在说以后的事不算。"""
     for sentence in re.findall(r"[^。！？!?\n]+[。！？!?]?", _PAREN.sub("", text or "")):
-        if _ASKING.search(sentence) or _WAIT_THEN.search(sentence) or re.search(r"如果|要是|一旦|等到|的话|之后|以后", sentence):
+        # 只排除真在问、在说以后的事；“你可以点确认”“如果没问题，点确认”照样是在催用户点一个不存在的按钮（复查第 1 轮）
+        if _TASK_ASKING.search(sentence) or _WAIT_THEN.search(sentence) or re.search(r"的话|之后|以后", sentence):
             continue
-        if _TASK_CLAIM.search(sentence):
+        found = _TASK_CLAIM.search(sentence)
+        if found and not _TASK_NOT.search(sentence[:found.start() + 1]):
             return True
     return False
 

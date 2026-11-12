@@ -13,12 +13,16 @@ from test_acceptance_22_card_chat import ChatCase
 
 class Words(unittest.TestCase):
     def test_claims(self):
-        for text in ("我整理好了，你点确认就会建成任务卡片。", "点一下“确认”，我就把它变成任务。", "你点确认按钮就生成任务卡片了。"):
+        for text in ("我整理好了，你点确认就会建成任务卡片。", "点一下“确认”，我就把它变成任务。", "你点确认按钮就生成任务卡片了。",
+                     # 复查第 1 轮：这两句也是在催用户点一个并不存在的按钮
+                     "你可以点确认，我就把它建成任务卡片。", "如果没问题，点确认就建成任务。"):
             self.assertTrue(claims_task_box(text), text)
 
     def test_not_claims(self):
         for text in ("要我把它建成任务卡片吗？", "你确认的话，我就出一个确认框。", "等你说完我再建任务卡片。",
-                     "如果没问题，点确认就建成任务。", "这个任务卡片已经做完了。"):
+                     "这个任务卡片已经做完了。",
+                     # 复查第 1 轮：否定的说法不能当成“框已经在了”
+                     "请先不要点确认生成任务卡片，我先读一下项目说明。", "先别点确认建任务，我再核对一下。"):
             self.assertFalse(claims_task_box(text), text)
 
 
