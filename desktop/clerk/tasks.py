@@ -1062,6 +1062,17 @@ def _user_stop_after_last_run(events: list) -> bool:
     return False
 
 
+ACTION_WORDS = {"resume": "接着跑", "revise": "不满意，继续改", "accept_issues": "接受剩下的问题，进入待确认",
+                "discard": "放弃这个需求", "accept": "确认没问题，放进项目", "approve": "批准并开工",
+                "replan": "重写方案", "stop": "停下"}
+
+
+def next_step_words(phase: dict) -> str:
+    """卡片右上角此刻能点的按钮，说给用户听（68b 里卡住了行政只说“需要调度员看原因”，用户不知道点什么，⑬）。"""
+    names = [f"“{ACTION_WORDS[a]}”" for a in (phase or {}).get("actions") or [] if a in ACTION_WORDS]
+    return ("下一步可以点卡片右上角的：" + "、".join(names) + "。") if names else ""
+
+
 def _report_text(code: str, title: str, phase: dict) -> str:
     reason = str(phase.get("detail") or "").strip().rstrip("。")
     if code == "plan_ready":
@@ -1081,7 +1092,7 @@ def _report_text(code: str, title: str, phase: dict) -> str:
             base += f"：{reason}"
         else:
             base += "：原因不明"
-        return base + "。"
+        return base + "。" + next_step_words(phase)
     if code == "interrupted":
         return f"「{title}」中断了，可以点卡片接着跑。"
     if code == "start_failed":
@@ -1204,6 +1215,9 @@ class TaskWatcher:
             newest = max(newest, seq)
             summary = str(ev.get("summary") or "").strip()
             if ev.get("kind") in news and summary:
+                if ev.get("kind") == "转人工":
+                    # 卡住了：顺带说清用户下一步能点什么（⑬）
+                    summary = summary.rstrip("。") + "。" + next_step_words(card_phase(project, card_id))
                 self._desk.notify(project, cid, summary)
         if newest != last:
             spare = pointer.with_suffix(".tmp")

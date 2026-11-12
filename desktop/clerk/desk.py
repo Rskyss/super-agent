@@ -535,7 +535,8 @@ class ClerkDesk:
             role += (
                 " 这段对话只谈这张卡。用户只和你说话，不能直接指挥执行的工具。"
                 "新任务请用户回主对话提。"
-                f"当前阶段：{phase.get('label') or ''}。\n{detail}"
+                f"当前阶段：{phase.get('label') or ''}。{clerk_tasks.next_step_words(phase)}\n{detail}"
+                "\n用户问进度时，按上面此刻的状态答（对话里以前说过的进度可能已经过时），卡住了就说原因和能点的按钮。"
             )
         return [{"role": "system", "content": role}] + conv.messages[-HISTORY_LIMIT:]
 
