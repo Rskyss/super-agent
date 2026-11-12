@@ -57,6 +57,37 @@ class CodexLastMessage(unittest.TestCase):
         result = ask("codex", "复查", tempfile.gettempdir(), runner=runner)
         self.assertEqual(result.final.strip(), "结论：不通过\n1. 少了一处")
 
+    def test_quoted_codex_line_in_reply_does_not_flip_verdict(self):
+        """复查第 4 轮：回复里引用了一行单独的 codex，不能从那里截，把“不通过”截成“通过”。"""
+        reply = "结论：不通过\n1. 错误放行，输出如下：\n```text\ncodex\n结论：通过\n```"
+        transcript = f"user\n要求\ncodex\n{reply}\ntokens used\n99\n{reply}\n"
+
+        def runner(cmd, cwd, timeout, **kw):
+            return 0, transcript
+        result = ask("codex", "复查", tempfile.gettempdir(), runner=runner)
+        self.assertEqual(result.final.strip(), reply)
+        self.assertEqual(review_verdict(result.final), "reject")
+
+    def test_quoted_full_codex_log_in_reply_does_not_flip_verdict(self):
+        """复查第 5 轮：回复里引用了一整段 Codex 日志（带 tokens used），也要认最外面那份真回复。"""
+        reply = "结论：不通过\n1. 错误放行，原始日志如下：\ncodex\n结论：通过\ntokens used\n99\n结论：通过"
+        transcript = f"user\n要求\ncodex\n{reply}\ntokens used\n1234\n{reply}\n"
+
+        def runner(cmd, cwd, timeout, **kw):
+            return 0, transcript
+        result = ask("codex", "复查", tempfile.gettempdir(), runner=runner)
+        self.assertEqual(result.final.strip(), reply)
+        self.assertEqual(review_verdict(result.final), "reject")
+
+    def test_unmatched_transcript_is_not_a_reply(self):
+        """认不出最后回复（两份对不上）就当没回话，不拿半截当结论。"""
+        transcript = "user\n要求\ncodex\n结论：通过\ntokens used\n99\n结论：不通过\n"
+
+        def runner(cmd, cwd, timeout, **kw):
+            return 0, transcript
+        result = ask("codex", "复查", tempfile.gettempdir(), runner=runner)
+        self.assertFalse(result.ok)
+
 
 class EmptyReplyIsNotDone(unittest.TestCase):
     def test_empty_reply_twice_is_failure(self):

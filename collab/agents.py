@@ -215,18 +215,24 @@ def subprocess_runner(cmd, cwd, timeout):
 
 
 def _codex_last(output: str) -> str:
-    """Codex 没写出最后回复文件时：只取过程里最后一个 codex 段落（到 tokens used 为止），
-    不能把前面复述要求时出现的“结论：通过”当结论（复查第 3 轮 N2）。没有段落标记（测试里的假工具）就用整段。"""
-    lines = (output or "").splitlines()
-    marks = [i for i, ln in enumerate(lines) if ln.strip() == "codex"]
-    if not marks:
+    """Codex 没写出最后回复文件时，从过程里认最后回复（复查第 3、4 轮）。
+    Codex 的过程结尾是：codex / 最后回复 / tokens used / 用量 / 最后回复再印一遍。只认两份对得上的那段，
+    回复正文里引用了单独一行 codex、“结论：通过”甚至整段 Codex 日志也不会截错（取对得上的最长那段）；对不上就当没回话（宁可算没完成，不能错放）。
+    整段既没有 codex 也没有 tokens used（测试里的假工具）就用整段。"""
+    raw = (output or "").splitlines()
+    while raw and not raw[-1].strip():
+        raw.pop()
+    lines = [ln.rstrip() for ln in raw]  # 只在比对时忽略行尾空格，取出来的照原样
+    if "codex" not in lines and "tokens used" not in lines:
         return readable(output)
-    body = []
-    for ln in lines[marks[-1] + 1:]:
-        if ln.strip() == "tokens used":
-            break
-        body.append(ln)
-    return "\n".join(body).strip()
+    for t in range(len(lines) - 1):  # 从前往后找，先对上的那段最长，就是 Codex 真正印的；回复里引用的日志只会是更短的一截
+        if lines[t] != "tokens used" or not lines[t + 1].replace(",", "").strip().isdigit():
+            continue
+        tail = lines[t + 2:]
+        start = t - len(tail)
+        if tail and start >= 1 and lines[start:t] == tail and lines[start - 1] == "codex":
+            return "\n".join(raw[t + 2:]).strip()
+    return ""
 
 
 def _read_last(path) -> str:
