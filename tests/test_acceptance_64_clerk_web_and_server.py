@@ -141,12 +141,12 @@ class WebInstall(WebCase):
     def test_command_not_on_page_no_card(self):
         text = clerk_tasks.propose_web_install(_Conv(self.home), {"url": PAGE_URL,
                                                                   "install_command": "npm install -g @demo/other"})
-        self.assertTrue(text.startswith("没有出卡"), text)
+        self.assertTrue(text.startswith("没有出提议"), text)
 
     def test_private_page_no_card(self):
         text = clerk_tasks.propose_web_install(_Conv(self.home), {"url": "https://localhost/x",
                                                                   "install_command": "npm install -g @demo/tool"})
-        self.assertTrue(text.startswith("没有出卡"), text)
+        self.assertTrue(text.startswith("没有出提议"), text)
 
     def test_script_card_marked_danger(self):
         page = b"curl -fsSL https://tool.example.com/install.sh | bash"
@@ -286,7 +286,7 @@ class ReviewFixes(WebCase):
     def test_propose_web_install_never_raises(self):
         with mock.patch.object(blocks_web, "verify_install", side_effect=AttributeError("x")):
             text = clerk_tasks.propose_web_install(_Conv(self.home), {"url": PAGE_URL, "install_command": "npm install -g @demo/tool"})
-        self.assertTrue(text.startswith("没有出卡"), text)
+        self.assertTrue(text.startswith("没有出提议"), text)
 
     def test_read_page_text_not_cut_below_plan(self):
         big = b"<p>" + b"word " * 4000 + b"</p>"

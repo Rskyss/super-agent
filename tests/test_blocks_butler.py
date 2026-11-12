@@ -178,7 +178,7 @@ class Unofficial(ButlerCase):
 
     def test_unofficial_needs_risk(self):
         text = self.propose(official=False, maker="someone")
-        self.assertTrue(text.startswith("没有出卡"), text)
+        self.assertTrue(text.startswith("没有出提议"), text)
         self.assertIn("风险", text)
         text = self.propose(official=False, maker="someone", risk="通过你的浏览器登录来用，可能封号")
         self.assertTrue(text.startswith("已向用户出示确认框"), text)
@@ -187,7 +187,7 @@ class Unofficial(ButlerCase):
         self.assertEqual(card["risk"], "通过你的浏览器登录来用，可能封号")
 
     def test_missing_official_counts_as_unofficial(self):
-        self.assertTrue(self.propose().startswith("没有出卡"))
+        self.assertTrue(self.propose().startswith("没有出提议"))
         self.assertTrue(self.propose(risk="个人维护").startswith("已向用户出示确认框"))
         self.assertFalse(self.card()["official"])
 
@@ -199,7 +199,7 @@ class Unofficial(ButlerCase):
             self.assertFalse(clerk_tasks.code_hosting(url), url)
         text = clerk_tasks.propose_web_install(self.conv(), {"url": GH_URL, "install_command": "npm install -g @demo/tool",
                                                              "official": True, "maker": "someone"})
-        self.assertTrue(text.startswith("没有出卡"), "GitHub 上的说是官方也算非官方，就得写风险：" + text)
+        self.assertTrue(text.startswith("没有出提议"), "GitHub 上的说是官方也算非官方，就得写风险：" + text)
 
     def test_tool_schema(self):
         tool = next(t for t in blocks_tools.TOOLS if t["function"]["name"] == "propose_web_install")
@@ -258,8 +258,8 @@ class Actions(ButlerCase):
     def test_labels_new_style(self):
         for name, label in {"scan_environment": "查电脑", "check_installed": "查安装", "install_options": "查安装",
                             "read_help": "读帮助", "list_blocks": "看基础层", "web_search": "搜网上",
-                            "read_page": "读网页", "read_manual": "翻手册", "propose_web_install": "出卡",
-                            "propose_connect_cli": "出卡"}.items():
+                            "read_page": "读网页", "read_manual": "翻手册", "propose_web_install": "出提议",
+                            "propose_connect_cli": "出提议"}.items():
             self.assertEqual(blocks_tools.LABELS[name], label, name)
 
     def test_project_window_labels_unchanged(self):
@@ -322,7 +322,7 @@ class ReviewFixes(ButlerCase):
         with mock.patch.object(blocks_web, "verify_install", side_effect=moved):
             text = clerk_tasks.propose_web_install(self.conv(), {"url": PAGE_URL, "official": True, "maker": "x",
                                                                  "install_command": "npm install -g @demo/tool"})
-        self.assertTrue(text.startswith("没有出卡"), "跳转到代码托管站也算非官方：" + text)
+        self.assertTrue(text.startswith("没有出提议"), "跳转到代码托管站也算非官方：" + text)
 
     def test_idna_host(self):
         self.assertTrue(clerk_tasks.code_hosting("https://github。com/a/b"))
@@ -372,7 +372,7 @@ class ReviewFixes(ButlerCase):
         cid, events = self.run_steps([{"tool_calls": [tool_call("propose_web_install", {
             "url": PAGE_URL, "install_command": "npm install -g @demo/tool", "official": False})]}, {"text": "好"}])
         acts = [e for e in events if e.get("type") == "activity"]
-        self.assertEqual(acts[0]["label"], "没出卡")
+        self.assertEqual(acts[0]["label"], "没出提议")
 
 
 class RenameMore(unittest.TestCase):
@@ -495,7 +495,7 @@ class AmapFindings(ButlerCase):
         card = {"name": "高德地图", "command": "amap-gui", "role": "tool", "probe": ["status"], "type": "cli"}
         self.run_steps([{"tool_calls": [tool_call("propose_connect_cli", {"card": card})]}, {"text": "好"}])
         result = self.tool_results(1)[0]
-        self.assertTrue(result.startswith("接法卡里有不认识的项"), result)
+        self.assertTrue(result.startswith("接法说明里有不认识的项"), result)
         self.assertIn('"probe"', result)
         self.assertIn("照这个样子", result)
 

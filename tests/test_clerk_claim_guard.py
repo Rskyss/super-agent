@@ -182,7 +182,7 @@ class WordingFixes(unittest.TestCase):
         self.assertIn("不是云账号的 SecretId、SecretKey", role)
         self.assertIn("已经登录的，接进基础层时不用再登录", role)
         self.assertIn("编号相同才会替换", role)
-        self.assertIn("卡上会写", role)  # 出卡后这一轮就结束，会替换哪块由卡上写（2026-11-10）
+        self.assertIn("提议上会写", role)  # 出提议后这一轮就结束，会替换哪个积木块由提议上写（2026-11-10；68b 改名）
         self.assertIn("查不了", role)
         self.assertIn("没有调用 propose_ 开头的工具，就不能说", role)
 

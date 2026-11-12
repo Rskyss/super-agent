@@ -67,14 +67,14 @@ class QuietAfterCard(ButlerCase):
         self.assertEqual(names, ["Codex"], "只出第一张")
         self.assertFalse([e for e in events if e.get("type") == "proposal_done"], "Codex 卡不能被马上顶掉")
         labels = [e.get("label") for e in events if e.get("type") == "activity"]
-        self.assertEqual(labels, ["出卡"], labels)
+        self.assertEqual(labels, ["出提议"], labels)
 
     def test_tools_before_card_in_batch_still_run(self):
         _, events = self.run_steps([{"tool_calls": [
             tool_call("scan_environment", {}, call_id="a"),
             tool_call("propose_connect_api", VOLC, call_id="b")]}])
         labels = [e.get("label") for e in events if e.get("type") == "activity"]
-        self.assertEqual(labels, ["查电脑", "出卡"], labels)
+        self.assertEqual(labels, ["查电脑", "出提议"], labels)
 
     def test_first_turn_with_card_gets_title(self):
         """Codex 复查第 2 条：第一句话就出了卡，也要起标题"""
@@ -105,8 +105,8 @@ class HelperStrict(ButlerCase):
 class Rules(unittest.TestCase):
     def test_words_before_card(self):
         role = blocks_tools.role_text()
-        self.assertIn("出卡前", role)
-        self.assertIn("出卡后", role)
+        self.assertIn("出提议前", role)
+        self.assertIn("出提议后", role)
         self.assertIn("没有要用户选的", role, "没有选择题时不写推荐理由")
 
 

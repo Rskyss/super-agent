@@ -689,6 +689,7 @@ class ButlerTest(unittest.TestCase):
         self.assertIn("不选模型", text)
         self.assertNotIn("挑一个", text)
         self.assertNotIn("出卡前先用 list_models", text)
+        self.assertNotIn("出提议前先用 list_models", text)
 
 
 @unittest.skipUnless(shutil.which("node"), "这台电脑没有 node")

@@ -55,7 +55,7 @@ class PageTest(unittest.TestCase):
         self.assertIn('type="password"', key)
         self.assertIn('autocomplete="off"', key)
         self.assertIn("密钥只填在这里，别贴在聊天里", html)
-        self.assertRegex(html, r"<details[^>]*id=\"detailCard\"[^>]*>\s*<summary>接法卡全文</summary>")
+        self.assertRegex(html, r"<details[^>]*id=\"detailCard\"[^>]*>\s*<summary>接法说明全文</summary>")
         for words in ("返回聊天", "移出基础层"):
             self.assertIn(words, html)
 

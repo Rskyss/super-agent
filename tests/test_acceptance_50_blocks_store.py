@@ -107,7 +107,7 @@ class ValidateTest(RootCase):
         self.assertFalse((self.root / "基础层").exists())
 
     def test_not_a_dict(self):
-        self.bad(["x"], "接法卡")
+        self.bad(["x"], "接法说明")
 
     def test_bad_id(self):
         for value in ("", "有中文", "UPPER", "a b", "../x", "a" * 41):

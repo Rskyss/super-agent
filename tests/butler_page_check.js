@@ -8,10 +8,10 @@ var C = require(path.join(__dirname, "..", "desktop", "static", "chat.js"));
 var s = C.actsSummary([
   { label: "查电脑", status: "done" }, { label: "查安装", status: "done" }, { label: "查安装", status: "done" },
   { label: "搜网上", status: "done" }, { label: "读网页", status: "done" }, { label: "翻手册", status: "done" },
-  { label: "读帮助", status: "done" }, { label: "看基础层", status: "done" }, { label: "出卡", status: "done" }
+  { label: "读帮助", status: "done" }, { label: "看基础层", status: "done" }, { label: "出提议", status: "done" }
 ]);
 assert.ok(s.indexOf("另有") < 0, s);
-["查了电脑", "查了 2 次安装", "搜了网上 1 次", "读了 1 个网页", "翻了 1 次手册", "读了帮助说明", "看了基础层", "出了 1 张卡"].forEach(function (w) {
+["查了电脑", "查了 2 次安装", "搜了网上 1 次", "读了 1 个网页", "翻了 1 次手册", "读了帮助说明", "看了基础层", "出了 1 个提议"].forEach(function (w) {
   assert.ok(s.indexOf(w) >= 0, w + " 不在：" + s);
 });
 // 项目窗口的照旧
@@ -52,7 +52,7 @@ assert.ok(C.jobView(null).text.indexOf("管家") >= 0);
 console.log("ok");
 
 // 5. Codex 复查补：没出成的卡不算“出了卡”；非官方的脚本卡不再叫你确认“官网”
-var s2 = C.actsSummary([{ label: "没出卡", status: "done" }]);
+var s2 = C.actsSummary([{ label: "没出提议", status: "done" }]);
 assert.ok(s2.indexOf("出了") < 0 && s2.indexOf("没出成") >= 0, s2);
 m.apply({ type: "proposal", id: "w3", kind: "web_install", state: "open", label: "从网上装 x", tool: "x",
   command: "curl -fsSL https://x.dev/i.sh | sh", source: "https://x.dev", domain: "x.dev", danger: true,

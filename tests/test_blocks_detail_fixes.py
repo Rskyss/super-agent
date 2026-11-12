@@ -69,10 +69,10 @@ class HealthRowsTest(unittest.TestCase):
 class DetailErrorTest(unittest.TestCase):
     def test_only_404_means_gone(self):
         js = read("blocks.js")
-        m = re.search(r'基础层里没有这一块了', js)
+        m = re.search(r'基础层里没有这个积木块了', js)
         self.assertTrue(m)
         around = js[max(0, m.start() - 300):m.end() + 100]
-        self.assertIn("404", around, "只有 404 才说没有这一块，断网要写原因")
+        self.assertIn("404", around, "只有 404 才说没有这个积木块，断网要写原因")
 
 
 class DetailSwitchTest(unittest.TestCase):
