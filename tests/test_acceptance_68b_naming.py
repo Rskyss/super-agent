@@ -152,7 +152,9 @@ class ClaimWords(unittest.TestCase):
 
     def test_new_words_point(self):
         for text in ("提议就在上面", "把密钥填进提议里", "提议在你屏幕上", "提议给你：平台选腾讯云", "提议给你了，点确认就行",
-                     "提议给你，请填密钥。"):
+                     "提议给你，请填密钥。",
+                     # 复查第 5 轮：“提议给你看看”是名词，旧说法“提议卡给你看看”原来就认
+                     "接入提议给你看看，点确认就行。", "提议给你看看，点确认就行。", "安装提议给你看看，点确认就行。"):
             self.assertTrue(self.points(text), text)
 
     def test_old_words_still_claimed(self):
@@ -171,6 +173,7 @@ class ClaimWords(unittest.TestCase):
                      # 复查第 4 轮：“提议把……”也是动词；前面是“我/我们/想/也/还/就……”的“提议”一律是动词，两头一起看
                      "我提议把名单发给你。", "我提议把已经生成的模型名单给你。", "我们提议先装 Node。",
                      "咱们提议换个模型。", "我还是提议用 Codex。", "我就提议一句：先装 Node。",
+                     "我个人提议将模型换成混元。",  # 复查第 5 轮
                      "要我出一个提议吗？",
                      "等提议出来了再填密钥", "提议里的命令已经出错了", "如果提议出来了，点确认就行"):
             self.assertFalse(self.claims(text), text)
