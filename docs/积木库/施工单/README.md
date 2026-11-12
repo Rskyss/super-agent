@@ -203,3 +203,21 @@ Cursor 施工 → Codex 复查 → Cursor 按复查修（最多 3 轮，过不�
 68b 号单，交给 Codex 复查的话（第 1 轮；Gemini 提交后，新开对话；模型 gpt-6.1-sol，推理 xhigh）：
 
 > 你是复查员，只读不改。读 `docs/积木库/施工单/README.md` 的“测试节奏”“复查的收口规矩”、`docs/积木库/施工单/68b-统一叫法.md`、`docs/积木库/能力层/需求共识.md` 第二节“统一叫法”表，看 Gemini 那次提交（标题“施工单 68b：统一叫法”，`git log --oneline` 找到后 `git show <编号>`）和它追加的回执。对照施工单逐条查：没改到的、改错的（意思变了、病句、把程序内部名字也改了导致读写对不上）、做多了的（改了单子以外的文件、动了逻辑、为躲测试把字拆开或乱加“旧叫法”注释）。重点查：文件名 `需求卡.md` 的读写是不是一处没动；“说了出提议却没出”的识别有没有把“我提议……”这类正常的话误认成说出了提议、有没有漏掉“提议已经弹出来了”这类新说法、旧说法是不是照样认；以前存下的对话里动作名“出卡”“没出卡”摘要是不是还认；给管家、调度员看的规矩改完后意思是否和原来一致（尤其“出提议后这一轮就结束”“会替换哪个积木块由提议上写”“任务卡片的文件名是 需求卡.md”）。先 `pgrep -fl unittest` 确认没有别的测试在跑，再跑 68b 号单测试和全量 `python3 -m unittest discover -s tests`。**通过标准**：没有严重问题、也没有正常使用中会碰到的中等问题就判“通过”；小问题和碰不到的边角情况写在“建议”里。结论写成：通过 / 不通过，每个问题写“在哪、什么情况下出错（能复现的写出复现办法）、怎么改、严重程度”，按严重程度排序；回执每一句是否属实。不要改任何文件。
+
+## 68b 起改用超级助手自己跑（用户 2026-11-11 定）
+
+用户把要说的话粘进超级助手（行政建任务卡片 → 调度员写需求和方案 → 用户批准、点允许开工 → 写测试 Codex、写代码 agy、复查 Codex，程序自动返工最多 3 轮），中间要拍板的、出问题的，用户把超级助手里的原话贴回给 Claude。Claude 只管写单、写测试、给要说的话、最终验收。68b、69、70 都这样跑，顺便把超级助手的流程毛病记下来单独修。
+
+准备（只做一次）：用超级助手打开本项目文件夹（会自动接入，多一个不进上传的 `.collab/`，`.gitignore` 多一行）；「项目 → 团队配置」：写测试 Codex、写代码 agy、复查 Codex；Codex 模型 gpt-6.1-sol、推理极高（xhigh）；agy 模型 Gemini 3.8 Flash（High）；调度员选 Codex。第一次调度员会先起草 `docs/项目说明.md` 给用户确认，测试命令那一项写 `python3 -m unittest discover -s tests`（全量约 11 分钟）。
+
+68b，发给行政的话：
+
+> 帮我建一个任务：施工单 68b 统一叫法。要做什么：按 docs/积木库/施工单/68b-统一叫法.md 改用户看得见的字和管家、调度员看的规矩里的旧叫法（提议卡→提议、接法卡→接法说明、体检卡→体检结果、出卡→出提议、那一块→积木块、需求卡→任务卡片），还有“说了出提议却没出”的识别要认新说法。不做什么：不改文件名和程序内部名字，不改旧施工单和旧记录，不改已有的测试，不动 Mac 窗口外壳。怎么算做完：tests/test_acceptance_68b_naming.py 和施工单“验收”里列的旧测试全过，全量测试通过，复查通过。
+
+68b，任务卡片建好后，在这张卡的对话里发给调度员的话：
+
+> 这张卡的施工单是 docs/积木库/施工单/68b-统一叫法.md，验收测试已经写好提交了（tests/test_acceptance_68b_naming.py、tests/naming_check.js，以及施工单“验收”里列的 8 个旧测试已改成新字）。请照施工单写需求卡和方案：
+> 1. 需求卡 `## 允许改动的范围` 逐行列施工单“改哪些文件”表里的文件：desktop/static/blocks.html、desktop/static/blocks.js、desktop/static/chat.js、desktop/static/chat.css、desktop/clerk/roles/积木库管家.md、desktop/clerk/roles/积木库手册/api.md、desktop/clerk/roles/积木库手册/cli.md、desktop/clerk/roles/积木库手册/web.md、desktop/clerk/desk.py、desktop/clerk/blocks_tools.py、desktop/clerk/tasks.py、collab/blocks.py、collab/blocks_check.py、collab/blocks_install.py、collab/blocks_web.py、desktop/opening.json、collab/README.md、collab/规则.md、collab/cli.py、collab/planner.py、collab/archive.py、collab/dispatch.py、collab/flow.py、collab/merge.py、collab/phase.py、collab/scope.py、collab/tasks.py、desktop/view.py、desktop/server.py、README.md、docs/界面改版/设计规范.md。不要列 tests/ 下已有的文件。
+> 2. `## 执行细节` 写：开发员只改上面文件里的文字，唯一的逻辑改动是施工单第 3 节；不准改已有测试，不准为了躲搜索把字拆开、换同音字、乱加“旧叫法”注释。测试员：验收测试已经写好，只需补施工单没覆盖到的情况，新测试一律写进 tests/test_acceptance_68b_extra.py，不改别的测试文件。复查员对照施工单逐条查，重点见施工单 README 里“68b 号单，交给 Codex 复查的话”那段。
+> 3. 方案写好给我批准。批准后开工用这条测试命令（几分钟出结果，全量留到最后验收）：
+> `for p in 'test_acceptance_68b_*.py' test_clerk_claim_guard.py test_blocks_butler.py test_blocks_card_quiet.py 'test_acceptance_64_*.py' 'test_acceptance_58_*.py' 'test_acceptance_50_*.py' test_blocks_detail_fixes.py test_blocks_whole_provider.py; do python3 -m unittest discover -s tests -p "$p" || exit 1; done`
