@@ -146,7 +146,7 @@ class ClaimWords(unittest.TestCase):
         self.claims, self.points = desk.claims_card, desk.points_at_card
 
     def test_new_words_claimed(self):
-        for text in ("安装提议已经弹出来了", "接入提议出好了，点确认就行", "我已经给你出了一个提议",
+        for text in ("安装提议已经弹出来了", "接入提议出好了，点确认就行", "我已经给你出了一个提议", "我已经出好提议了。",
                      "新的提议出来了：腾讯云", "提议已弹出，请点确认", "提议已经弹出来了，你可以点确认。"):
             self.assertTrue(self.claims(text), text)
 
@@ -167,7 +167,11 @@ class ClaimWords(unittest.TestCase):
         for text in ("我提议你先装 Node。", "我提议先查一下电脑。", "我提议给你换个模型。", "我只是提议给你换个模型。", "其实我是提议给你换个模型。",
                      # 复查第 2 轮：前面换个词就又误认了，要按“提议后面跟着要做的事”来认动词，不是一个个排除前面的词
                      "我想提议给你换个模型。", "我刚才提议给你换个模型。", "我也提议给你换个模型。", "我个人提议给你换一个模型。",
-                     "我倒是提议你先装 Node。", "要我出一个提议吗？",
+                     "我倒是提议你先装 Node。",
+                     # 复查第 4 轮：“提议把……”也是动词；前面是“我/我们/想/也/还/就……”的“提议”一律是动词，两头一起看
+                     "我提议把名单发给你。", "我提议把已经生成的模型名单给你。", "我们提议先装 Node。",
+                     "咱们提议换个模型。", "我还是提议用 Codex。", "我就提议一句：先装 Node。",
+                     "要我出一个提议吗？",
                      "等提议出来了再填密钥", "提议里的命令已经出错了", "如果提议出来了，点确认就行"):
             self.assertFalse(self.claims(text), text)
             self.assertFalse(self.points(text), text)
