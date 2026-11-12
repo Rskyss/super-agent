@@ -19,6 +19,19 @@ var TeamCore = {
     if (!p || p.tool !== team[role]) return String(team[role]);
     return [p.tool, p.model || "", p.effort || ""].join("|");
   },
+  // 没保存的改动该恢复哪几行：用户真改过（now 和 base 不同），并且之后没人动过这一行（现在存着的还等于 base）。
+  // 不能整份恢复：期间行政帮忙改过、保存过的行会被盖回去（复查第 1 轮）
+  draftRows: function (saved, draft) {
+    var out = {};
+    if (!draft || !draft.base || !draft.now || !draft.now.team) return out;
+    var b = draft.base, n = draft.now, s = saved || {};
+    ["dispatcher", "tester", "developer", "reviewer"].forEach(function (r) {
+      function row(x) { return JSON.stringify([x && x.team && x.team[r], (x && x.picks && x.picks[r]) || null]); }
+      if (!(r in n.team)) return;
+      if (row(n) !== row(b) && row(s) === row(b)) out[r] = { tool: n.team[r], pick: (n.picks && n.picks[r]) || null };
+    });
+    return out;
+  },
   // 团队有改动却存不了时，说清是谁还没测通（68b 前用户点保存，设置悄悄丢了，②）
   unsavedReason: function (s) {
     var names = { dispatcher: "调度员", tester: "写测试", developer: "写代码", reviewer: "复查" };
@@ -308,15 +321,13 @@ if (typeof document !== "undefined") (function () {
   }
   function snapshot() { return JSON.stringify({ team: team(), picks: rolePicks() }); }
   function teamChanged() { return installed && !!savedSnapshot && snapshot() !== savedSnapshot; }
-  // 改了没保存就离开（点齿轮重开）时不能丢（④）：改动先记在本机，回来自动恢复
-  function draftKey() { return "team-draft:" + project; }
+  // 改了没保存就离开（点齿轮重开、退出应用）时不能丢（④）：暂存在项目里（应用每次换端口，页面自己存的会丢），回来恢复
   function keepDraft() {
-    try {
-      if (teamChanged()) localStorage.setItem(draftKey(), snapshot());
-      else localStorage.removeItem(draftKey());
-    } catch (e) { /* 存不了就算了 */ }
+    if (!installed) return;
+    var draft = teamChanged() ? { base: JSON.parse(savedSnapshot), now: JSON.parse(snapshot()) } : null;
+    post("/api/team/draft", { draft: draft }).catch(function () { /* 存不了就算了 */ });
   }
-  function dropDraft() { try { localStorage.removeItem(draftKey()); } catch (e) { /* 无 */ } }
+  function dropDraft() { if (installed) post("/api/team/draft", { draft: null }).catch(function () {}); }
 
   function renderAllModelBoxes() {
     ALL_ROLES.forEach(renderRoleModelBox);
@@ -407,8 +418,8 @@ if (typeof document !== "undefined") (function () {
     refresh();
   }
 
-  function watch(run, id, roles) {
-    var started = Date.now(), limit = (checkTimeout + 30) * 1000;
+  function watch(run, id, roles, started) {
+    var limit = (checkTimeout + 30) * 1000;
     var timer = setInterval(function () {
       if (!waitingOn(id, roles).length) { clearInterval(timer); return; }
       // 到时间一定给结果（③：agy 检测曾一直停在“检测中”）
@@ -435,9 +446,14 @@ if (typeof document !== "undefined") (function () {
       setState(r, "run", "检测中…在临时文件夹里试着建一个文件");
     });
     refresh();
+    var started = Date.now();   // 从点“检测”那一刻算：连发起检测的请求本身卡住，也要到时间给结果（复查第 1 轮）
+    var guard = setTimeout(function () {
+      giveUp(id, roles, "超过 " + Math.round((checkTimeout + 30) / 60) + " 分钟还没有结果，算没通：可能卡住了。再点一次“检测”，或换一家、换个模型");
+    }, (checkTimeout + 30) * 1000);
     post("/api/team/check", { team: t, models: currentModels, role_models: rolePicks(), roles: roles })
-      .then(function (d) { watch(d.run, id, roles); })
-      .catch(function (err) { giveUp(id, roles, err.message); });
+      .then(function (d) { watch(d.run, id, roles, started); })
+      .catch(function (err) { giveUp(id, roles, err.message); })
+      .then(function () { if (!waitingOn(id, roles).length) clearTimeout(guard); });
   }
 
   function reset() {
@@ -469,35 +485,32 @@ if (typeof document !== "undefined") (function () {
   }
 
   function restoreDraft() {
-    var raw = null;
-    try { raw = localStorage.getItem(draftKey()); } catch (e) { raw = null; }
-    if (!raw || raw === savedSnapshot) return;
-    var d;
-    try { d = JSON.parse(raw); } catch (e) { dropDraft(); return; }
-    if (!d || !d.team) return;
-    ALL_ROLES.forEach(function (r) {
-      var v = d.team[r];
-      if (v === undefined) return;
-      if (r === "dispatcher" && v && v.indexOf("custom:") === 0) {
-        toolSelect(r).value = "custom";
-        var box = rows.dispatcher.querySelector(".custom");
-        box.hidden = false; box.value = v.slice(7);
-      } else {
-        toolSelect(r).value = v;
-      }
-    });
-    picks = Object.assign(picks, d.picks || {});
-    renderAllModelBoxes();
-    var saved = {};
-    try { saved = JSON.parse(savedSnapshot); } catch (e) { saved = {}; }
-    ALL_ROLES.forEach(function (r) {
-      var was = JSON.stringify([saved.team && saved.team[r], saved.picks && saved.picks[r]]);
-      var now = JSON.stringify([d.team[r], d.picks && d.picks[r]]);
-      setIdle(r, was !== now);   // 只有真改过的那几行标“已调整”
-    });
-    refresh();
-    $("summary").className = "summary";
-    $("summary").textContent = "上次改了还没保存，已帮你恢复（要重新检测再保存）。";
+    if (!installed) return;
+    get("/api/team/draft").then(function (d) {
+      var rowsToApply = TeamCore.draftRows(JSON.parse(savedSnapshot), d && d.draft);
+      var roles = Object.keys(rowsToApply);
+      if (!roles.length) return;
+      roles.forEach(function (r) {
+        var v = rowsToApply[r].tool;
+        if (r === "dispatcher" && v && v.indexOf("custom:") === 0) {
+          toolSelect(r).value = "custom";
+          var box = rows.dispatcher.querySelector(".custom");
+          box.hidden = false; box.value = v.slice(7);
+        } else {
+          toolSelect(r).value = v || "";
+        }
+        if (rowsToApply[r].pick) picks[r] = rowsToApply[r].pick;
+      });
+      renderAllModelBoxes();
+      // 恢复的行一律要重新检测才能保存：上次可能就是测不通才没存（复查第 1 轮）
+      roles.forEach(function (r) {
+        results[r] = { ok: false, restored: true };
+        setState(r, "bad", "上次改过还没检测：请点“检测”，通了才能保存");
+      });
+      refresh();
+      $("summary").className = "summary";
+      $("summary").textContent = "上次改了还没保存，已帮你恢复（要重新检测再保存）。";
+    }).catch(function () { /* 读不到就算了 */ });
   }
 
   window.SuperAgentTeam = {

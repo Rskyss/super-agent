@@ -46,6 +46,7 @@ from collab.config import (  # noqa: E402
     save_clerk,
     save_models,
     save_role_models,
+    clean_role_models,
     save_team,
 )
 from collab.flow import read_flow, record as flow_record  # noqa: E402
@@ -1315,6 +1316,13 @@ class Handler(BaseHTTPRequestHandler):
                         "git": (Path(project) / ".git").exists(),
                         "installed": (Path(project) / ".collab" / "cards").is_dir(), "options": _TEAM_OPTIONS,
                         "model_options": load_model_options(), "check_timeout": CHECK_TIMEOUT})
+        elif path == "/api/team/draft":
+            draft_path = Path(project) / ".collab" / "团队草稿.json"
+            try:
+                draft = json.loads(draft_path.read_text(encoding="utf-8")) if draft_path.is_file() else None
+            except (OSError, ValueError):
+                draft = None
+            self._json({"draft": draft})
         elif path == "/api/team/check":
             state = self.server.checks.get((str(Path(project).resolve()), query.get("run", "")))
             if state is None:
@@ -1335,6 +1343,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"error": "这个文件夹还没接入超级助手（不是 git 项目），不能保存执行员"}, 409)
                 return
             try:
+                if body.get("role_models") is not None:
+                    clean_role_models(body.get("role_models") or {})  # 先查，有错什么都不存（复查第 1 轮）
                 save_team(project, body.get("team") or {})
                 if body.get("models") is not None:
                     save_models(project, body.get("models") or {})
@@ -1343,6 +1353,19 @@ class Handler(BaseHTTPRequestHandler):
             except ConfigError as exc:
                 self._json({"error": str(exc)}, 400)
                 return
+            self._json({"ok": True})
+        elif path == "/api/team/draft":
+            # 团队设置改了还没保存：暂存在项目里（应用每次换端口，页面自己存的会丢，复查第 1 轮）
+            draft_path = Path(project) / ".collab" / "团队草稿.json"
+            draft = body.get("draft")
+            if not (Path(project) / ".collab").is_dir():
+                self._json({"ok": False})
+                return
+            if draft is None:
+                if draft_path.is_file():
+                    draft_path.unlink()
+            else:
+                draft_path.write_text(json.dumps(draft, ensure_ascii=False), encoding="utf-8")
             self._json({"ok": True})
         elif path == "/api/team/check":
             team = body.get("team") or {}

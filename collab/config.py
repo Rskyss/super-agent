@@ -320,13 +320,11 @@ def run_models(project_dir, tools: dict) -> dict:
     return out
 
 
-def save_role_models(project_dir, role_models: dict) -> None:
-    """按岗位存模型，其他设置原样保留。只认 Codex、Cursor、agy；Codex 的思考强度必须是认识的档位。"""
+def clean_role_models(role_models: dict) -> dict:
+    """检查岗位模型并整理成要存的样子；有不对的直接报错，什么都不存（保存前先查，免得存一半，复查第 1 轮）。"""
     if not isinstance(role_models, dict):
         raise ConfigError("岗位模型格式不对")
-    data = _read(project_dir)
-    saved = data.get("role_models") if isinstance(data.get("role_models"), dict) else {}
-    saved = dict(saved)
+    out = {}
     for role, item in role_models.items():
         if role not in _ALL_ROLES or not isinstance(item, dict):
             raise ConfigError(f"不认识的岗位：{role!r}")
@@ -342,7 +340,17 @@ def save_role_models(project_dir, role_models: dict) -> None:
             if effort not in CODEX_EFFORTS:
                 raise ConfigError(f"{_ROLES[role]}的思考强度不能是 {effort!r}：可选 {'、'.join(CODEX_EFFORTS)}")
             clean["effort"] = effort
-        saved[role] = clean
+        out[role] = clean
+    return out
+
+
+def save_role_models(project_dir, role_models: dict) -> None:
+    """按岗位存模型，其他设置原样保留。只认 Codex、Cursor、agy；Codex 的思考强度必须是认识的档位。"""
+    cleaned = clean_role_models(role_models)
+    data = _read(project_dir)
+    saved = data.get("role_models") if isinstance(data.get("role_models"), dict) else {}
+    saved = dict(saved)
+    saved.update(cleaned)
     data["role_models"] = saved
     path = _config_path(project_dir)
     path.parent.mkdir(parents=True, exist_ok=True)

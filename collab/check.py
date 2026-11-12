@@ -108,7 +108,8 @@ def check_team(project_dir, team=None, timeout: float = DEFAULT_TIMEOUT, on_resu
         saved_roles = load_role_models(project_dir, team)
     except Exception:  # noqa: BLE001 — 配置读不出时用整体设置
         saved_roles = {}
-    picked = dict(saved_roles)
+    # 只传了整家模型（旧接口）时，就按传进来的测，不拿存着的岗位设置盖掉（复查第 1 轮）
+    picked = dict(saved_roles) if (role_models is not None or models is None) else {}
     if isinstance(role_models, dict):
         picked.update({r: v for r, v in role_models.items() if isinstance(v, dict)})
 
