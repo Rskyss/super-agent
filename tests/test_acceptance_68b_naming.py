@@ -112,6 +112,19 @@ class NewWords(unittest.TestCase):
         self.assertIn("行政管需求和任务卡片", read("README.md"))
 
 
+class BareCardWordGone(unittest.TestCase):
+    """复查第 3 轮：单说一个“卡”指提议、接法说明的，用户和管家看得见的地方也要改（项目窗口的“这张卡”指任务卡片，不改）"""
+
+    def test_visible_leftovers(self):
+        for rel, words in (("desktop/clerk/tasks.py", ("起草的卡要换", 'or "一张卡")')),
+                           ("desktop/clerk/desk.py", ("（出了一张卡）",)),
+                           ("collab/blocks_check.py", ("这张卡没写模型",)),
+                           ("README.md", ("卡上不选模型", "在卡上一把一格填"))):
+            text = read(rel)
+            for word in words:
+                self.assertNotIn(word, text, f"{rel} 还有“{word}”")
+
+
 class InternalNamesKept(unittest.TestCase):
     def test_file_name_and_ids(self):
         for rel in ("collab/cli.py", "collab/tasks.py", "collab/flow.py", "collab/dispatch.py", "collab/merge.py",
@@ -138,13 +151,17 @@ class ClaimWords(unittest.TestCase):
             self.assertTrue(self.claims(text), text)
 
     def test_new_words_point(self):
-        for text in ("提议就在上面", "把密钥填进提议里", "提议在你屏幕上", "提议给你：平台选腾讯云", "提议给你了，点确认就行"):
+        for text in ("提议就在上面", "把密钥填进提议里", "提议在你屏幕上", "提议给你：平台选腾讯云", "提议给你了，点确认就行",
+                     "提议给你，请填密钥。"):
             self.assertTrue(self.points(text), text)
 
     def test_old_words_still_claimed(self):
         for text in ("提议卡已经弹出来了", "接法卡已经出好了", "安装卡已经出来了，你看一下。", "我给你出了接法卡，点确认就行"):
             self.assertTrue(self.claims(text), text)
         self.assertTrue(self.points("接法卡给你：平台选腾讯云"))
+        # 复查第 3 轮：上一版把“给你”后面限死成“了/冒号”，旧说法“接法卡给你，请填密钥”就漏了
+        for text in ("接法卡给你，请填密钥。", "安装卡给你，点确认就行"):
+            self.assertTrue(self.points(text), text)
 
     def test_not_claims(self):
         for text in ("我提议你先装 Node。", "我提议先查一下电脑。", "我提议给你换个模型。", "我只是提议给你换个模型。", "其实我是提议给你换个模型。",
