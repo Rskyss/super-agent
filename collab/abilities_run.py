@@ -272,8 +272,26 @@ def run(ability_id: str, inputs: dict, root=None, *,
         if how_kind == "cli" and selected_model is None:
             selected_model = block_card.get("model")
 
-        last_check = blocks.last_record(block_id, root, type="check")
-        if last_check and last_check.get("status") not in ("ok", "quota", "listed"):
+        recs = blocks.records(block_id, root)
+        last_check_idx = -1
+        last_check = None
+        for idx, r in enumerate(recs):
+            if r.get("type") == "check":
+                last_check_idx = idx
+                last_check = r
+
+        is_usable = True
+        if last_check is not None:
+            if last_check.get("ok"):
+                is_usable = True
+            elif any(r.get("type") == "model_check" and r.get("ok") for r in recs[last_check_idx + 1:]):
+                is_usable = True
+            elif last_check.get("status") in ("quota", "listed"):
+                is_usable = True
+            else:
+                is_usable = False
+
+        if not is_usable:
             bname = block_card.get("name") or block_id
             last_reason = last_check.get("reason", "")
             return _finish(

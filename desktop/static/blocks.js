@@ -168,6 +168,18 @@ var BlocksCore = {
       (d.secrets || []).forEach(function (sec) {
         rows.push({ label: "密钥", text: sec.label + (sec.saved ? " · 已保存" : " · 还没填") });
       });
+      var isPreset = ["codex", "cursor", "agy"].indexOf(card.id) !== -1;
+      if (isPreset) {
+        var names = (d.last_check && d.last_check.models) || [];
+        var mFrom = d.models_from || (d.last_check && d.last_check.models_from);
+        if (d.last_check && names.length) {
+          var countText = names.length + " 个";
+          if (mFrom === "builtin") countText += "（内置名单，可能不全）";
+          rows.push({ label: "这家的模型", text: countText });
+        } else {
+          rows.push({ label: "这家的模型", text: "点一次“检测”后显示名单" });
+        }
+      }
     } else {
       var provs = { tencent: "腾讯云", bailian: "阿里百炼", other: "其他" };
       rows.push({ label: "服务商", text: provs[card.provider] || card.provider });
@@ -189,10 +201,12 @@ var BlocksCore = {
     }
     rows.push({ label: "上次检测", text: time });
     var status = { cls: "idle", text: "没检测过" };
-    if (d.last_check) {
-      if (d.last_check.ok) status = { cls: "ok", text: "能用" };
-      else if (d.last_check.status === "listed") status = { cls: "warn", text: "已接上：" + String(d.last_check.reason || "").replace(/^已接上：/, "") + (d.last_check.how ? "。" + d.last_check.how : "") };
-      else if (d.last_check.status === "quota") status = { cls: "warn", text: "额度不足：工具能连上，" + d.last_check.reason + (d.last_check.how ? "。" + d.last_check.how : "") };
+    var blockSt = d.status || (d.last_check ? (d.last_check.ok ? "ok" : d.last_check.status || "fail") : "never");
+    if (blockSt === "ok") {
+      status = { cls: "ok", text: "能用" };
+    } else if (d.last_check) {
+      if (blockSt === "listed") status = { cls: "warn", text: "已接上：" + String(d.last_check.reason || "").replace(/^已接上：/, "") + (d.last_check.how ? "。" + d.last_check.how : "") };
+      else if (blockSt === "quota") status = { cls: "warn", text: "额度不足：工具能连上，" + d.last_check.reason + (d.last_check.how ? "。" + d.last_check.how : "") };
       else status = { cls: "bad", text: "不能用：" + d.last_check.reason + (d.last_check.how ? "。" + d.last_check.how : "") };
     }
     var needsKey = card.kind === "llm_api" || card.kind === "search";
@@ -247,7 +261,7 @@ if (typeof document !== "undefined") (function () {
   var threads = [], deleted = {}, locks = {}, pendingThread = null, threadKey = "", blocksKey = "";
   var threadTimer = null, blocksTimer = null;
   var lastScan = null, scanBlocks = [], scanBroken = [], scanRunning = false, manualExpand = null, scanError = "";
-  var activeBlock = null, currentDetail = null, checkTimer = null, pendingKey = "", checkGen = 0;
+  var activeBlock = null, currentDetail = null, checkTimer = null, pendingKey = "", checkGen = 0, activeTrials = {}, activeChecks = {};
   var scanPending = [], pendingJobs = {}, pendingSecrets = {};  // 待接入的预置工具和它们的检测；详情里新填的工具密钥
   // 60 号单：钥匙串里有这一家的密钥时显示“已保存的密钥 / 换一把”；点了“换一把”或存的没通过才露输入框
   var bindWantNew = false, detailWantNew = false, usedSaved = false;
@@ -607,6 +621,16 @@ if (typeof document !== "undefined") (function () {
     $("detailRemove").disabled = false;
   }
 
+  function hideBlockDetailContent() {
+    ["detailStatus", "detailWarn", "detailRows", "detailCliModels", "detailPreview", "detailKeyBox", "detailSecrets", "detailCheck", "detailRemove", "detailCard"].forEach(function (k) {
+      var el = $(k);
+      if (el) {
+        el.hidden = true;
+        if (k === "detailCliModels") el.innerHTML = "";
+      }
+    });
+  }
+
   function openDetail(id, keepResult) {
     window.AbilitiesPage && window.AbilitiesPage.close();
     if (!keepResult) {
@@ -616,7 +640,7 @@ if (typeof document !== "undefined") (function () {
       $("detailResult").textContent = "";
       $("detailResult").className = "detail-result";
       $("detailTitle").textContent = "正在读取…";
-      ["detailStatus", "detailWarn", "detailRows", "detailPreview", "detailKeyBox", "detailCheck", "detailRemove", "detailCard"].forEach(function (k) { $(k).hidden = true; });
+      hideBlockDetailContent();
     }
     $("chatFrame").hidden = true;
     $("blockDetail").hidden = false;
@@ -624,6 +648,7 @@ if (typeof document !== "undefined") (function () {
     getJson("/api/blocks/detail", { id: id }).then(function (d) {
       if (activeBlock !== id) return;
       currentDetail = d;
+      var card = d.card || {};
       var scanItem = (lastScan && lastScan.items || []).find(function (it) { return it.name === id; }) || null;
       var v = BlocksCore.detailView(d, scanItem);
       $("detailTitle").textContent = v.title;
@@ -648,6 +673,78 @@ if (typeof document !== "undefined") (function () {
         rowDiv.appendChild(val);
         rowsEl.appendChild(rowDiv);
       });
+
+      var isPresetCli = card.kind === "cli" && ["codex", "cursor", "agy"].indexOf(card.id) !== -1 && d.verified;
+      var models = (d.last_check && d.last_check.models) || [];
+      var modelStatus = d.model_status || {};
+      var modelsBox = $("detailCliModels");
+      if (isPresetCli && models.length) {
+        if (!modelsBox) {
+          modelsBox = document.createElement("div");
+          modelsBox.id = "detailCliModels";
+          modelsBox.className = "detail-cli-models";
+          rowsEl.parentNode.insertBefore(modelsBox, rowsEl.nextSibling);
+        }
+        modelsBox.hidden = false;
+        modelsBox.innerHTML = "";
+        models.forEach(function (m) {
+          var mInfo = modelStatus[m] || {};
+          var mSt = mInfo.status || "idle";
+          var stCls = mSt === "ok" ? "ok" : (mSt === "quota" ? "warn" : (mSt === "fail" ? "bad" : "idle"));
+          var stWord = mSt === "ok" ? "能用" : (mSt === "quota" ? "额度不足" : (mSt === "fail" ? "不能用" : "没试过"));
+          var timeReason = mInfo.time ? (mInfo.time.replace("T", " ") + (mInfo.reason ? " · " + mInfo.reason : "")) : "没试过";
+
+          var row = document.createElement("div");
+          row.className = "detail-row cli-model-row";
+          row.style.display = "flex";
+          row.style.alignItems = "center";
+          row.style.justifyContent = "space-between";
+
+          var left = document.createElement("div");
+          left.style.display = "flex";
+          left.style.alignItems = "center";
+          left.style.gap = "8px";
+
+          var dot = document.createElement("span");
+          dot.className = "dot " + stCls;
+          left.appendChild(dot);
+
+          var code = document.createElement("code");
+          code.textContent = m;
+          left.appendChild(code);
+
+          var info = document.createElement("span");
+          info.className = "dim";
+          info.style.fontSize = "var(--fs-sm)";
+          info.textContent = " · " + timeReason;
+          left.appendChild(info);
+
+          row.appendChild(left);
+
+          var trialBtn = document.createElement("button");
+          trialBtn.className = "btn ghost small trial-btn";
+          trialBtn.type = "button";
+          var blockTrial = activeTrials[card.id];
+          var isCurrentTrial = Boolean(blockTrial && blockTrial.model === m);
+          var isCardTrialing = Boolean(blockTrial);
+          var isCardChecking = Boolean(activeChecks[card.id]);
+          trialBtn.textContent = isCurrentTrial ? "正在试…" : "试这个模型";
+          if (isCardTrialing || isCardChecking) {
+            trialBtn.disabled = true;
+          }
+          trialBtn.addEventListener("click", function () {
+            runModelTrial(card.id, m, row, trialBtn);
+          });
+          row.appendChild(trialBtn);
+
+          modelsBox.appendChild(row);
+        });
+      } else {
+        if (modelsBox) {
+          modelsBox.hidden = true;
+          modelsBox.innerHTML = "";
+        }
+      }
       $("detailPreview").textContent = v.preview;
       $("detailPreview").hidden = !v.preview;
       $("detailKeyBox").hidden = !v.needsKey;
@@ -655,14 +752,17 @@ if (typeof document !== "undefined") (function () {
       drawDetailSecrets(v.secrets);
       $("detailCheck").textContent = v.checkText;
       $("detailCheck").hidden = false;
+      var isBlockBusy = Boolean(activeTrials[id] || activeChecks[id]);
+      $("detailCheck").disabled = isBlockBusy;
       $("detailRemove").hidden = false;
+      $("detailRemove").disabled = isBlockBusy;
       $("detailCard").hidden = false;
       $("detailCard").querySelector("pre").textContent = v.cardText;
     }).catch(function (err) {
       if (activeBlock !== id) return;
       currentDetail = null;
       $("detailTitle").textContent = err && err.status === 404 ? "基础层里没有这个积木块了" : "详情没取到：" + err.message;
-      ["detailStatus", "detailWarn", "detailRows", "detailPreview", "detailKeyBox", "detailCheck", "detailRemove", "detailCard"].forEach(function (k) { $(k).hidden = true; });
+      hideBlockDetailContent();
     });
   }
 
@@ -691,6 +791,80 @@ if (typeof document !== "undefined") (function () {
     });
   }
 
+  function runModelTrial(cardId, model, rowEl, btnEl) {
+    if (activeChecks[cardId] || activeTrials[cardId]) return;
+    activeTrials[cardId] = { cardId: cardId, model: model, jobId: null };
+    if (activeBlock === cardId) {
+      $("detailCheck").disabled = true;
+      $("detailRemove").disabled = true;
+      var allTrialBtns = document.querySelectorAll(".trial-btn");
+      allTrialBtns.forEach(function (b) { b.disabled = true; });
+      btnEl.textContent = "正在试…";
+    }
+
+    postJson("/api/blocks/check", { id: cardId, model: model }).then(function (res) {
+      if (!res.job) throw new Error(res.error || "启动试用失败");
+      if (activeTrials[cardId] && activeTrials[cardId].model === model) {
+        activeTrials[cardId].jobId = res.job;
+      }
+      pollModelTrialJob(res.job, cardId, function () {
+        delete activeTrials[cardId];
+        fetchBlocks();
+        var isCurrentBlock = activeBlock === cardId;
+        var isBlockDetailVisible = $("blockDetail") && !$("blockDetail").hidden;
+        var isChatVisible = $("chatFrame") && !$("chatFrame").hidden;
+        var abilityDetailEl = $("abilityDetail");
+        var isAbilitiesOpen = Boolean(abilityDetailEl && !abilityDetailEl.hidden);
+        if (isCurrentBlock && isBlockDetailVisible && !isChatVisible && !isAbilitiesOpen) {
+          $("detailCheck").disabled = Boolean(activeChecks[cardId]);
+          $("detailRemove").disabled = Boolean(activeChecks[cardId]);
+          openDetail(cardId, true);
+        }
+      }, function (err) {
+        delete activeTrials[cardId];
+        var isCurrentBlock = activeBlock === cardId;
+        var isBlockDetailVisible = $("blockDetail") && !$("blockDetail").hidden;
+        var isChatVisible = $("chatFrame") && !$("chatFrame").hidden;
+        var abilityDetailEl = $("abilityDetail");
+        var isAbilitiesOpen = Boolean(abilityDetailEl && !abilityDetailEl.hidden);
+        if (isCurrentBlock && isBlockDetailVisible && !isChatVisible && !isAbilitiesOpen) {
+          alert("试用失败：" + (err.message || err));
+          $("detailCheck").disabled = Boolean(activeChecks[cardId]);
+          $("detailRemove").disabled = Boolean(activeChecks[cardId]);
+          openDetail(cardId, true);
+        }
+      });
+    }).catch(function (err) {
+      delete activeTrials[cardId];
+      var isCurrentBlock = activeBlock === cardId;
+      var isBlockDetailVisible = $("blockDetail") && !$("blockDetail").hidden;
+      var isChatVisible = $("chatFrame") && !$("chatFrame").hidden;
+      var abilityDetailEl = $("abilityDetail");
+      var isAbilitiesOpen = Boolean(abilityDetailEl && !abilityDetailEl.hidden);
+      if (isCurrentBlock && isBlockDetailVisible && !isChatVisible && !isAbilitiesOpen) {
+        alert("试用失败：" + (err.message || err));
+        $("detailCheck").disabled = Boolean(activeChecks[cardId]);
+        $("detailRemove").disabled = Boolean(activeChecks[cardId]);
+        openDetail(cardId, true);
+      }
+    });
+  }
+
+  function pollModelTrialJob(jobId, cardId, onDone, onError) {
+    getJson("/api/blocks/job", { id: jobId }).then(function (j) {
+      if (!j.done) {
+        setTimeout(function () { pollModelTrialJob(jobId, cardId, onDone, onError); }, 500);
+      } else if (j.error) {
+        if (onError) onError(new Error(j.error));
+        else onDone(new Error(j.error));
+      } else {
+        onDone(null, j.result);
+      }
+    }).catch(function () {
+      setTimeout(function () { pollModelTrialJob(jobId, cardId, onDone, onError); }, 1000);
+    });
+  }
+
   function openBrokenDetail(id, problem) {
     window.AbilitiesPage && window.AbilitiesPage.close();
     clearCheckState();
@@ -703,7 +877,7 @@ if (typeof document !== "undefined") (function () {
     $("detailStatus").textContent = "接法说明有问题：" + problem;
     $("detailStatus").className = "detail-status bad";
     $("detailStatus").hidden = false;
-    ["detailWarn", "detailRows", "detailPreview", "detailKeyBox", "detailCheck", "detailCard"].forEach(function (k) { $(k).hidden = true; });
+    hideBlockDetailContent();
     $("detailRemove").hidden = false;
     currentDetail = { card: { id: id, name: id } };
   }
@@ -769,8 +943,11 @@ if (typeof document !== "undefined") (function () {
       var scanItem = (lastScan && lastScan.items || []).find(function (it) { return it.name === card.id; }) || null;
       payload.approved = BlocksCore.detailView(currentDetail, scanItem).preview;
     }
+    activeChecks[card.id] = true;
     $("detailCheck").disabled = true;
     $("detailRemove").disabled = true;
+    var allTrialBtns = document.querySelectorAll(".trial-btn");
+    allTrialBtns.forEach(function (b) { b.disabled = true; });
     $("detailResult").textContent = "正在检测…";
     $("detailResult").className = "detail-result running";
     var gen = checkGen;
@@ -779,12 +956,14 @@ if (typeof document !== "undefined") (function () {
       $("detailKey").value = "";
       followCheck(d.job, card.id);
     }).catch(function (err) {
+      delete activeChecks[card.id];
       if (gen !== checkGen) return;
       pendingKey = "";
       $("detailResult").textContent = err.message;
       $("detailResult").className = "detail-result fail";
-      $("detailCheck").disabled = false;
-      $("detailRemove").disabled = false;
+      $("detailCheck").disabled = Boolean(activeTrials[card.id]);
+      $("detailRemove").disabled = Boolean(activeTrials[card.id]);
+      openDetail(card.id, true);
     });
   });
 
@@ -805,8 +984,9 @@ if (typeof document !== "undefined") (function () {
         }
         if (job.done) usedSaved = false;
         if (job.done) {
-          $("detailCheck").disabled = false;
-          $("detailRemove").disabled = false;
+          delete activeChecks[cardId];
+          $("detailCheck").disabled = Boolean(activeTrials[cardId]);
+          $("detailRemove").disabled = Boolean(activeTrials[cardId]);
           if ((v.state === "ok" || v.state === "warn") && currentDetail && currentDetail.card.kind !== "cli" && pendingKey) {
             saveKeyToMac(currentDetail.key_account, pendingKey);
           }
@@ -822,6 +1002,7 @@ if (typeof document !== "undefined") (function () {
         }
       }).catch(function (err) {
         if (gen !== checkGen || activeBlock !== cardId) return;
+        delete activeChecks[cardId];
         if (err && err.status === 404) {
           var lost = BlocksCore.checkView(null);
           $("detailResult").textContent = lost.text;

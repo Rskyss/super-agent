@@ -452,7 +452,7 @@ class Handler(BaseHTTPRequestHandler):
         return job_id
 
     def _blocks_check_work(self, home: str, card: dict, approved=None, api_key: str = "", keys=None,
-                           auto_save: bool = False):
+                           auto_save: bool = False, model=None):
         def work(job):
             terminal = self._blocks_path()
             if card["kind"] == "llm_api":
@@ -464,7 +464,7 @@ class Handler(BaseHTTPRequestHandler):
             if not blocks.is_verified(card) and approved != blocks_check.preview(card):
                 return {"ok": False, "status": "changed", "reason": "要跑的命令和你确认时看到的不一样",
                         "how": "跟管家说重新提议，确认新的完整命令"}
-            result = blocks_check.check_cli(card, root=home, approved=approved, terminal_path=terminal, keys=keys)
+            result = blocks_check.check_cli(card, root=home, approved=approved, terminal_path=terminal, keys=keys, model=model)
             if auto_save and _blocks_connected(result):  # “待接入”点一下：通过就直接放进基础层（用户 2026-11-09 选 A）
                 with self.server.blocks_lock:
                     if not blocks._card_path(card["id"], home).is_file():
@@ -545,15 +545,35 @@ class Handler(BaseHTTPRequestHandler):
                 if "problem" in card:
                     broken.append({"id": card["id"], "problem": card["problem"]})
                     continue
-                last = blocks.last_record(card["id"], home, type="check")
+                recs = blocks.records(card["id"], home)
+                last_check_idx = -1
+                last = None
+                for idx, r in enumerate(recs):
+                    if r.get("type") == "check":
+                        last_check_idx = idx
+                        last = r
+                if last is None:
+                    status = "never"
+                elif last.get("ok"):
+                    status = "ok"
+                elif any(r.get("type") == "model_check" and r.get("ok") for r in recs[last_check_idx + 1:]):
+                    status = "ok"
+                elif last.get("status") in ("quota", "listed"):
+                    status = last.get("status")
+                else:
+                    status = "fail"
+
+                models_list = (last or {}).get("models") or []
+                models_count = len(models_list) if (card["kind"] == "llm_api" or (card["kind"] == "cli" and card.get("role") != "tool")) else 0
                 items.append({"id": card["id"], "name": card["name"], "kind": card["kind"],
                               "category": blocks.category(card),
                               "verified": blocks.is_verified(card),
-                              "status": "never" if not last else ("ok" if last.get("ok") else
-                                                                    (last.get("status") if last.get("status") in ("quota", "listed") else "fail")),
+                              "status": status,
                               "reason": (last or {}).get("reason") or "", "time": (last or {}).get("time") or "",
                               "seconds": (last or {}).get("seconds") or 0,
-                              "models": len((last or {}).get("models") or []) if card["kind"] == "llm_api" else 0})
+                              "models": models_count,
+                              "models_from": (last or {}).get("models_from", ""),
+                              "model_status": blocks.model_status(card["id"], home)})
             self._json({"blocks": items, "broken": broken, "pending": self._blocks_pending(home, items, broken)})
         elif path == "/api/blocks/detail":
             card_id = query.get("id", "")
@@ -572,12 +592,31 @@ class Handler(BaseHTTPRequestHandler):
             secrets = [{"account": blocks.secret_account(card["id"], item["env"]), "label": item["label"],
                         "saved": bool(self.server.blocks_saved_keys.get(blocks.secret_account(card["id"], item["env"])))}
                        for item in card.get("secrets") or []]
+            last_check = blocks.last_record(card_id, home, type="check")
+            recs = blocks.records(card_id, home)
+            last_check_idx = -1
+            for idx, r in enumerate(recs):
+                if r.get("type") == "check":
+                    last_check_idx = idx
+            if last_check is None:
+                status = "never"
+            elif last_check.get("ok"):
+                status = "ok"
+            elif any(r.get("type") == "model_check" and r.get("ok") for r in recs[last_check_idx + 1:]):
+                status = "ok"
+            elif last_check.get("status") in ("quota", "listed"):
+                status = last_check.get("status")
+            else:
+                status = "fail"
             self._json({"card": card, "verified": blocks.is_verified(card), "preview": preview,
                         "category": blocks.category(card), "secrets": secrets,
                         "search_saved": bool(card["kind"] == "search" and self._blocks_search_key({})),
                         "key_account": card.get("key_account", ""),
-                        "last_check": blocks.last_record(card_id, home, type="check"),
-                        "last_install": blocks.last_record(card_id, home, type="install")})
+                        "last_check": last_check,
+                        "last_install": blocks.last_record(card_id, home, type="install"),
+                        "status": status,
+                        "models_from": (last_check or {}).get("models_from", ""),
+                        "model_status": blocks.model_status(card_id, home)})
         elif path == "/api/blocks/job":
             job_id = query.get("id", "")
             if not job_id and query.get("proposal"):
@@ -679,6 +718,20 @@ class Handler(BaseHTTPRequestHandler):
             except BlockError:
                 self._json({"error": "基础层里没有这个积木块"}, 404)
                 return
+            model = body.get("model")
+            if model is not None:
+                is_preset = (card.get("kind") == "cli" and card.get("role") != "tool"
+                             and card.get("id") in blocks.BUILTIN
+                             and card.get("command") == blocks.BUILTIN[card["id"]]["command"]
+                             and blocks.is_verified(card))
+                if not is_preset:
+                    self._json({"error": "没核实过的卡不能试模型"}, 400)
+                    return
+                last_check = blocks.last_record(card_id, home, type="check")
+                models = (last_check or {}).get("models") or []
+                if not models or model not in models:
+                    self._json({"error": "这个模型不在这家的名单里，先检测一次拿名单"}, 400)
+                    return
             approved = body.get("approved")
             api_key = (self._blocks_key(body, card.get("key_account", ""), card.get("provider", ""),
                                         card.get("base_url", "")) if card["kind"] == "llm_api" else
@@ -696,7 +749,7 @@ class Handler(BaseHTTPRequestHandler):
             if card["kind"] == "llm_api" and not api_key:
                 self._json({"error": "要先填密钥"}, 400)
                 return
-            job = self._blocks_job("check", self._blocks_check_work(home, card, approved, api_key, keys))
+            job = self._blocks_job("check", self._blocks_check_work(home, card, approved, api_key, keys, model=model))
             self._json({"job": job})
         elif path == "/api/blocks/connect_builtin":
             name = str(body.get("id") or "")
@@ -786,8 +839,24 @@ class Handler(BaseHTTPRequestHandler):
         except BlockError:
             return "unusable", f"用的积木块「{block_id}」已经移出基础层"
 
-        last = blocks.last_record(block_id, home, type="check")
-        if last is not None and not last.get("ok") and last.get("status") not in ("quota", "listed"):
+        recs = blocks.records(block_id, home)
+        last_check_idx = -1
+        last = None
+        for idx, r in enumerate(recs):
+            if r.get("type") == "check":
+                last_check_idx = idx
+                last = r
+        is_usable = True
+        if last is not None:
+            if last.get("ok"):
+                is_usable = True
+            elif any(r.get("type") == "model_check" and r.get("ok") for r in recs[last_check_idx + 1:]):
+                is_usable = True
+            elif last.get("status") in ("quota", "listed"):
+                is_usable = True
+            else:
+                is_usable = False
+        if not is_usable:
             bname = bcard.get("name", block_id)
             return "unusable", f"积木块「{bname}」上次检测没通过"
 
@@ -886,14 +955,26 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 bcard = blocks.load_card(block_id, home)
                 bmodel = str(bcard.get("model") or "")
-                binfo = {"id": block_id, "name": bcard.get("name", block_id), "exists": True, "kind": bcard.get("kind", ""), "model": bmodel}
+                binfo = {
+                    "id": block_id,
+                    "name": bcard.get("name", block_id),
+                    "exists": True,
+                    "kind": bcard.get("kind", ""),
+                    "model": bmodel,
+                    "command": bcard.get("command", ""),
+                    "verified": blocks.is_verified(bcard),
+                }
             except BlockError:
                 bcard = None
-                binfo = {"id": block_id, "name": block_id, "exists": False, "kind": "", "model": ""}
+                binfo = {"id": block_id, "name": block_id, "exists": False, "kind": "", "model": "", "command": "", "verified": False}
 
             status, status_reason = self._ability_status(card, home)
             models = []
-            if binfo["kind"] == "llm_api":
+            is_preset_cli = (bcard is not None and binfo["kind"] == "cli" and bcard.get("role") != "tool"
+                             and block_id in blocks.BUILTIN
+                             and bcard.get("command") == blocks.BUILTIN[block_id]["command"]
+                             and blocks.is_verified(bcard))
+            if binfo["kind"] == "llm_api" or is_preset_cli:
                 last_check = blocks.last_record(block_id, home, type="check") or {}
                 models = list(last_check.get("models") or [])
 
@@ -929,6 +1010,7 @@ class Handler(BaseHTTPRequestHandler):
                 "status": status,
                 "status_reason": status_reason,
                 "models": models,
+                "model_status": blocks.model_status(block_id, home),
                 "example": example,
                 "runs": recent_10,
                 "running": running,
@@ -1057,15 +1139,28 @@ class Handler(BaseHTTPRequestHandler):
             except AbilityError:
                 self._json({"error": "能力层里没有这张能力卡片"}, 404)
                 return
-            if card.get("how", {}).get("kind") != "llm_api":
+            kind = card.get("how", {}).get("kind")
+            block_id = card.get("block", "")
+            bcard = None
+            if block_id:
+                try:
+                    bcard = blocks.load_card(block_id, home)
+                    bname = bcard.get("name", block_id)
+                except BlockError:
+                    bname = block_id
+            else:
+                bname = ""
+            is_preset_cli = (
+                kind == "cli"
+                and bcard is not None
+                and bcard.get("role") != "tool"
+                and block_id in blocks.BUILTIN
+                and bcard.get("command") == blocks.BUILTIN[block_id]["command"]
+                and blocks.is_verified(bcard)
+            )
+            if kind != "llm_api" and not is_preset_cli:
                 self._json({"error": "这张卡这一版不能换模型"}, 400)
                 return
-            block_id = card.get("block", "")
-            try:
-                bcard = blocks.load_card(block_id, home)
-                bname = bcard.get("name", block_id)
-            except BlockError:
-                bname = block_id
             last_rec = blocks.last_record(block_id, home, type="check") or {}
             models = last_rec.get("models") or []
             if not models:

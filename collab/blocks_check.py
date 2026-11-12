@@ -27,6 +27,7 @@ from collab.agents import QuietTimeout, watched_runner
 from collab.blocks import BlockError
 from collab.blocks_env import _clean_path, _which, mask_emails
 from collab.blocks_env import remove_folder as _remove
+from collab.config import MODEL_OPTIONS
 from collab.providers import find as find_provider
 
 DEFAULT_TIMEOUT = 180
@@ -264,8 +265,88 @@ def check_search(card, key, root=None, record=True) -> dict:
         return _save(card["id"], result, root, record)
 
 
+def _is_preset_cli(card: dict) -> bool:
+    return (card.get("kind") == "cli" and card.get("role") != "tool"
+            and card.get("id") in blocks.BUILTIN
+            and card.get("command") == blocks.BUILTIN[card["id"]]["command"])
+
+
+def fetch_cli_models(card: dict, path=None) -> tuple[list[str], str]:
+    """获取预置命令行工具的模型名单：agy/Cursor跑命令，Codex读本地缓存。失败退回内置名单。"""
+    cid = card.get("id")
+    builtin_models = [m["value"] for m in MODEL_OPTIONS.get(cid, [])]
+    if cid == "codex":
+        home_dir = Path(os.environ.get("HOME", "")) if os.environ.get("HOME") else Path.home()
+        cache_file = home_dir / ".codex" / "models_cache.json"
+        if not cache_file.is_file():
+            return builtin_models, "builtin"
+        try:
+            raw = json.loads(cache_file.read_text(encoding="utf-8"))
+        except Exception:
+            return builtin_models, "builtin"
+        items = raw.get("models") if isinstance(raw, dict) else None
+        if not isinstance(items, list):
+            return builtin_models, "builtin"
+        names, seen = [], set()
+        for m in items:
+            if not isinstance(m, dict) or m.get("visibility") != "list":
+                continue
+            slug = str(m.get("slug") or "").strip()
+            if slug and slug not in seen and blocks._MODEL.fullmatch(slug):
+                seen.add(slug)
+                names.append(slug)
+        if names:
+            return names, "tool"
+        return builtin_models, "builtin"
+
+    lookup = os.environ.get("PATH", "") if path is None else path
+    found = _which(card["command"], lookup)
+    if not found:
+        return builtin_models, "builtin"
+    folder = Path(tempfile.mkdtemp(prefix="积木库-名单-"))
+    try:
+        args = [found, "models"]
+        env = {"PATH": os.path.dirname(found) + os.pathsep + _clean_path(os.environ.get("PATH", "")),
+               "HOME": os.environ.get("HOME", "")}
+        proc = subprocess.run(args, cwd=folder, env=env, stdin=subprocess.DEVNULL,
+                              capture_output=True, text=True, timeout=60)
+        if proc.returncode != 0:
+            return builtin_models, "builtin"
+        output = proc.stdout or ""
+        lines = output.splitlines()
+        names, seen = [], set()
+        if cid == "agy":
+            for line in lines:
+                if not line.strip() or line.startswith("Fetching available models"):
+                    continue
+                parts = line.split("\t")
+                name = parts[0].strip()
+                if name and name not in seen and blocks._MODEL.fullmatch(name):
+                    seen.add(name)
+                    names.append(name)
+        elif cid == "cursor":
+            for line in lines:
+                line_str = line.strip()
+                if not line_str or line_str.startswith("Available models"):
+                    continue
+                if " - " in line_str:
+                    name = line_str.split(" - ", 1)[0].strip()
+                else:
+                    name = line_str.split()[0].strip()
+                if name and name not in seen and blocks._MODEL.fullmatch(name):
+                    seen.add(name)
+                    names.append(name)
+        if names:
+            return names, "tool"
+        return builtin_models, "builtin"
+    except Exception:
+        return builtin_models, "builtin"
+    finally:
+        _remove(folder)
+
+
 def check_cli(card, root=None, approved=None, runner=None, timeout=DEFAULT_TIMEOUT, path=None,
-              terminal_path=None, record=True, keys=None) -> dict:
+              terminal_path=None, record=True, keys=None, model=None) -> dict:
     """检测一张 CLI 接法说明。返回 {ok, status(ok/missing/fail), reason, how, seconds, verified}。
     没核实过的卡，approved 必须是用户确认时看到的那条完整命令（preview 的结果），
     和现在要跑的对不上（卡改过、换了程序）就抛 BlockError，什么都不跑。"""
@@ -280,6 +361,53 @@ def check_cli(card, root=None, approved=None, runner=None, timeout=DEFAULT_TIMEO
     if card["role"] == "tool":
         return _check_tool(card, root, args, found, verified, keys, runner,
                            None if timeout == DEFAULT_TIMEOUT else timeout, terminal_path, record)
+
+    # 单个模型试用：必须在最近一次检测的名单里，且只写 model_check 记录
+    if model is not None:
+        last_check = blocks.last_record(card["id"], root, type="check")
+        valid_models = (last_check or {}).get("models") or []
+        if not valid_models or model not in valid_models:
+            raise BlockError("这个模型不在这家的名单里，先检测一次拿名单")
+        with _OneAtATime(card["id"]):
+            if not found:
+                missing = {"reason": f"没装：电脑上找不到 {card['command']} 这个命令",
+                           "how": f"先装好 {card['name']} 并登录，再检测一次"}
+                result = dict(ok=False, status="fail", verified=verified, seconds=0, model=model, **missing)
+                if record:
+                    return blocks.add_record(card["id"], dict(type="model_check", **result), root=root)
+                return result
+            done_file = card["done_when"]["file"]
+            run = runner or functools.partial(watched_runner, poll=0.5, quiet_limit=timeout + 5)
+            folder = Path(tempfile.mkdtemp(prefix="积木库检测-"))
+            trial_args = blocks.build_args(card, probe_prompt(done_file), model=model)
+            trial_args[0] = found
+            started = time.time()
+            output, ok, code = "", False, None
+            try:
+                code, output = run(trial_args, folder, timeout)
+                ok = code == 0 and (folder / done_file).is_file()
+            except subprocess.TimeoutExpired:
+                output = "超时"
+            except QuietTimeout as exc:
+                output = f"看门人：{exc}"
+            except OSError as exc:
+                output = f"运行不了：{exc}"
+            finally:
+                _remove(folder)
+            seconds = round(time.time() - started, 1)
+            if ok:
+                result = {"ok": True, "status": "ok", "reason": f"通了 · {seconds:g} 秒", "how": ""}
+            else:
+                reason, how = (_explain("", card["command"], card["name"]) if code == 0
+                               else _explain(output, card["command"], card["name"]))
+                status = "quota" if reason == QUOTA_REASON and code != 0 and is_quota(output) else "fail"
+                result = {"ok": False, "status": status, "reason": _mask(reason), "how": _mask(how)}
+            result.update(model=model, seconds=seconds, verified=verified)
+            if record:
+                return blocks.add_record(card["id"], dict(type="model_check", **result), root=root)
+            return result
+
+    # 常规检测
     with _OneAtATime(card["id"]):
         if not found:
             if terminal_path and _which(card["command"], terminal_path):
@@ -290,6 +418,11 @@ def check_cli(card, root=None, approved=None, runner=None, timeout=DEFAULT_TIMEO
                            "how": f"先装好 {card['name']} 并登录，再检测一次"}
             return _save(card["id"], dict(ok=False, status="missing", verified=verified, seconds=0, **missing),
                          root, record)
+        is_preset = _is_preset_cli(card)
+        models, models_from = None, None
+        if is_preset:
+            models, models_from = fetch_cli_models(card, path=lookup)
+
         done_file = card["done_when"]["file"]
         run = runner or functools.partial(watched_runner, poll=0.5, quiet_limit=timeout + 5)
         folder = Path(tempfile.mkdtemp(prefix="积木库检测-"))
@@ -308,15 +441,34 @@ def check_cli(card, root=None, approved=None, runner=None, timeout=DEFAULT_TIMEO
             _remove(folder)
         seconds = round(time.time() - started, 1)
         if ok:
-            result = {"ok": True, "status": "ok", "reason": f"通了 · {seconds:g} 秒", "how": ""}
+            if is_preset:
+                reason = f"通了 · {seconds:g} 秒，这家有 {len(models)} 个模型"
+            else:
+                reason = f"通了 · {seconds:g} 秒"
+            result = {"ok": True, "status": "ok", "reason": reason, "how": ""}
         else:
-            # 工具说成功了却没建文件：不去猜输出里的字眼，免得把“已登录”之类的话当成原因
             reason, how = (_explain("", card["command"], card["name"]) if code == 0
                            else _explain(output, card["command"], card["name"]))
-            # 只是额度不足：工具装好了、能连上服务，算接上了（用户 2026-11-09 定，模型和额度归能力层）
-            status = "quota" if reason == QUOTA_REASON and code != 0 and is_quota(output) else "fail"
-            result = {"ok": False, "status": status, "reason": _mask(reason), "how": _mask(how)}
+            is_connected = False
+            wording = ""
+            if is_preset and code != 0 and reason == QUOTA_REASON and is_quota(output):
+                is_connected = True
+                wording = "额度不足"
+            elif is_preset and card.get("id") in ("agy", "cursor") and models_from == "tool" and reason == "模型名不对":
+                is_connected = True
+                wording = f"没通，原因{reason}"
+
+            if is_connected:
+                status = "listed"
+                reason_text = f"已接上：这家有 {len(models)} 个模型。默认的 {card.get('model', '')} {wording}"
+                how_text = "可以在下面的名单里试试别的模型"
+                result = {"ok": False, "status": "listed", "reason": _mask(reason_text), "how": _mask(how_text)}
+            else:
+                status = "quota" if reason == QUOTA_REASON and code != 0 and is_quota(output) else "fail"
+                result = {"ok": False, "status": status, "reason": _mask(reason), "how": _mask(how)}
         result.update(seconds=seconds, verified=verified)
+        if is_preset:
+            result.update(models=models, models_from=models_from, model=card.get("model", ""))
         return _save(card["id"], result, root, record)
 
 

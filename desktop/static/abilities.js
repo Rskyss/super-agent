@@ -268,8 +268,21 @@ var AbilitiesCore = {
     return "把「" + title + "」移出能力层？记录和成果都留着。";
   },
 
-  canChangeModel: function (card) {
-    return !!(card && card.how && card.how.kind === "llm_api");
+  canChangeModel: function (card, block) {
+    if (!card || !card.how) return false;
+    if (card.how.kind === "llm_api") return true;
+    if (card.how.kind === "cli") {
+      var PRESET_COMMANDS = { codex: "codex", cursor: "agent", agy: "agy" };
+      var bid = card.block;
+      if (!bid || !PRESET_COMMANDS[bid]) return false;
+      if (block) {
+        if (!block.exists) return false;
+        if (block.command && block.command !== PRESET_COMMANDS[bid]) return false;
+        if (block.verified === false) return false;
+      }
+      return true;
+    }
+    return false;
   },
 
   // 三个模型框的值整理成要存的样子：空的不要、重复的只留一个、和主模型一样的备用去掉
@@ -547,7 +560,7 @@ if (typeof document !== "undefined") (function () {
     $("abilityBlockVal").textContent = bname;
 
     // 模型
-    var isLlm = AbilitiesCore.canChangeModel(card);
+    var isLlm = AbilitiesCore.canChangeModel(card, d.block);
     if (isLlm) {
       $("abilityModelRow").hidden = false;
       $("abilityModelGroup").hidden = false;
@@ -558,7 +571,7 @@ if (typeof document !== "undefined") (function () {
       $("abilityModelGroup").hidden = true;
       $("abilityCliModelVal").hidden = false;
       var cliModel = card.model || (d.block && d.block.model) || "跟着积木块默认";
-      $("abilityCliModelVal").innerHTML = AbilitiesCore.esc(cliModel) + ' <small class="dim">这一版不能换</small>';
+      $("abilityCliModelVal").innerHTML = AbilitiesCore.esc(cliModel) + ' <small class="dim">固定模型</small>';
     } else {
       // 搜索卡片不显示模型行
       $("abilityModelRow").hidden = true;
@@ -634,9 +647,17 @@ if (typeof document !== "undefined") (function () {
     }
   }
 
+  function modelOptionLabel(modelName, modelStatus) {
+    var info = (modelStatus && modelStatus[modelName]) || {};
+    var st = info.status;
+    var statusText = st === "ok" ? "能用" : (st === "quota" ? "额度不足" : (st === "fail" ? "不能用" : "没试过"));
+    return modelName + " · " + statusText;
+  }
+
   function renderModelSelectors(d) {
     var card = d.ability;
     var models = d.models || [];
+    var modelStatus = d.model_status || {};
     var selModel = $("abilityModel");
     var tip = $("abilityModelTip");
     selModel.innerHTML = "";
@@ -646,16 +667,19 @@ if (typeof document !== "undefined") (function () {
       opt.textContent = card.model || "";
       selModel.appendChild(opt);
       tip.hidden = false;
-      tip.textContent = "先去基础层检测「" + (d.block.name || d.block.id) + "」，拿到模型名单后才能换";
+      tip.textContent = "先去基础层检测「" + (d.block.name || d.block.id) + "」拿模型名单";
     } else {
       tip.hidden = true;
+      var blockDefault = (d.block && d.block.model) || "";
+      var activeModel = card.model || blockDefault || models[0];
       models.forEach(function (m) {
         var opt = document.createElement("option");
         opt.value = m;
-        opt.textContent = m;
-        if (m === card.model) opt.selected = true;
+        opt.textContent = modelOptionLabel(m, modelStatus);
+        if (m === activeModel) opt.selected = true;
         selModel.appendChild(opt);
       });
+      selModel.value = activeModel;
     }
 
     var backups = card.backup_models || [];
@@ -666,7 +690,7 @@ if (typeof document !== "undefined") (function () {
       models.forEach(function (m) {
         var opt = document.createElement("option");
         opt.value = m;
-        opt.textContent = m;
+        opt.textContent = modelOptionLabel(m, modelStatus);
         if (backups[idx] === m) opt.selected = true;
         sel.appendChild(opt);
       });
@@ -1029,7 +1053,8 @@ if (typeof document !== "undefined") (function () {
 
   function showSavedModels(card) {
     var backups = (card && card.backup_models) || [];
-    $("abilityModel").value = (card && card.model) || "";
+    var blockDefault = (currentDetailData && currentDetailData.block && currentDetailData.block.model) || "";
+    $("abilityModel").value = (card && card.model) || blockDefault || "";
     $("abilityBackup1").value = backups[0] || "";
     $("abilityBackup2").value = backups[1] || "";
   }
@@ -1038,7 +1063,9 @@ if (typeof document !== "undefined") (function () {
     if (!currentCard) return;
     var saveCard = currentCard;
     var saveGen = abilityGen;
-    var choice = AbilitiesCore.modelChoice($("abilityModel").value, $("abilityBackup1").value, $("abilityBackup2").value);
+    var blockDefault = (currentDetailData && currentDetailData.block && currentDetailData.block.model) || "";
+    var currentMain = $("abilityModel").value || saveCard.model || blockDefault;
+    var choice = AbilitiesCore.modelChoice(currentMain, $("abilityBackup1").value, $("abilityBackup2").value);
     var tip = $("abilitySaveModelTip");
     tip.textContent = "正在保存…";
     tip.className = "model-save-tip";

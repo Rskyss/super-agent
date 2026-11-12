@@ -579,3 +579,37 @@ def last_record(card_id, root=None, type=None):
         if type is None or item.get("type") == type:
             return item
     return None
+
+
+def model_status(card_id, root=None) -> dict:
+    """按每个模型最新记录汇总状态：来源是 model_check 记录和 check 记录里试的 model。"""
+    latest = {}
+    for index, item in enumerate(records(card_id, root)):
+        if item.get("type") not in ("check", "model_check"):
+            continue
+        model = item.get("model")
+        if not model or not isinstance(model, str):
+            continue
+        st = item.get("status")
+        reason = item.get("reason", "")
+        if item.get("type") == "check":
+            if st == "ok":
+                m_st = "ok"
+            elif st == "listed":
+                m_st = "quota" if ("额度不足" in reason or "quota" in str(reason).lower()) else "fail"
+            elif st in ("quota", "fail"):
+                m_st = st
+            else:
+                m_st = "fail"
+        else:
+            m_st = st or ("ok" if item.get("ok") else "fail")
+        key = (item.get("time", ""), index)
+        status_entry = {
+            "status": m_st,
+            "reason": reason,
+            "time": item.get("time", ""),
+        }
+        if model not in latest or key >= latest[model][0]:
+            latest[model] = (key, status_entry)
+    return {m: val[1] for m, val in latest.items()}
+
