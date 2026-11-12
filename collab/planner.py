@@ -12,7 +12,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 from typing import Optional, Tuple
 
-from collab.config import load_models
+from collab.config import load_models, models_for
 from collab.flow import record as flow_record
 from collab.state import Card
 from collab.workspace import PROFILE_TEMPLATE, has_blanks, profile_path, render_board
@@ -260,6 +260,14 @@ def _fail(card_dir: Path, summary: str, text: Optional[str] = None) -> int:
     return 2
 
 
+def plan_models(project) -> dict:
+    """写方案用的模型：调度员是 Codex 时用调度员这一岗自己的模型和强度（流程修理 ①），否则用 Codex 的整体设置。"""
+    try:
+        return models_for(project, "dispatcher", "codex")
+    except Exception:  # noqa: BLE001 — 团队配置读不出时照旧用整体设置
+        return load_models(project)
+
+
 def plan_card(project: str, card_id: str) -> int:
     """跑 Codex 写方案；成功写文件并记流转，失败记「方案失败」并返回 2。"""
     project = Path(project)
@@ -284,7 +292,7 @@ def plan_card(project: str, card_id: str) -> int:
         requirement = req_path.read_text(encoding="utf-8")
         need_profile = _need_profile(project)
         prompt = _build_prompt(card_dir, requirement, need_profile, project=project)
-        models = load_models(project)
+        models = plan_models(project)
         model = models.get("codex") or "gpt-6.1-sol"
         effort = str(models.get("codex_effort") or "xhigh")
 

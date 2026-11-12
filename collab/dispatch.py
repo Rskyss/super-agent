@@ -600,7 +600,9 @@ _VERDICT_SUMMARY = {PASS: "测试全部通过", FAIL: "测试没过", ENV_ERROR:
 def run_card(card: Card, collab_dir, worktree, test_command, dev_adapter, test_adapter,
              ask_fn=default_ask, judge_fn=default_judge, models=None,
              allowed=None, changed_fn=None, page_command=None, reviewer_adapter=None,
-             revert_fn=None, require_tests=False):
+             revert_fn=None, require_tests=False, role_models=None):
+    """role_models：{测试员|开发员|复查员: 模型设置}，每个岗位用自己的模型和强度（流程修理 ①）；没给的岗位用 models。"""
+    by_role = role_models or {}
     collab = Path(collab_dir)
     cdir = _card_dir(collab, card)
     cdir.mkdir(parents=True, exist_ok=True)
@@ -644,7 +646,7 @@ def run_card(card: Card, collab_dir, worktree, test_command, dev_adapter, test_a
             tester_prompt = (f"{_READ_RULES}按任务卡 {needs} 的验收标准编写自动化测试，放进项目的测试目录。"
                              f"只写测试，不改产品代码，改了也会被撤掉。{revise_bit}{plan_hint}{run_hint}"
                              f"{_tester_conflict_note(cdir)}")
-        prep = _dispatch(ask_fn, cdir, "测试员", test_adapter, "写测试", tester_prompt, worktree, models, 1,
+        prep = _dispatch(ask_fn, cdir, "测试员", test_adapter, "写测试", tester_prompt, worktree, by_role.get("测试员", models), 1,
                          test_command=test_command)
         # 摘要变了或新出现的文件算测试文件；以前的测试文件还在的也保留
         root = Path(worktree)
@@ -729,7 +731,7 @@ def run_card(card: Card, collab_dir, worktree, test_command, dev_adapter, test_a
             else:
                 step_name = "返工修改"
             dev = _dispatch(ask_fn, cdir, "开发员", dev_adapter, step_name,
-                            dev_prompt, worktree, models, rnd, test_command=test_command)
+                            dev_prompt, worktree, by_role.get("开发员", models), rnd, test_command=test_command)
             if not dev.ok:
                 return _worker_failed(collab, cdir, card, "开发员", dev_adapter, dev)
             _save_report(cdir, reply_text(dev))
@@ -796,7 +798,7 @@ def run_card(card: Card, collab_dir, worktree, test_command, dev_adapter, test_a
                                f"{_tester_files_hint(cdir)}"
                                f"台账、归档这些流程记录由程序在施工结束后补写，现在没有不算问题。"
                                f"第一行写“结论：通过”或“结论：不通过”，之后列出问题。不要修改任何文件。",
-                               worktree, models, card.rework + 1, test_command=test_command)
+                               worktree, by_role.get("复查员", models), card.rework + 1, test_command=test_command)
             review_text = reply_text(review)
             _append(cdir / "复查结果.md", f"\n## 复查（{reviewer_adapter}）\n{review_text}\n")
             verdict_kind = review_verdict(review_text)

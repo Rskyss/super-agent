@@ -31,7 +31,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:  # 直接用 python3 desktop/server.py 启动时也能找到 collab
     sys.path.insert(0, str(ROOT))
 
-from collab.check import check_team  # noqa: E402
+from collab.check import DEFAULT_TIMEOUT as CHECK_TIMEOUT, check_team  # noqa: E402
 from collab.cli import cmd_approve, cmd_confirm_profile  # noqa: E402
 from collab.dispatch import uncommitted_count  # noqa: E402
 from collab.config import (  # noqa: E402
@@ -41,9 +41,11 @@ from collab.config import (  # noqa: E402
     load_clerk,
     load_model_options,
     load_models,
+    load_role_models,
     load_team,
     save_clerk,
     save_models,
+    save_role_models,
     save_team,
 )
 from collab.flow import read_flow, record as flow_record  # noqa: E402
@@ -1303,13 +1305,16 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 team = load_team(project)
                 models = load_models(project)
+                role_models = load_role_models(project, team)
             except ConfigError as exc:
                 team, models, problem = dict(DEFAULT_TEAM, dispatcher=None, configured=False), dict(DEFAULT_MODELS), str(exc)
+                role_models = {}
             else:
                 problem = ""
-            self._json({"team": team, "models": models, "problem": problem, "git": (Path(project) / ".git").exists(),
+            self._json({"team": team, "models": models, "role_models": role_models, "problem": problem,
+                        "git": (Path(project) / ".git").exists(),
                         "installed": (Path(project) / ".collab" / "cards").is_dir(), "options": _TEAM_OPTIONS,
-                        "model_options": load_model_options()})
+                        "model_options": load_model_options(), "check_timeout": CHECK_TIMEOUT})
         elif path == "/api/team/check":
             state = self.server.checks.get((str(Path(project).resolve()), query.get("run", "")))
             if state is None:
@@ -1333,6 +1338,8 @@ class Handler(BaseHTTPRequestHandler):
                 save_team(project, body.get("team") or {})
                 if body.get("models") is not None:
                     save_models(project, body.get("models") or {})
+                if body.get("role_models") is not None:
+                    save_role_models(project, body.get("role_models") or {})  # 每个岗位各存各的（流程修理 ①）
             except ConfigError as exc:
                 self._json({"error": str(exc)}, 400)
                 return
@@ -1350,7 +1357,8 @@ class Handler(BaseHTTPRequestHandler):
 
             def run():
                 try:
-                    check_team(project, team=team, on_result=collect, roles=body.get("roles"), models=models)
+                    check_team(project, team=team, on_result=collect, roles=body.get("roles"), models=models,
+                               role_models=body.get("role_models"))
                 finally:
                     with state["lock"]:
                         state["done"] = True

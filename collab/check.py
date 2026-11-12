@@ -15,7 +15,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from collab.agents import ask, watched_runner
-from collab.config import load_models, load_team
+from collab.config import load_models, load_role_models, load_team
 
 COMMANDS = {"codex": "codex", "cursor": "agent", "agy": "agy"}   # Cursor 的命令行叫 agent
 TOOL_NAMES = {"codex": "Codex", "cursor": "Cursor", "agy": "agy", "none": "不复查"}
@@ -83,9 +83,10 @@ def check_tool(tool: str, models: dict, timeout: float = DEFAULT_TIMEOUT) -> dic
 
 
 def check_team(project_dir, team=None, timeout: float = DEFAULT_TIMEOUT, on_result=None,
-               roles=None, models=None) -> list:
+               roles=None, models=None, role_models=None) -> list:
     """检测整个团队，按 调度员、写测试、写代码、复查 的顺序返回；每出一个结果就回调一次 on_result。
-    roles：只测这几个岗位（点某一行的“检测生效”时用）。"""
+    roles：只测这几个岗位（点某一行的“检测生效”时用）。
+    role_models：页面上每个岗位此刻选的模型（还没保存的也算）；同一家工具、同样设置的几个岗位只测一次。"""
     team = team or load_team(project_dir)
     effective_models = load_models(project_dir)
     if isinstance(models, dict):
@@ -102,7 +103,26 @@ def check_team(project_dir, team=None, timeout: float = DEFAULT_TIMEOUT, on_resu
         if on_result:
             on_result(item)
 
-    owners = {}  # 工具 -> 第一个用它的岗位（只测一次）
+    saved_roles = {}
+    try:
+        saved_roles = load_role_models(project_dir, team)
+    except Exception:  # noqa: BLE001 — 配置读不出时用整体设置
+        saved_roles = {}
+    picked = dict(saved_roles)
+    if isinstance(role_models, dict):
+        picked.update({r: v for r, v in role_models.items() if isinstance(v, dict)})
+
+    def models_of(role: str, tool: str) -> dict:
+        mine = dict(models)
+        item = picked.get(role) or {}
+        if item.get("tool") == tool and str(item.get("model") or "").strip():
+            mine[tool] = str(item["model"]).strip()
+            if tool == "codex" and item.get("effort"):
+                mine["codex_effort"] = str(item["effort"]).strip()
+        return mine
+
+    owners = {}  # (工具, 模型设置) -> 用它的岗位（同样设置只测一次）
+    settings = {}
     for role in ROLE_ORDER:
         if roles is not None and role not in roles:
             continue
@@ -113,11 +133,15 @@ def check_team(project_dir, team=None, timeout: float = DEFAULT_TIMEOUT, on_resu
         elif role == "reviewer" and tool == "none":
             report(role, tool, {"ok": True, "status": "skipped", "reason": "不复查，不用检测", "how": "", "seconds": 0})
         else:
-            owners.setdefault(tool, []).append(role)
+            mine = models_of(role, tool) if tool in COMMANDS else models
+            key = (tool, mine.get(tool), mine.get("codex_effort") if tool == "codex" else "")
+            owners.setdefault(key, []).append(role)
+            settings[key] = mine
 
-    def run(tool: str):
-        body = check_tool(tool, models, timeout)
-        first, *rest = owners[tool]
+    def run(key):
+        tool = key[0]
+        body = check_tool(tool, settings[key], timeout)
+        first, *rest = owners[key]
         report(first, tool, body)
         for role in rest:
             report(role, tool, body, shared_with=first)

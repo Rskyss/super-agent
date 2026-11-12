@@ -272,6 +272,83 @@ def save_models(project_dir, models: dict) -> None:
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
+_ALL_ROLES = ("dispatcher", "tester", "developer", "reviewer")
+_RUN_ROLES = {"test": ("tester", "测试员"), "dev": ("developer", "开发员"), "review": ("reviewer", "复查员")}
+
+
+def load_role_models(project_dir, team: Optional[dict] = None) -> dict:
+    """每个岗位用的模型：{岗位: {tool, model[, effort]}}。存的是哪家工具就只对那家算数；
+    没单独存过的岗位用这家工具的整体设置（老配置读进来自动分给每个岗位，用户不用重配）。"""
+    data = _read(project_dir)
+    saved = data.get("role_models") if isinstance(data.get("role_models"), dict) else {}
+    tool_models = load_models(project_dir)
+    team = team or load_team(project_dir)
+    out = {}
+    for role in _ALL_ROLES:
+        tool = team.get(role)
+        if tool not in WORKERS:
+            continue
+        own = saved.get(role) if isinstance(saved.get(role), dict) else {}
+        mine = own.get("tool") == tool
+        entry = {"tool": tool, "model": str(own.get("model") or "").strip() if mine else ""}
+        entry["model"] = entry["model"] or tool_models[tool]
+        if tool == "codex":
+            effort = own.get("effort") if mine else None
+            entry["effort"] = effort if effort in CODEX_EFFORTS else tool_models["codex_effort"]
+        out[role] = entry
+    return out
+
+
+def models_for(project_dir, role: str, tool: Optional[str] = None, team: Optional[dict] = None) -> dict:
+    """派活用的整份模型设置，其中这个岗位那家工具换成岗位自己的选择。tool 和岗位存的不是一家时用整体设置。"""
+    models = load_models(project_dir)
+    mine = load_role_models(project_dir, team).get(role)
+    if mine and (tool is None or mine["tool"] == tool):
+        models[mine["tool"]] = mine["model"]
+        if mine["tool"] == "codex":
+            models["codex_effort"] = mine["effort"]
+    return models
+
+
+def run_models(project_dir, tools: dict) -> dict:
+    """施工时三位执行员各自的模型：{测试员|开发员|复查员: 整份模型设置}。tools 是 run_tools 的结果。"""
+    out = {}
+    for key, (role, name) in _RUN_ROLES.items():
+        tool = tools.get(key)
+        if tool:
+            out[name] = models_for(project_dir, role, tool)
+    return out
+
+
+def save_role_models(project_dir, role_models: dict) -> None:
+    """按岗位存模型，其他设置原样保留。只认 Codex、Cursor、agy；Codex 的思考强度必须是认识的档位。"""
+    if not isinstance(role_models, dict):
+        raise ConfigError("岗位模型格式不对")
+    data = _read(project_dir)
+    saved = data.get("role_models") if isinstance(data.get("role_models"), dict) else {}
+    saved = dict(saved)
+    for role, item in role_models.items():
+        if role not in _ALL_ROLES or not isinstance(item, dict):
+            raise ConfigError(f"不认识的岗位：{role!r}")
+        tool = item.get("tool")
+        if tool not in WORKERS:
+            continue  # 自定义调度员、不复查：没有模型可选
+        model = str(item.get("model") or "").strip()
+        if not model:
+            raise ConfigError(f"{_ROLES[role]}的模型名不能为空")
+        clean = {"tool": tool, "model": model}
+        if tool == "codex":
+            effort = str(item.get("effort") or "").strip()
+            if effort not in CODEX_EFFORTS:
+                raise ConfigError(f"{_ROLES[role]}的思考强度不能是 {effort!r}：可选 {'、'.join(CODEX_EFFORTS)}")
+            clean["effort"] = effort
+        saved[role] = clean
+    data["role_models"] = saved
+    path = _config_path(project_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
 def load_clerk(project_dir) -> Optional[Dict[str, Any]]:
     """读项目的行政设置。没有配过就返回 None。"""
     raw = _read(project_dir).get("clerk")

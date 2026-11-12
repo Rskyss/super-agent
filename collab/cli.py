@@ -21,7 +21,7 @@ from collab.agents import ask as default_ask
 from collab.agents import kill_current_tool_process_group
 from collab.archive import archive_card
 from collab.install import InstallError, find_old_package, install_into, migrate
-from collab.config import ConfigError, load_models, run_tools
+from collab.config import ConfigError, load_models, run_models, run_tools
 from collab.dispatch import run_card
 from collab.merge import merge_card
 from collab.planner import plan_card
@@ -241,6 +241,7 @@ def cmd_run(args, ask_fn=None, judge_fn=None, **_):
         dev_adapter=tools["dev"], test_adapter=tools["test"],
         ask_fn=ask_fn or default_ask, judge_fn=judge_fn or default_judge,
         models=load_models(args.project),
+        role_models=run_models(args.project, {"test": tools["test"], "dev": tools["dev"], "review": reviewer}),
         allowed=allowed,
         page_command=(["/bin/bash", "-o", "pipefail", "-c", args.page_check]
                       if args.page_check else None),

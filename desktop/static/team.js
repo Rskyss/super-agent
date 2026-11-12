@@ -6,10 +6,29 @@
 var TeamCore = {
   // 选“不复查”的那行不用测
   needsCheck: function (team, role) { return !(role === "reviewer" && team.reviewer === "none"); },
-  // 这一行和哪些行用同一家工具：同一家共用一套模型，一起测、一起失效
-  rolesSharingTool: function (team, role, active) {
+  // 这一行和哪些行一起测：同一家工具、同样的模型和强度（每个岗位各选各的，流程修理 ①）；不给 picks 时按同一家算
+  rolesSharingTool: function (team, role, active, picks) {
     if (!TeamCore.needsCheck(team, role)) return [];
-    return active.filter(function (r) { return team[r] === team[role] && TeamCore.needsCheck(team, r); });
+    var key = TeamCore.pickKey(team, role, picks);
+    return active.filter(function (r) {
+      return team[r] === team[role] && TeamCore.needsCheck(team, r) && TeamCore.pickKey(team, r, picks) === key;
+    });
+  },
+  pickKey: function (team, role, picks) {
+    var p = picks && picks[role];
+    if (!p || p.tool !== team[role]) return String(team[role]);
+    return [p.tool, p.model || "", p.effort || ""].join("|");
+  },
+  // 团队有改动却存不了时，说清是谁还没测通（68b 前用户点保存，设置悄悄丢了，②）
+  unsavedReason: function (s) {
+    var names = { dispatcher: "调度员", tester: "写测试", developer: "写代码", reviewer: "复查" };
+    if (!s.team.dispatcher) return "还没选调度员";
+    var need = s.active.filter(function (r) { return TeamCore.needsCheck(s.team, r); });
+    var bad = need.filter(function (r) { return s.results[r] && !s.results[r].ok; });
+    if (bad.length) return bad.map(function (r) { return names[r]; }).join("、") + "没测通";
+    var unchecked = need.filter(function (r) { return !(s.results[r] && s.results[r].ok); });
+    if (!s.configured && unchecked.length) return unchecked.map(function (r) { return names[r]; }).join("、") + "还没检测";
+    return "";
   },
   // 第一次配置要全员测通；已配置的项目没测的不拦，只拦标红的
   canSave: function (s) {
@@ -30,7 +49,10 @@ if (typeof document !== "undefined") (function () {
   var ALL_ROLES = ["dispatcher", "tester", "developer", "reviewer"];
   var rows = {}, info = null, results = {}, installed = true;
   var pending = {}, runSeq = 0;   // pending：岗位 -> 正在等第几次检测的结果；改了这一行就不再等
-  var currentModels = { codex: "gpt-6.1-sol", codex_effort: "xhigh", cursor: "auto", agy: "gemini-4-argon-high" };
+  var currentModels = { codex: "gpt-6.1-sol", codex_effort: "xhigh", cursor: "auto", agy: "gemini-4-argon-high" };  // 每家工具的整体设置（岗位没单独选时用它）
+  var picks = {};          // 岗位 -> {tool, model, effort}：每个岗位各选各的（流程修理 ①）
+  var savedSnapshot = "";  // 打开页面时存着的团队和岗位模型：用来判断有没有没保存的改动
+  var checkTimeout = 120;
   var modelOptions = { codex: [], codex_effort: [], cursor: [], agy: [] };
   var providers = [];
   var clerkBaseline = "";
@@ -172,8 +194,9 @@ if (typeof document !== "undefined") (function () {
     box.hidden = false;
     box.innerHTML = "";
 
+    var pick = pickOf(role, tool);
     var opts = (modelOptions[tool] || []).slice();
-    var curVal = currentModels[tool] || "";
+    var curVal = pick.model || "";
     var inPreset = opts.some(function (o) { return o.value === curVal; });
     if (curVal && !inPreset) {
       opts.unshift({ value: curVal, label: curVal + "（当前）" });
@@ -209,33 +232,31 @@ if (typeof document !== "undefined") (function () {
     sel1.addEventListener("change", function () {
       if (sel1.value === "__custom__") {
         customInput.hidden = false;
-        customInput.value = currentModels[tool] || "";
+        customInput.value = pick.model || "";
         customInput.focus();
       } else {
         customInput.hidden = true;
-        currentModels[tool] = sel1.value;
+        pick.model = sel1.value;
         if (tool === "codex") renderRoleModelBox(role);
-        syncOtherModelBoxes(role);
         onModelModified(role);
       }
     });
     customInput.addEventListener("input", function () {
       var v = customInput.value.trim();
       if (v) {
-        currentModels[tool] = v;
-        syncOtherModelBoxes(role);
+        pick.model = v;
         onModelModified(role);
       }
     });
 
     if (tool === "codex") {
-      var matched = (modelOptions.codex || []).find(function (m) { return m.value === currentModels.codex; });
+      var matched = (modelOptions.codex || []).find(function (m) { return m.value === pick.model; });
       var allowedEfforts = (matched && matched.efforts && matched.efforts.length) ? matched.efforts : null;
       var effortOpts = (modelOptions.codex_effort || []).filter(function (o) {
         return !allowedEfforts || allowedEfforts.indexOf(o.value) !== -1;
       });
-      if (effortOpts.length && !effortOpts.some(function (o) { return o.value === currentModels.codex_effort; })) {
-        currentModels.codex_effort = effortOpts[effortOpts.length - 1].value;
+      if (effortOpts.length && !effortOpts.some(function (o) { return o.value === pick.effort; })) {
+        pick.effort = effortOpts[effortOpts.length - 1].value;
       }
       var row2 = document.createElement("div");
       row2.className = "model-row effort";
@@ -251,10 +272,9 @@ if (typeof document !== "undefined") (function () {
         op.textContent = o.label;
         sel2.appendChild(op);
       });
-      sel2.value = currentModels.codex_effort || "xhigh";
+      sel2.value = pick.effort || "xhigh";
       sel2.addEventListener("change", function () {
-        currentModels.codex_effort = sel2.value;
-        syncOtherModelBoxes(role);
+        pick.effort = sel2.value;
         onModelModified(role);
       });
       row2.appendChild(lbl2);
@@ -268,11 +288,35 @@ if (typeof document !== "undefined") (function () {
     }
   }
 
-  function syncOtherModelBoxes(changedRole) {
-    ALL_ROLES.forEach(function (r) {
-      if (r !== changedRole) renderRoleModelBox(r);
-    });
+  // 这个岗位此刻的模型选择；换了工具就从这家的整体设置起步
+  function pickOf(role, tool) {
+    var p = picks[role];
+    if (!p || p.tool !== tool) {
+      p = { tool: tool, model: currentModels[tool] || "" };
+      if (tool === "codex") p.effort = currentModels.codex_effort || "xhigh";
+      picks[role] = p;
+    }
+    return p;
   }
+  function rolePicks() {
+    var t = team(), out = {};
+    ALL_ROLES.forEach(function (r) {
+      var tool = r === "dispatcher" ? t.dispatcher : t[r];
+      if (tool === "codex" || tool === "cursor" || tool === "agy") out[r] = pickOf(r, tool);
+    });
+    return out;
+  }
+  function snapshot() { return JSON.stringify({ team: team(), picks: rolePicks() }); }
+  function teamChanged() { return installed && !!savedSnapshot && snapshot() !== savedSnapshot; }
+  // 改了没保存就离开（点齿轮重开）时不能丢（④）：改动先记在本机，回来自动恢复
+  function draftKey() { return "team-draft:" + project; }
+  function keepDraft() {
+    try {
+      if (teamChanged()) localStorage.setItem(draftKey(), snapshot());
+      else localStorage.removeItem(draftKey());
+    } catch (e) { /* 存不了就算了 */ }
+  }
+  function dropDraft() { try { localStorage.removeItem(draftKey()); } catch (e) { /* 无 */ } }
 
   function renderAllModelBoxes() {
     ALL_ROLES.forEach(renderRoleModelBox);
@@ -338,10 +382,11 @@ if (typeof document !== "undefined") (function () {
   function invalidate(roles) {
     roles.forEach(function (r) { delete results[r]; delete pending[r]; setIdle(r, true); });
     refresh();
+    keepDraft();
   }
 
   function onModelModified(role) {
-    invalidate(TeamCore.rolesSharingTool(team(), role, activeRoles()));
+    invalidate([role]);
   }
 
   function apply(r) {
@@ -363,8 +408,15 @@ if (typeof document !== "undefined") (function () {
   }
 
   function watch(run, id, roles) {
+    var started = Date.now(), limit = (checkTimeout + 30) * 1000;
     var timer = setInterval(function () {
       if (!waitingOn(id, roles).length) { clearInterval(timer); return; }
+      // 到时间一定给结果（③：agy 检测曾一直停在“检测中”）
+      if (Date.now() - started > limit) {
+        clearInterval(timer);
+        giveUp(id, roles, "超过 " + Math.round(limit / 60000) + " 分钟还没有结果，算没通：可能卡住了。再点一次“检测”，或换一家、换个模型");
+        return;
+      }
       get("/api/team/check", { run: run }).then(function (d) {
         d.results.forEach(function (r) {
           if (pending[r.role] === id) { delete pending[r.role]; apply(r); }
@@ -376,14 +428,14 @@ if (typeof document !== "undefined") (function () {
   }
 
   function check(role) {
-    var t = team(), roles = TeamCore.rolesSharingTool(t, role, activeRoles()), id = ++runSeq;
+    var t = team(), roles = TeamCore.rolesSharingTool(t, role, activeRoles(), rolePicks()), id = ++runSeq;
     roles.forEach(function (r) {
       delete results[r];
       pending[r] = id;
       setState(r, "run", "检测中…在临时文件夹里试着建一个文件");
     });
     refresh();
-    post("/api/team/check", { team: t, models: currentModels, roles: roles })
+    post("/api/team/check", { team: t, models: currentModels, role_models: rolePicks(), roles: roles })
       .then(function (d) { watch(d.run, id, roles); })
       .catch(function (err) { giveUp(id, roles, err.message); });
   }
@@ -412,8 +464,40 @@ if (typeof document !== "undefined") (function () {
   function saveTeamThenDone() {
     var t = team();
     if (!installed) { done(t.dispatcher); return; }
-    post("/api/team/save", { team: t, models: currentModels }).then(function () { done(); })
+    post("/api/team/save", { team: t, models: currentModels, role_models: rolePicks() }).then(function () { dropDraft(); done(); })
       .catch(function (err) { $("summary").className = "summary bad"; $("summary").textContent = err.message; });
+  }
+
+  function restoreDraft() {
+    var raw = null;
+    try { raw = localStorage.getItem(draftKey()); } catch (e) { raw = null; }
+    if (!raw || raw === savedSnapshot) return;
+    var d;
+    try { d = JSON.parse(raw); } catch (e) { dropDraft(); return; }
+    if (!d || !d.team) return;
+    ALL_ROLES.forEach(function (r) {
+      var v = d.team[r];
+      if (v === undefined) return;
+      if (r === "dispatcher" && v && v.indexOf("custom:") === 0) {
+        toolSelect(r).value = "custom";
+        var box = rows.dispatcher.querySelector(".custom");
+        box.hidden = false; box.value = v.slice(7);
+      } else {
+        toolSelect(r).value = v;
+      }
+    });
+    picks = Object.assign(picks, d.picks || {});
+    renderAllModelBoxes();
+    var saved = {};
+    try { saved = JSON.parse(savedSnapshot); } catch (e) { saved = {}; }
+    ALL_ROLES.forEach(function (r) {
+      var was = JSON.stringify([saved.team && saved.team[r], saved.picks && saved.picks[r]]);
+      var now = JSON.stringify([d.team[r], d.picks && d.picks[r]]);
+      setIdle(r, was !== now);   // 只有真改过的那几行标“已调整”
+    });
+    refresh();
+    $("summary").className = "summary";
+    $("summary").textContent = "上次改了还没保存，已帮你恢复（要重新检测再保存）。";
   }
 
   window.SuperAgentTeam = {
@@ -427,7 +511,7 @@ if (typeof document !== "undefined") (function () {
         clerkBaseline = clerkSent || clerkSnapshot(clerkChoice());
         setClerkState("ok", "已配置");
         if (canSaveTeam()) saveTeamThenDone();
-        else if (!isAlreadyConfigured()) done();   // 团队还没配：只用行政也能回到对话
+        else if (!isAlreadyConfigured()) leaveWithoutTeam();   // 团队还没配：只用行政也能回到对话
         else {
           refresh();
           $("summary").className = "summary bad";
@@ -487,11 +571,19 @@ if (typeof document !== "undefined") (function () {
   ALL_ROLES.forEach(function (r) {
     rows[r].querySelector(".check-one").addEventListener("click", function () { check(r); });
   });
+  // 团队有改动却存不了：说清楚是谁没测通，问要不要不保存就回去（②：以前悄悄丢掉）
+  function leaveWithoutTeam() {
+    if (!teamChanged()) { done(); return; }
+    var why = TeamCore.unsavedReason({ team: team(), active: activeRoles(), results: results, configured: isAlreadyConfigured() });
+    $("summary").className = "summary bad";
+    $("summary").textContent = "团队的改动还没存：" + (why || "有一行没测通") + "。";
+    if (window.confirm("团队的改动还没存：" + (why || "有一行没测通") + "。\n不保存，直接回到对话吗？（改动会留着，下次打开设置还在）")) done();
+  }
   $("save").addEventListener("click", function () {
     if (clerkWaiting) return;
     if (!clerkChanged()) {
       if (canSaveTeam()) saveTeamThenDone();
-      else done();   // 只用行政：团队没配也能回到对话
+      else leaveWithoutTeam();   // 只用行政：团队没配也能回到对话；但改了的不能悄悄丢
       return;
     }
     clerkWaiting = true;
@@ -511,6 +603,8 @@ if (typeof document !== "undefined") (function () {
       info = d;
       installed = d.installed;
       if (d.models) currentModels = Object.assign(currentModels, d.models);
+      if (d.role_models) picks = JSON.parse(JSON.stringify(d.role_models));
+      if (d.check_timeout) checkTimeout = d.check_timeout;
       if (d.model_options) modelOptions = Object.assign(modelOptions, d.model_options);
       $("workers").hidden = !installed;
       $("noGit").hidden = installed;
@@ -521,6 +615,8 @@ if (typeof document !== "undefined") (function () {
       fill("reviewer", d.options.reviewer, d.team.reviewer);
       renderAllModelBoxes();
       reset();
+      savedSnapshot = snapshot();
+      restoreDraft();
       return loadClerkRow();
     }).catch(function (err) { $("problem").hidden = false; $("problem").textContent = "读不到团队配置：" + err.message; });
   }
