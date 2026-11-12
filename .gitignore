@@ -13,3 +13,5 @@ __pycache__/
 # 桌面窗口的编译产物（下载的终端组件、编译结果、打包出的应用）
 desktop/mac/.build/
 desktop/mac/build/
+# 超级助手的施工过程记录，只留在本机
+.collab/
