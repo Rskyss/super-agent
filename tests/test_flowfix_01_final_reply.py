@@ -47,6 +47,16 @@ class CodexLastMessage(unittest.TestCase):
         result = ask("codex", "复查", tempfile.gettempdir(), runner=runner)
         self.assertEqual(result.final.strip(), "结论：通过")
 
+    def test_codex_without_last_file_takes_only_last_message(self):
+        """复查第 3 轮 N2：没拿到最后回复文件时，不能把过程里引用的“结论：通过”当结论。"""
+        transcript = ("user\n第一行写“结论：通过”\ncodex\n结论：通过 这句是我在复述要求\nexec\nls\n"
+                      "codex\n结论：不通过\n1. 少了一处\ntokens used\n1234\n结论：不通过\n1. 少了一处\n")
+
+        def runner(cmd, cwd, timeout, **kw):
+            return 0, transcript
+        result = ask("codex", "复查", tempfile.gettempdir(), runner=runner)
+        self.assertEqual(result.final.strip(), "结论：不通过\n1. 少了一处")
+
 
 class EmptyReplyIsNotDone(unittest.TestCase):
     def test_empty_reply_twice_is_failure(self):
