@@ -526,7 +526,9 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
         tone = tone_map.get(phase.get("tone"), tone)
     working = bool(open_ev) and not interrupted_run and state not in TERMINAL_STATES
     detail = live_hint(cdir / open_ev["live"]) if working and open_ev.get("live") else ""
-    view["now"] = {"text": now_text, "tone": tone, "detail": detail}
+    view["now"] = {"text": now_text, "tone": tone}
+    if detail:
+        view["now"]["detail"] = detail
     # 卡片标题下那一行“此刻在干什么”用（流程修理 ⑪）
     view["live"] = working
     view["quiet"] = int(quiet) if working and quiet is not None else None

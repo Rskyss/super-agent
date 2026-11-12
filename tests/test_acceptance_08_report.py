@@ -54,7 +54,10 @@ class ReportTest(WatchCase):
         cdir = self.make_card("CARD-002", state="需Claude介入", source=self.cid, reported="running", title="乙")
         record(cdir, "转人工", src="程序", dst="调度员", summary="测试一直不过")
         self.watcher.tick(self.project)
-        self.assertIn("「乙」卡住了：测试一直不过。", self.said())
+        # 流程修理 ⑬（11-12）：卡住时顺带说清下一步能点哪些按钮
+        stuck = [w for w in self.said() if w.startswith("「乙」卡住了：测试一直不过。")]
+        self.assertTrue(stuck, self.said())
+        self.assertIn("“接着跑”", stuck[0])
         cdir = self.make_card("CARD-003", allowed=False, source=self.cid, reported="planning", title="丙")
         record(cdir, "方案失败", src="程序", dst="你", summary="Codex 没有登录")
         self.watcher.tick(self.project)

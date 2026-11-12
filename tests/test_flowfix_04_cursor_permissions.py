@@ -37,7 +37,7 @@ class PermissionFile(unittest.TestCase):
         return json.loads((self.wt / ".cursor" / "cli.json").read_text(encoding="utf-8"))["permissions"]
 
     def test_allows_test_program_and_denies_plugins(self):
-        cursor_permissions(self.wt, CMD)
+        cursor_permissions(self.wt, CMD)  # 不还原，直接看写进去的内容
         perms = self.read()
         self.assertEqual(perms["allow"], ["Shell(python3)"])
         self.assertIn("Mcp(*:*)", perms["deny"])
@@ -46,10 +46,13 @@ class PermissionFile(unittest.TestCase):
         (self.wt / ".cursor").mkdir()
         (self.wt / ".cursor" / "cli.json").write_text(json.dumps({"permissions": {"allow": ["Shell(ls)"]}, "x": 1}),
                                                        encoding="utf-8")
-        cursor_permissions(self.wt, CMD)
+        restore = cursor_permissions(self.wt, CMD)
         cursor_permissions(self.wt, CMD)
         perms = self.read()
         self.assertEqual(perms["allow"], ["Shell(ls)", "Shell(python3)"], "不重复、不丢项目自己的")
+        restore()
+        self.assertEqual(json.loads((self.wt / ".cursor" / "cli.json").read_text(encoding="utf-8"))["permissions"]["allow"],
+                         ["Shell(ls)"], "还原成项目自己的")
 
     def test_not_counted_as_a_change(self):
         self.assertTrue(is_cache(".cursor/cli.json"))
@@ -57,7 +60,7 @@ class PermissionFile(unittest.TestCase):
 
 
 class OnlyForCursor(unittest.TestCase):
-    def test_written_when_cursor_is_dispatched_only(self):
+    def test_written_while_cursor_works_and_removed_after(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             wt = root / "wt"
@@ -72,7 +75,9 @@ class OnlyForCursor(unittest.TestCase):
                 return AgentResult(ok=True, output="", attempts=1, final="结论：通过" if "只读复查" in prompt else "好了")
             run_card(Card("CARD-001", state="待派发"), root / ".collab", wt, CMD, "cursor", "codex", ask_fn=ask_fn,
                      judge_fn=lambda *a, **k: Verdict(PASS, 0, "ok"), reviewer_adapter="codex")
-            self.assertTrue(seen["cursor"])
+            self.assertTrue(seen["cursor"], "Cursor 干活时设置在")
+            self.assertFalse(seen["codex"], "复查员看不到它（端到端试跑里复查员把它当越界打回）")
+            self.assertFalse((wt / ".cursor").exists(), "干完就去掉，不留在副本里")
 
 
 class NotCounted(unittest.TestCase):

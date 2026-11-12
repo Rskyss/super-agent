@@ -114,14 +114,15 @@ class ProposalReminderFlow(BlocksCase):
                 self.assertEqual(len(self.client.calls) - before, 1)
                 self.assertFalse(self.proposals(events))
 
-    def test_new_claim_and_pointer_do_not_enable_guard_in_project_window(self):
+    def test_new_claim_and_pointer_remind_in_project_main_chat(self):
+        """流程修理 ⑥（11-12）改了规矩：项目窗口主对话里说了出提议却没出，也提醒一次（卡片对话照旧不提醒）"""
         for words in ("任务的提议已经弹出来了，请点确认。", "提议就在上面。"):
             with self.subTest(words=words):
                 before = len(self.client.calls)
-                self.client.steps = [{"text": words}, {"text": "不该被调用。"}]
+                self.client.steps = [{"text": words}, {"text": "刚才其实没出。"}]
                 _, events = self.talk(where=self.project)
-                self.assertEqual(len(self.client.calls) - before, 1)
-                self.assertFalse(self.proposals(events))
+                self.assertEqual(len(self.client.calls) - before, 2)
+                self.assertIn("这是系统提示", self.client.calls[-1][0][-1]["content"])
 
 
 @unittest.skipUnless(shutil.which("node"), "这台电脑没有 node")

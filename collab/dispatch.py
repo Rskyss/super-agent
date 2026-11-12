@@ -486,7 +486,32 @@ def _programs_in(cmd: str) -> list:
     return found
 
 
-def cursor_permissions(worktree, test_command) -> None:
+def cursor_permissions(worktree, test_command):
+    """写放行设置，返回一个“还原”函数：Cursor 干完就把设置去掉（原来没有就删掉，原来有就还原），
+    复查员和放进项目都看不到它（2026-11-12 端到端试跑：复查员把它当成越界文件打回）。"""
+    path = Path(worktree) / ".cursor" / "cli.json"
+    folder_was_there = path.parent.is_dir()
+    try:
+        before = path.read_bytes() if path.is_file() else None
+    except OSError:
+        before = None
+    _write_cursor_permissions(worktree, test_command)
+
+    def restore():
+        try:
+            if before is None:
+                if path.is_file():
+                    path.unlink()
+                if not folder_was_there and path.parent.is_dir() and not any(path.parent.iterdir()):
+                    path.parent.rmdir()
+            else:
+                path.write_bytes(before)
+        except OSError:
+            pass
+    return restore
+
+
+def _write_cursor_permissions(worktree, test_command) -> None:
     """Cursor 在后台干活时每条命令都要人点同意，没人点就全被拒（68b 里它因此绕路、开浏览器卡死，⑯⑰）。
     派活前在施工副本写项目级放行设置：只放行本卡测试命令用的那个程序（Cursor 只能按程序名放行），
     浏览器、搜索这类插件一律不许用。2026-11-12 实测：放行后能跑 python3，node 和浏览器仍被拒；不写就全被拒。"""
@@ -523,8 +548,7 @@ def _accepts(fn, name: str) -> bool:
 def _dispatch(ask_fn, cdir: Path, role: str, adapter: str, step: str, prompt: str,
               worktree, models, round_no: int, test_command=None):
     """派一次活：开始时记“派活”（含原文、预留实时输出），干完记“回复”（含全文、用时）。"""
-    if adapter == "cursor":
-        cursor_permissions(worktree, test_command)
+    restore = cursor_permissions(worktree, test_command) if adapter == "cursor" else None
     sent = record(cdir, "派活", src="调度员", dst=role, tool=adapter, step=step, round=round_no,
                   summary=_STEP_SUMMARY[step], text=prompt, live=True)
     started = time.time()
@@ -537,8 +561,12 @@ def _dispatch(ask_fn, cdir: Path, role: str, adapter: str, step: str, prompt: st
                    summary=f"{role}（{adapter}）已经 {minutes} 分钟没有动静（没改文件，也没有新输出）。"
                            f"可以再等等，再过约 {left} 分钟还没动静程序会自动停下；也可以点“停下”再点“接着跑”。")
         extra["on_quiet"] = on_quiet
-    result = ask_fn(adapter, prompt, worktree, expect_file=None, models=models,
-                    live_path=str(cdir / sent["live"]), **extra)
+    try:
+        result = ask_fn(adapter, prompt, worktree, expect_file=None, models=models,
+                        live_path=str(cdir / sent["live"]), **extra)
+    finally:
+        if restore:
+            restore()
     text = reply_text(result)
     record(cdir, "回复", src=role, dst="调度员", tool=adapter, step=step, round=round_no,
            ok=bool(result.ok), seconds=round(time.time() - started), reply_to=sent["seq"],
