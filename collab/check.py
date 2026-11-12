@@ -88,6 +88,7 @@ def check_team(project_dir, team=None, timeout: float = DEFAULT_TIMEOUT, on_resu
     roles：只测这几个岗位（点某一行的“检测生效”时用）。
     role_models：页面上每个岗位此刻选的模型（还没保存的也算）；同一家工具、同样设置的几个岗位只测一次。"""
     team = team or load_team(project_dir)
+    given_models = models  # 调用方传没传整家模型（下面会被换成整份设置，判断要用原值，复查第 2 轮）
     effective_models = load_models(project_dir)
     if isinstance(models, dict):
         effective_models.update({k: str(v).strip() for k, v in models.items() if k in effective_models and str(v).strip()})
@@ -109,7 +110,7 @@ def check_team(project_dir, team=None, timeout: float = DEFAULT_TIMEOUT, on_resu
     except Exception:  # noqa: BLE001 — 配置读不出时用整体设置
         saved_roles = {}
     # 只传了整家模型（旧接口）时，就按传进来的测，不拿存着的岗位设置盖掉（复查第 1 轮）
-    picked = dict(saved_roles) if (role_models is not None or models is None) else {}
+    picked = dict(saved_roles) if (role_models is not None or given_models is None) else {}
     if isinstance(role_models, dict):
         picked.update({r: v for r, v in role_models.items() if isinstance(v, dict)})
 

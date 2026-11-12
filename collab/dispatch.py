@@ -212,11 +212,14 @@ def is_test_path(rel: str) -> bool:
 
 def _in_product_folder(worktree, rel: str) -> bool:
     """新文件放在一个本来就有被管理文件的文件夹里（比如 src/），算产品代码，不算测试。"""
-    parent = str(Path(rel).parent)
-    if parent in ("", "."):
-        return False
-    out = subprocess.run(["git", "ls-files", "--", parent], cwd=str(worktree), capture_output=True, text=True).stdout
-    return bool(out.strip())
+    folder = Path(rel).parent
+    while str(folder) not in ("", "."):  # 往上找：src/newpkg/x.py 的 src/ 里有产品代码也算（复查第 2 轮）
+        out = subprocess.run(["git", "ls-files", "--", str(folder)], cwd=str(worktree), capture_output=True,
+                             text=True).stdout
+        if out.strip():
+            return True
+        folder = folder.parent
+    return False
 
 
 def _tracked(worktree, rel: str) -> bool:
@@ -524,6 +527,8 @@ def cursor_permissions(worktree, test_command):
                     path.parent.rmdir()
             else:
                 path.write_bytes(before)
+                # 项目自己的设置被暂存过临时内容：暂存区也还原（复查第 2 轮）
+                subprocess.run(["git", "reset", "-q", "--", ".cursor/cli.json"], cwd=str(worktree), capture_output=True)
         except OSError:
             pass
     return restore

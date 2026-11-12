@@ -1066,7 +1066,7 @@ if (typeof document !== "undefined") (function () {
       .then(function () { if (myGen === gen && !stopped) poll(myGen); });
   }
 
-  var nowCard = "", nowBusy = false;   // 卡片标题下那一行：正在看哪张卡、有没有请求还在路上
+  var nowCard = "", nowBusy = false, nowOpen = 0;   // 卡片标题下那一行：正在看哪张卡、有没有请求还在路上
   function hideCard() {
     viewingCard = false;
     nowCard = "";
@@ -1122,20 +1122,22 @@ if (typeof document !== "undefined") (function () {
       }
       // 切卡时先清掉上一张卡的那一行；上一次还没回来就不再发；回来的不是当前这张卡的就丢掉（复查第 1 轮）
       nowCard = info.id || "";
+      nowOpen += 1;   // 每打开一次换一个号：同一张卡重新打开，旧那次的结果也丢掉（复查第 2 轮）
+      var myOpen = nowOpen;
       nowBusy = false;
       if (nowLine) { nowLine.hidden = true; nowLine.textContent = ""; }
       function showNow() {
-        if (!nowLine || !info.id || nowBusy) return;
+        if (!nowLine || !info.id || nowBusy || myOpen !== nowOpen) return;
         var forCard = info.id;
         nowBusy = true;
         fetch("/api/view?project=" + encodeURIComponent(project) + "&card=" + encodeURIComponent(forCard))
           .then(function (r) { return r.json(); }).then(function (v) {
-            if (forCard !== nowCard || !v || v.error || !viewingCard) return;
+            if (forCard !== nowCard || myOpen !== nowOpen || !v || v.error || !viewingCard) return;
             var line = ChatCore.cardNowLine(v);
             nowLine.hidden = !line;
             nowLine.textContent = line;
             nowLine.className = "now-" + ((v.now && v.now.tone) || "idle");
-          }).catch(function () {}).then(function () { if (forCard === nowCard) nowBusy = false; });
+          }).catch(function () {}).then(function () { if (myOpen === nowOpen) nowBusy = false; });
       }
       showNow();
       if (window.__cardPhaseTimer) clearInterval(window.__cardPhaseTimer);

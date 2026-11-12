@@ -251,8 +251,8 @@ def save_team_member(project_dir, role: str, tool: str) -> None:
     tmp.replace(path)
 
 
-def save_models(project_dir, models: dict) -> None:
-    """把各家工具选定的模型与思考档位存进 .collab/配置.json，其他设置原样保留。"""
+def clean_models(models: dict) -> dict:
+    """检查各家工具的整体模型设置，整理成要存的样子；有不对的直接报错。"""
     if not isinstance(models, dict):
         raise ConfigError("模型配置格式不对")
     clean = {}
@@ -265,6 +265,12 @@ def save_models(project_dir, models: dict) -> None:
         if key == "codex_effort" and val not in CODEX_EFFORTS:
             raise ConfigError(f"Codex 思考档位不能是 {val!r}：可选 {'、'.join(CODEX_EFFORTS)}")
         clean[key] = val
+    return clean
+
+
+def save_models(project_dir, models: dict) -> None:
+    """把各家工具选定的模型与思考档位存进 .collab/配置.json，其他设置原样保留。"""
+    clean = clean_models(models)
     data = _read(project_dir)
     data.update(clean)
     path = _config_path(project_dir)

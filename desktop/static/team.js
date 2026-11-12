@@ -322,12 +322,17 @@ if (typeof document !== "undefined") (function () {
   function snapshot() { return JSON.stringify({ team: team(), picks: rolePicks() }); }
   function teamChanged() { return installed && !!savedSnapshot && snapshot() !== savedSnapshot; }
   // 改了没保存就离开（点齿轮重开、退出应用）时不能丢（④）：暂存在项目里（应用每次换端口，页面自己存的会丢），回来恢复
+  // 一次一次排队写：连着改两下，后写的不会被先写的盖掉（复查第 2 轮）
+  var draftChain = Promise.resolve();
+  function writeDraft(draft) {
+    draftChain = draftChain.then(function () { return post("/api/team/draft", { draft: draft }); })
+      .catch(function () { /* 存不了就算了 */ });
+  }
   function keepDraft() {
     if (!installed) return;
-    var draft = teamChanged() ? { base: JSON.parse(savedSnapshot), now: JSON.parse(snapshot()) } : null;
-    post("/api/team/draft", { draft: draft }).catch(function () { /* 存不了就算了 */ });
+    writeDraft(teamChanged() ? { base: JSON.parse(savedSnapshot), now: JSON.parse(snapshot()) } : null);
   }
-  function dropDraft() { if (installed) post("/api/team/draft", { draft: null }).catch(function () {}); }
+  function dropDraft() { if (installed) writeDraft(null); }
 
   function renderAllModelBoxes() {
     ALL_ROLES.forEach(renderRoleModelBox);
@@ -488,7 +493,11 @@ if (typeof document !== "undefined") (function () {
     if (!installed) return;
     get("/api/team/draft").then(function (d) {
       var rowsToApply = TeamCore.draftRows(JSON.parse(savedSnapshot), d && d.draft);
-      var roles = Object.keys(rowsToApply);
+      var atLoad = JSON.parse(savedSnapshot), current = JSON.parse(snapshot());
+      function rowAtLoad(r) { return JSON.stringify([atLoad.team[r], (atLoad.picks || {})[r] || null]); }
+      function rowNow(r) { return JSON.stringify([current.team[r], (current.picks || {})[r] || null]); }
+      // 读草稿期间用户已经动过的行不碰（复查第 2 轮）
+      var roles = Object.keys(rowsToApply).filter(function (r) { return rowNow(r) === rowAtLoad(r); });
       if (!roles.length) return;
       roles.forEach(function (r) {
         var v = rowsToApply[r].tool;

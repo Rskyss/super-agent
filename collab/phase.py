@@ -323,7 +323,9 @@ def card_phase(project: str, card_id: str) -> dict:
         actions = ["resume", "revise", "discard"]
         out = {"code": "blocked", "label": "卡住了", "tone": "bad", "needs_you": True, "detail": detail}
         stop = _last_stop(events)
-        if stop and stop.get("cause") == "复查不通过":
+        old_review_stop = bool(stop) and not stop.get("cause") and str(stop.get("summary") or "").endswith(
+            "复查不通过，需要调度员看原因")  # 更新前停下的卡没有标记，按当时程序写的原话认（复查第 2 轮）
+        if stop and (stop.get("cause") == "复查不通过" or old_review_stop):
             # 只在复查不通过而停下时（看程序记的标记，不看文字）：用户可以带着剩下的问题进入待确认
             actions = ["resume", "revise", "accept_issues", "discard"]
             out["issues"] = _stop_text(project, card_id, stop) or detail

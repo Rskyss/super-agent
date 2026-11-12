@@ -47,6 +47,7 @@ from collab.config import (  # noqa: E402
     save_models,
     save_role_models,
     clean_role_models,
+    clean_models,
     save_team,
 )
 from collab.flow import read_flow, record as flow_record  # noqa: E402
@@ -1345,6 +1346,8 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 if body.get("role_models") is not None:
                     clean_role_models(body.get("role_models") or {})  # 先查，有错什么都不存（复查第 1 轮）
+                if body.get("models") is not None:
+                    clean_models(body.get("models") or {})  # 整家模型也先查（复查第 2 轮）
                 save_team(project, body.get("team") or {})
                 if body.get("models") is not None:
                     save_models(project, body.get("models") or {})
