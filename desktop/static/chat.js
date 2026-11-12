@@ -221,7 +221,7 @@ var ChatCore = (function () {
     if (now.detail) text += "：" + now.detail;
     if (!v || !v.live) return text;
     var min = Math.floor((v.elapsed || 0) / 60);
-    text += " · 已干 " + (min < 1 ? "不到 1 分钟" : min + " 分钟");
+    text += " · 已干" + (min < 1 ? "不到 1 分钟" : " " + min + " 分钟");
     if (v.quiet != null) text += " · " + (v.quiet < 60 ? "刚刚有动静" : Math.floor(v.quiet / 60) + " 分钟前有动静");
     return text;
   }
