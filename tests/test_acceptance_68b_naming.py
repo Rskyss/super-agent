@@ -147,10 +147,17 @@ class ClaimWords(unittest.TestCase):
         self.assertTrue(self.points("接法卡给你：平台选腾讯云"))
 
     def test_not_claims(self):
-        for text in ("我提议你先装 Node。", "我提议先查一下电脑。", "我提议给你换个模型。", "要我出一个提议吗？",
+        for text in ("我提议你先装 Node。", "我提议先查一下电脑。", "我提议给你换个模型。", "我只是提议给你换个模型。", "其实我是提议给你换个模型。", "要我出一个提议吗？",
                      "等提议出来了再填密钥", "提议里的命令已经出错了", "如果提议出来了，点确认就行"):
             self.assertFalse(self.claims(text), text)
             self.assertFalse(self.points(text), text)
+
+    def test_confirm_reply_says_proposal(self):
+        """复查第 1 轮：点确认接入后回给管家的话还写着“结果看上面那张卡”"""
+        from desktop.clerk import tasks as clerk_tasks
+        reply = clerk_tasks._block_result({"kind": "connect_api", "name": "腾讯云混元", "block": {}}, False)["reply"]
+        self.assertNotIn("卡", reply)
+        self.assertIn("提议", reply)
 
     def test_reminder_words(self):
         from desktop.clerk import desk
