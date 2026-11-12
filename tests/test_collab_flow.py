@@ -174,7 +174,8 @@ class DispatchFlowTest(unittest.TestCase):
         self.assertIn("看门人", events[2]["summary"])
 
     def test_review_rejection_is_escalated_with_reason(self):
-        script = _Script(self.cdir, [PASS], outputs={"agy": "结论：不通过\n改错了地方"})
+        # 流程修理（11-12）：复查不通过先自动退回写代码的 2 次，第 3 次还不通过才停下
+        script = _Script(self.cdir, [PASS, PASS, PASS], outputs={"agy": "结论：不通过\n改错了地方"})
         card = self._run(script, reviewer_adapter="agy")
         events = read_flow(self.cdir)
         self.assertEqual(events[-1]["kind"], "转人工")

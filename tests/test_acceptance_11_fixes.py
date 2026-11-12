@@ -256,17 +256,15 @@ class LastReviewFixes(Case):
 
 class ReviewRework(Case):
     def test_opinion_survives_a_failed_developer(self):
+        # 流程修理（11-12）：复查不通过改成自动退回写代码的；这里让退回后的那次开发员失败（第 2、3 次调用：失败会自动重试一次），接着跑时意见仍要带上
         dev_log = Path(self.tmp) / "dev.log"
-        broken = Path(self.tmp) / "broken"
-        write_script(self.bin / "agent", f'[ -f "{broken}" ] && exit 1\n'
+        calls = Path(self.tmp) / "dev.calls"
+        write_script(self.bin / "agent", f'echo x >> "{calls}"\n'
+                                         f'n=$(wc -l < "{calls}"); [ "$n" -eq 2 ] || [ "$n" -eq 3 ] && exit 1\n'
                                          f'printf "%s\\n===\\n" "$*" >> "{dev_log}"\necho 写好了\n')
         self.counted("agy", 'echo 结论：不通过\necho 按钮颜色还是红的', 'echo 结论：通过')
         self.start()
-        wait_until(lambda: self.state() == "需Claude介入", 25, "复查没有打回")
-        broken.write_text("开发员这次会失败", encoding="utf-8")
-        self.assertEqual(self.act("resume")[0], 200)
         wait_until(lambda: "开发员" in self.phase()["detail"], 25, "开发员没有失败")
-        broken.unlink()
         self.assertEqual(self.act("resume")[0], 200)
         wait_until(lambda: self.state() == "待验收", 25, "最后没有完成")
         rounds = [r for r in dev_log.read_text(encoding="utf-8").split("\n===\n") if r.strip()]

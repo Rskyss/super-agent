@@ -15,7 +15,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from collab.agents import ask as default_ask
+from collab.agents import ask as default_ask, readable
 from collab.flow import read_flow, record, reply_summary, text_of
 from collab.judge import Verdict, ENV_ERROR, FAIL, PASS, TIMEOUT, judge as default_judge
 from collab.scope import is_cache, out_of_scope
@@ -99,21 +99,9 @@ def _changed_list(worktree) -> list:
     return found
 
 
-def readable(output: str) -> str:
-    """各家工具的回复可能是 JSON 包装（agy 用 response，Cursor 用 result），只取里面的文字。"""
-    text = (output or "").strip()
-    candidates = [text] + [line.strip() for line in reversed(text.splitlines())
-                           if line.strip().startswith("{") and line.strip().endswith("}")]
-    for candidate in candidates:
-        try:
-            data = json.loads(candidate)
-        except ValueError:
-            continue
-        if isinstance(data, dict):
-            for key in ("response", "result", "message", "text"):
-                if isinstance(data.get(key), str):
-                    return data[key].strip()
-    return text
+def reply_text(result) -> str:
+    """干活的人最后那条回复；旧的假实现没有 final 时从完整输出里取。"""
+    return (getattr(result, "final", "") or readable(result.output)).strip()
 
 
 _REPORT_ASK = "完成后，在回复的最后一行写“汇报：”加不超过100字的说明（改了什么、测试情况）。不要另建汇报文件。"
@@ -315,9 +303,8 @@ def _review_reject_pending(cdir: Path, past: list) -> tuple:
     return True, notes
 
 
-def _save_report(cdir: Path, output: str) -> None:
+def _save_report(cdir: Path, text: str) -> None:
     """从开发员回复里取最后一段“汇报：……”，存进卡片文件夹。"""
-    text = readable(output)
     if "汇报：" not in text:
         return
     lines = text.rsplit("汇报：", 1)[1].strip().splitlines()
@@ -349,10 +336,17 @@ _CREDIT_TAIL = 1500
 CONFLICTS = "同步冲突.json"  # 同步项目新内容时有冲突的文件
 
 
+_CLOSED_BLOCK = re.compile(r"```.*?```", re.DOTALL)
+
+
 def review_verdict(text: str) -> str:
     """从复查员回复里读结论：pass / reject / unclear。"""
     found = _REVIEW_VERDICT.findall(_CODE_BLOCK.sub("", text or ""))
     if not found:
+        # 没配对的代码块记号会把后面全吞掉（68b 复查第 4–6 轮“写了不通过却显示没给结论”）：
+        # 只去掉配好对的代码块再找一次，但这样找到的只认“不通过”，绝不因此放行
+        if "不通过" in _REVIEW_VERDICT.findall(_CLOSED_BLOCK.sub("", text or "")):
+            return "reject"
         return "unclear"
     return "reject" if "不通过" in found else "pass"
 
@@ -416,7 +410,7 @@ def _dispatch(ask_fn, cdir: Path, role: str, adapter: str, step: str, prompt: st
     started = time.time()
     result = ask_fn(adapter, prompt, worktree, expect_file=None, models=models,
                     live_path=str(cdir / sent["live"]))
-    text = readable(result.output)
+    text = reply_text(result)
     record(cdir, "回复", src=role, dst="调度员", tool=adapter, step=step, round=round_no,
            ok=bool(result.ok), seconds=round(time.time() - started), reply_to=sent["seq"],
            summary=reply_summary(step, text, result.ok), text=text)
@@ -438,6 +432,36 @@ def _worker_failed(collab: Path, cdir: Path, card: Card, role: str, adapter: str
             f"- {datetime.now():%Y-%m-%d %H:%M} {role}（{adapter}）没有完成：{tail}\n")
     _escalate(collab, cdir, card, _credit_problem(role, adapter, result.output) or f"{role}（{adapter}）没有完成：{tail}")
     return card, None
+
+
+MAX_REVIEW_RETURNS = 2  # 复查不通过自动退回写代码的最多几次（用户 2026-11-12 定）
+_NOTES_LIMIT = 8000  # 交给写代码的复查意见最长多少字
+
+
+def _review_rejects(cdir: Path) -> int:
+    """这次开工（最后一条追加要求之后）复查不通过了几次，含刚才这次。"""
+    count = 0
+    for e in _after_revise(read_flow(cdir)):
+        if e.get("kind") == "回复" and e.get("src") == "复查员" and e.get("ok") is True:
+            body = text_of(cdir, e) or str(e.get("summary") or "")
+            if review_verdict(body) == "reject":
+                count += 1
+    return count
+
+
+def _first_issues(text: str, limit: int = 200) -> str:
+    """转卡住时原因里带上复查意见的头几行，用户一眼能看到剩下什么问题。"""
+    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip() and not _REVIEW_VERDICT.match(ln)]
+    joined = "；".join(lines)
+    return (joined[:limit] + "……") if len(joined) > limit else (joined or "复查员没有写下详细意见")
+
+
+def _review_return_prompt(notes: str, needs, revise_bit: str, plan_hint: str) -> str:
+    notes = (notes or "").strip() or "（复查员没有写下详细意见）"
+    if len(notes) > _NOTES_LIMIT:
+        notes = notes[:_NOTES_LIMIT] + "\n……（后面省略）"
+    return (f"{_READ_RULES}上一次复查不通过。请按复查意见修改后再提交，不算一次返工。\n\n"
+            f"{notes}\n\n任务卡：{needs}。{revise_bit}{_DEV_TEST_NOTE}{plan_hint}{_REPORT_ASK}")
 
 
 _VERDICT_SUMMARY = {PASS: "测试全部通过", FAIL: "测试没过", ENV_ERROR: "测试环境出错（不是代码的问题）",
@@ -523,9 +547,7 @@ def run_card(card: Card, collab_dir, worktree, test_command, dev_adapter, test_a
         dev_prompt = (f"{_READ_RULES}上一版测试没过，测试输出如下，请修复后重新提交。\n\n{last_output}\n\n"
                       f"任务卡：{needs}。{revise_bit}{_DEV_TEST_NOTE}{plan_hint}{_REPORT_ASK}")
     if force_after_review_reject:
-        notes = review_notes.strip() or "（复查员没有写下详细意见）"
-        dev_prompt = (f"{_READ_RULES}上一次复查不通过。请按复查意见修改后再提交，不算一次返工。\n\n"
-                      f"{notes}\n\n任务卡：{needs}。{revise_bit}{_DEV_TEST_NOTE}{plan_hint}{_REPORT_ASK}")
+        dev_prompt = _review_return_prompt(review_notes, needs, revise_bit, plan_hint)
 
     dev_prompt += _conflict_note(worktree, cdir)
 
@@ -560,7 +582,7 @@ def run_card(card: Card, collab_dir, worktree, test_command, dev_adapter, test_a
                             dev_prompt, worktree, models, rnd)
             if not dev.ok:
                 return _worker_failed(collab, cdir, card, "开发员", dev_adapter, dev)
-            _save_report(cdir, dev.output)
+            _save_report(cdir, reply_text(dev))
             _log_step(cdir, step_name, dev_adapter, worktree)
 
         if effective_allowed is not None:
@@ -625,7 +647,7 @@ def run_card(card: Card, collab_dir, worktree, test_command, dev_adapter, test_a
                                f"台账、归档这些流程记录由程序在施工结束后补写，现在没有不算问题。"
                                f"第一行写“结论：通过”或“结论：不通过”，之后列出问题。不要修改任何文件。",
                                worktree, models, card.rework + 1)
-            review_text = readable(review.output)
+            review_text = reply_text(review)
             _append(cdir / "复查结果.md", f"\n## 复查（{reviewer_adapter}）\n{review_text}\n")
             verdict_kind = review_verdict(review_text)
             if not review.ok or verdict_kind == "unclear":
@@ -634,9 +656,21 @@ def run_card(card: Card, collab_dir, worktree, test_command, dev_adapter, test_a
                           problem or f"复查员（{reviewer_adapter}）没有给出结论，不能算通过")
                 return card, verdict
             if verdict_kind == "reject":
-                _escalate(collab, cdir, card,
-                          f"复查员（{reviewer_adapter}）复查不通过，需要调度员看原因")
-                return card, verdict
+                rejects = _review_rejects(cdir)
+                if rejects > MAX_REVIEW_RETURNS:
+                    _escalate(collab, cdir, card,
+                              f"复查员（{reviewer_adapter}）复查不通过（已自动退回 {MAX_REVIEW_RETURNS} 次）："
+                              f"{_first_issues(review_text)}")
+                    return card, verdict
+                # 复查不通过自动退回写代码的（用户 11-12 定最多 2 次），只给复查员最后写的结论，不算返工
+                record(cdir, "退回", src="程序", dst="开发员",
+                       summary=f"复查不通过，自动退回写代码的（第 {rejects} 次，最多 {MAX_REVIEW_RETURNS} 次）")
+                card.transition("开发中")
+                _save(collab, card)
+                dev_prompt = _review_return_prompt(review_text, needs, revise_bit, plan_hint) \
+                    + _conflict_note(worktree, cdir)
+                last_output = None
+                continue
 
         if verdict.result == PASS:
             card.transition("待验收")

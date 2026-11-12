@@ -253,9 +253,8 @@ class Actions(ServerCase, Base):
                                        'echo 结论：不通过\necho 按钮颜色还是红的\n')
         self.ready_card()
         self.act("approve")
-        wait_until(lambda: self.state() == "需Claude介入", 25, "复查没有打回")
-        self.assertEqual(self.act("resume")[0], 200)
-        wait_until(lambda: self.state() == "待验收", 25, "接着跑后没有完成")
+        # 流程修理（11-12）：复查不通过自动退回写代码的，不再停下等人点“接着跑”
+        wait_until(lambda: self.state() == "待验收", 25, "复查退回后没有完成")
         rounds = dev_log.read_text(encoding="utf-8").split("\n===\n")
         self.assertEqual(len([r for r in rounds if r.strip()]), 2, "开发员要重新改一次")
         self.assertIn("按钮颜色还是红的", rounds[1])

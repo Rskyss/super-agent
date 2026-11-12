@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import json
 import os
 import signal
 import subprocess
@@ -36,20 +37,24 @@ def cursor_command(prompt: str, model: str = DEFAULT_MODELS["cursor"]):
 
 
 def codex_command(prompt: str, model: str = DEFAULT_MODELS["codex"],
-                  effort: str = DEFAULT_MODELS["codex_effort"]):
-    return ["codex", "exec", "--skip-git-repo-check", "-s", "workspace-write",
-            "-m", model, "-c", f'model_reasoning_effort="{effort}"', prompt]
+                  effort: str = DEFAULT_MODELS["codex_effort"], last_path=None):
+    """last_path：让 Codex 把最后一条回复单独写进这个文件（完整过程照样从输出里看）。"""
+    cmd = ["codex", "exec", "--skip-git-repo-check", "-s", "workspace-write",
+           "-m", model, "-c", f'model_reasoning_effort="{effort}"']
+    if last_path:
+        cmd += ["-o", str(last_path)]
+    return cmd + [prompt]
 
 
 def agy_command(prompt: str, model: str = DEFAULT_MODELS["agy"]):
     return ["agy", "-p", prompt, "--model", model, "--output-format", "json"]
 
 
-def _build(adapter: str, prompt: str, models: dict):
+def _build(adapter: str, prompt: str, models: dict, last_path=None):
     if adapter == "cursor":
         return cursor_command(prompt, model=models["cursor"])
     if adapter == "codex":
-        return codex_command(prompt, model=models["codex"], effort=models["codex_effort"])
+        return codex_command(prompt, model=models["codex"], effort=models["codex_effort"], last_path=last_path)
     if adapter == "agy":
         return agy_command(prompt, model=models["agy"])
     raise KeyError(adapter)  # 未知适配器直接报错
@@ -60,6 +65,27 @@ class AgentResult:
     ok: bool
     output: str
     attempts: int
+    final: str = ""  # 最后一条回复（交给下一个人、认复查结论只看它）；完整过程在 output
+
+
+def readable(output: str) -> str:
+    """各家工具的回复可能是 JSON 包装（agy 用 response，Cursor 用 result），只取里面的文字。"""
+    text = (output or "").strip()
+    candidates = [text] + [line.strip() for line in reversed(text.splitlines())
+                           if line.strip().startswith("{") and line.strip().endswith("}")]
+    for candidate in candidates:
+        try:
+            data = json.loads(candidate)
+        except ValueError:
+            continue
+        if isinstance(data, dict):
+            for key in ("response", "result", "message", "text"):
+                if isinstance(data.get(key), str):
+                    return data[key].strip()
+    return text
+
+
+EMPTY_REPLY = "没有回复任何内容"
 
 
 class QuietTimeout(Exception):
@@ -161,24 +187,40 @@ def subprocess_runner(cmd, cwd, timeout):
     return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
 
 
+def _read_last(path) -> str:
+    try:
+        return Path(path).read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return ""
+
+
 def ask(adapter: str, prompt: str, cwd, expect_file=None, timeout=DEFAULT_TIMEOUT,
         runner=watched_runner, models=None, live_path=None) -> AgentResult:
-    """让某家工具执行一次任务。成功条件：退出码 0，且（若指定）期望文件真的存在。
+    """让某家工具执行一次任务。成功条件：退出码 0、有回复文字，且（若指定）期望文件真的存在。
     models 缺省时用包默认值；派发程序应传入 load_models(项目目录) 的结果。
     默认带看门人：长时间没动静会被停掉，并且不重试（卡住的再跑一遍多半还是卡住）。
-    live_path：实时输出写到哪里（流转记录预留的位置），不给就不保留。"""
-    cmd = _build(adapter, prompt, models or DEFAULT_MODELS)  # 未知适配器直接报错
+    live_path：实时输出写到哪里（流转记录预留的位置），不给就不保留。
+    退出码 0 却一个字都没回（68b 里 Cursor 收到超长交代时就这样）：再试一次，还空就算没完成。"""
     extra = {"live_path": live_path} if live_path else {}  # 旧的 runner 不认这个参数，不给就不传
     output = ""
-    for attempt in range(1, MAX_ATTEMPTS + 1):
-        try:
-            code, output = runner(cmd, cwd, timeout, **extra)
-        except QuietTimeout as exc:
-            return AgentResult(ok=False, output=f"看门人：{exc}，已停止", attempts=attempt)
-        except subprocess.TimeoutExpired:
-            return AgentResult(ok=False, output="超时", attempts=attempt)
-        if code != 0:
-            continue
-        if expect_file is None or (Path(cwd) / expect_file).exists():
-            return AgentResult(ok=True, output=output, attempts=attempt)
+    with tempfile.TemporaryDirectory(prefix="collab-last-") as tmp:
+        last_path = Path(tmp) / "最后回复.txt"
+        cmd = _build(adapter, prompt, models or DEFAULT_MODELS, last_path=last_path)  # 未知适配器直接报错
+        for attempt in range(1, MAX_ATTEMPTS + 1):
+            if last_path.exists():
+                last_path.unlink()
+            try:
+                code, output = runner(cmd, cwd, timeout, **extra)
+            except QuietTimeout as exc:
+                return AgentResult(ok=False, output=f"看门人：{exc}，已停止", attempts=attempt)
+            except subprocess.TimeoutExpired:
+                return AgentResult(ok=False, output="超时", attempts=attempt)
+            if code != 0:
+                continue
+            final = _read_last(last_path) or readable(output)
+            if not final.strip():
+                output = (output or "") + f"\n{EMPTY_REPLY}"
+                continue
+            if expect_file is None or (Path(cwd) / expect_file).exists():
+                return AgentResult(ok=True, output=output, attempts=attempt, final=final)
     return AgentResult(ok=False, output=output, attempts=MAX_ATTEMPTS)
