@@ -129,7 +129,7 @@ class Manuals(ButlerCase):
         allt = blocks_tools.role_text() + "".join(blocks_tools.manual_text(n) for n in ("cli", "api", "web"))
         for word in ("体检", "核实名单", "密钥框", "propose_web_install", "propose_connect_search", "web_search",
                      "read_page", "probe", "secrets", "不要带用户去注册", "不是云账号的 SecretId、SecretKey",
-                     "已经登录的，接进基础层时不用再登录", "编号相同才会替换", "卡上会写", "查不了",
+                     "已经登录的，接进基础层时不用再登录", "编号相同才会替换", "提议上会写", "查不了",
                      "没有调用 propose_ 开头的工具，就不能说", "额度不足", "连续 3 次"):
             self.assertIn(word, allt, word)
         self.assertNotIn("Claude Code", allt)
@@ -838,11 +838,11 @@ class ModelNames(ButlerCase):
 class ScreenAndWording(ButlerCase):
     def test_prompt_says_what_is_on_screen(self):
         self.run_steps([{"text": "好"}])
-        self.assertIn("屏幕上现在没有待处理的卡", self.system(len(self.client.calls) - 1))
+        self.assertIn("屏幕上现在没有待处理的提议", self.system(len(self.client.calls) - 1))
         cid, _ = self.run_steps([{"tool_calls": [tool_call("propose_connect_search", {})]}, {"text": "好"}])
         self.run_steps([{"text": "嗯"}], text="然后呢", cid=cid)
         system = self.system(len(self.client.calls) - 1)
-        self.assertIn("屏幕上现在有一张待处理的卡", system)
+        self.assertIn("屏幕上现在有一张待处理的提议", system)
         self.assertIn("联网搜索", system)
 
     def test_confirm_reply_does_not_say_connected(self):
@@ -1000,7 +1000,7 @@ class ModelListReview(ButlerCase):
     def test_prompt_says_open_card_is_only_for_itself(self):
         cid, _ = self.run_steps([{"tool_calls": [tool_call("propose_connect_search", {})]}, {"text": "好"}])
         self.run_steps([{"text": "嗯"}], text="再接个腾讯云", cid=cid)
-        self.assertIn("要另出一张", self.system(len(self.client.calls) - 1))
+        self.assertIn("要另出一个提议", self.system(len(self.client.calls) - 1))
 
 
 if __name__ == "__main__":
