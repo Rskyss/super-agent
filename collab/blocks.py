@@ -1,8 +1,8 @@
-"""积木库：资料夹、接法卡和记录（50 号单）。
+"""积木库：资料夹、接法说明和记录（50 号单）。
 
-整台电脑一份资料夹；每个接进来的 CLI 或大模型 API 用一张接法卡描述。
-接法卡大多由行政起草，什么都可能写错：一律给中文提示，不能崩。
-密钥永远不进接法卡和记录；拼命令只做占位替换，不经过 shell。
+整台电脑一份资料夹；每个接进来的 CLI 或大模型 API 用一张接法说明描述。
+接法说明大多由行政起草，什么都可能写错：一律给中文提示，不能崩。
+密钥永远不进接法说明和记录；拼命令只做占位替换，不经过 shell。
 """
 from __future__ import annotations
 
@@ -44,7 +44,7 @@ _SECRET_NAME_EXACT = {"key", "auth"}
 _SECRET_NAME_PARTS = ("apikey", "secret", "password", "passwd", "authorization", "accesskey", "privatekey")
 # 名字以 token 结尾的才算（access_token、token）；tokens_used、max_tokens 是用量，不是密钥
 _NOT_SECRET_NAMES = {"keyaccount", "secrets"}  # llm_api 卡里只存钥匙串账号名，不是密钥
-# 接法卡不能变成“运行任意程序”的口子：这些程序要么能执行任意脚本，要么能删改文件、联网下载、装软件
+# 接法说明不能变成“运行任意程序”的口子：这些程序要么能执行任意脚本，要么能删改文件、联网下载、装软件
 _DANGEROUS_COMMANDS = {
     "sh", "bash", "zsh", "dash", "fish", "ksh", "csh", "tcsh", "env", "sudo", "doas", "su", "exec", "nohup",
     "node", "deno", "bun", "ruby", "perl", "php", "lua", "osascript", "powershell", "pwsh", "java",
@@ -201,9 +201,9 @@ def _check_parts(parts, what) -> None:
         if part.startswith("-") and "{" in part.split("=", 1)[0]:
             raise BlockError(f"参数 {part} 不对：开关名里不能放占位，占位只能写在 = 后面或单独一个参数")
         if part.startswith("-") and _secret_flag(_flag_name(part)):
-            raise BlockError(f"参数 {part.split('=', 1)[0]} 是在命令里写密钥：密钥只存在钥匙串里，不能写进接法卡")
+            raise BlockError(f"参数 {part.split('=', 1)[0]} 是在命令里写密钥：密钥只存在钥匙串里，不能写进接法说明")
         if _safety_off(part, previous_flag):
-            raise BlockError(f"参数 {part} 会关掉工具自己的安全限制，不能写进接法卡")
+            raise BlockError(f"参数 {part} 会关掉工具自己的安全限制，不能写进接法说明")
         previous_flag = _flag_name(part) if part.startswith("-") else ""
 
 
@@ -221,7 +221,7 @@ def _check_secrets(secrets) -> None:
     seen = set()
     for item in secrets:
         if not (isinstance(item, dict) and set(item) == {"env", "label"}):
-            raise BlockError("每把密钥只写 env（交给工具时的名字）和 label（显示名）两项，密钥本身不能写进接法卡")
+            raise BlockError("每把密钥只写 env（交给工具时的名字）和 label（显示名）两项，密钥本身不能写进接法说明")
         _check_env(item["env"])
         if not _text(item["label"]) or len(item["label"].strip()) > 20:
             raise BlockError("密钥的显示名不能为空，最长 20 个字")
@@ -319,11 +319,11 @@ def _check_api(card: dict) -> None:
 
 
 def validate_card(card) -> dict:
-    """检查一张接法卡，返回补齐默认值的新卡，不改传进来的那份。"""
+    """检查一张接法说明，返回补齐默认值的新卡，不改传进来的那份。"""
     if not isinstance(card, dict):
-        raise BlockError("接法卡要写成一组字段")
+        raise BlockError("接法说明要写成一组字段")
     if _has_secret(card):
-        raise BlockError("密钥不能写进接法卡，密钥只存在钥匙串里")
+        raise BlockError("密钥不能写进接法说明，密钥只存在钥匙串里")
     card = copy.deepcopy(card)
     _check_id(card.get("id"))
     kind = card.get("kind")
@@ -331,7 +331,7 @@ def validate_card(card) -> dict:
         raise BlockError(f"类型 {kind!r} 不认识：只能是 cli、llm_api 或 search")
     extra = sorted(str(k) for k in set(card) - _FIELDS[kind])
     if extra:
-        raise BlockError(f"接法卡里有不认识的项：{'、'.join(extra)}")
+        raise BlockError(f"接法说明里有不认识的项：{'、'.join(extra)}")
     if not _text(card.get("name")) or len(card["name"].strip()) > 40:
         raise BlockError("名字不能为空，最长 40 个字")
     card.setdefault("source", "clerk")
@@ -341,7 +341,7 @@ def validate_card(card) -> dict:
         raise BlockError("备注要写成文字")
     {"cli": _check_cli, "llm_api": _check_api, "search": _check_search}[kind](card)
     if not _json_safe(card):
-        raise BlockError("接法卡里有存不下来的内容（怪字符或不是文字的值）")
+        raise BlockError("接法说明里有存不下来的内容（怪字符或不是文字的值）")
     return card
 
 
@@ -371,15 +371,15 @@ def load_card(card_id, root=None) -> dict:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError, RecursionError) as exc:
-        raise BlockError(f"{card_id} 的接法卡读不出来，文件可能坏了") from exc
+        raise BlockError(f"{card_id} 的接法说明读不出来，文件可能坏了") from exc
     try:
         card = validate_card(data)
     except RecursionError as exc:
-        raise BlockError(f"{card_id} 的接法卡嵌套太深，读不了") from exc
+        raise BlockError(f"{card_id} 的接法说明嵌套太深，读不了") from exc
     except BlockError as exc:
-        raise BlockError(f"{card_id} 的接法卡有问题：{exc}") from exc
+        raise BlockError(f"{card_id} 的接法说明有问题：{exc}") from exc
     if card["id"] != card_id:
-        raise BlockError(f"{card_id} 的接法卡里写的编号是 {card['id']}，对不上")
+        raise BlockError(f"{card_id} 的接法说明里写的编号是 {card['id']}，对不上")
     return card
 
 
@@ -395,7 +395,7 @@ def list_cards(root=None) -> list:
         except BlockError as exc:
             items.append({"id": path.stem, "problem": str(exc)})
         except Exception:  # noqa: BLE001 — 一张卡出什么意外，都不能让别的卡消失
-            items.append({"id": path.stem, "problem": f"{path.stem} 的接法卡读不了"})
+            items.append({"id": path.stem, "problem": f"{path.stem} 的接法说明读不了"})
     return items
 
 
@@ -489,7 +489,7 @@ def command_preview(card, executable=None) -> str:
 
 
 def build_args(card, prompt, model=None) -> list:
-    """按接法卡拼出参数列表。只替换模板里本来就有的占位，交代原样作为参数，不展开。"""
+    """按接法说明拼出参数列表。只替换模板里本来就有的占位，交代原样作为参数，不展开。"""
     card = validate_card(card)
     if card["kind"] != "cli":
         raise BlockError("只有命令行工具才拼命令")

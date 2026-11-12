@@ -266,7 +266,7 @@ def _fallback(stations, state: str):
 
 
 def _chat_view(base: dict, chat: dict, tools: dict, reviewer_on: bool, dispatcher=None) -> dict:
-    """还没有正式建需求卡（或旧卡已合并），左边调度员正在排查/对齐时的实时流转视图。"""
+    """还没有正式建任务卡片（或旧卡已合并），左边调度员正在排查/对齐时的实时流转视图。"""
     stations = _stations(tools, reviewer_on, dispatcher)
     disp_who, _ = _dispatcher(dispatcher)
     _set(stations, "you", "done", chat["user_detail"])

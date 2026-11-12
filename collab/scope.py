@@ -1,4 +1,4 @@
-"""范围控制：需求卡里写明允许改哪些文件，施工后由程序核对，超出的一律打回。"""
+"""范围控制：任务卡片里写明允许改哪些文件，施工后由程序核对，超出的一律打回。"""
 from __future__ import annotations
 
 import fnmatch
@@ -28,7 +28,7 @@ def _is_secret(path: str) -> bool:
 
 
 def read_allowed(requirement_text: str):
-    """读出需求卡里“允许改动的范围”下面的每一条。没有这一节返回 None。"""
+    """读出任务卡片里“允许改动的范围”下面的每一条。没有这一节返回 None。"""
     if SCOPE_HEADING not in requirement_text:
         return None
     body = requirement_text.split(SCOPE_HEADING, 1)[1]

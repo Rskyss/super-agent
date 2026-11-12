@@ -90,7 +90,7 @@ def options(tool) -> list:
 
 
 def describe(install_id) -> dict:
-    """安装提议卡上要显示的：装什么、来源、原样的命令、前提、大概多久。"""
+    """安装提议上要显示的：装什么、来源、原样的命令、前提、大概多久。"""
     item = _item(install_id)
     return {"id": install_id, "tool": item["tool"], "label": item["label"], "source": item["source"],
             "needs": item["needs"], "minutes": item["minutes"], "command": shlex.join(item["args"])}

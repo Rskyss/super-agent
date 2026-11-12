@@ -45,7 +45,7 @@ TOOLS = [
     }},
     {"type": "function", "function": {
         "name": "list_blocks",
-        "description": "列出基础层里已经接进来的每一块：名字、类型、上次检测结果",
+        "description": "列出基础层里已经接进来的每个积木块：名字、类型、上次检测结果",
         "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
     }},
     {"type": "function", "function": {
@@ -57,27 +57,27 @@ TOOLS = [
     }},
     {"type": "function", "function": {
         "name": "propose_install",
-        "description": "向用户出示安装提议卡，用户点确认后才执行安装",
+        "description": "向用户出示安装提议，用户点确认后才执行安装",
         "parameters": {"type": "object", "properties": {
             "install_id": {"type": "string", "description": "核实名单里的安装编号，例如 codex-npm"},
         }, "required": ["install_id"], "additionalProperties": False},
     }},
     {"type": "function", "function": {
         "name": "propose_connect_cli",
-        "description": ("向用户出示接入 CLI 的提议卡。codex/cursor/agy 优先传 template；别的工具传起草的 card。"
+        "description": ("向用户出示接入 CLI 的提议。codex/cursor/agy 优先传 template；别的工具传起草的 card。"
                         "AI 助手（交代一句话它自己干活）的 card 写 run（含 {prompt}）；普通工具（给命令返回结果）写 "
                         "role=tool 和 probe（一条只查不改的检测命令的参数列表），可选 ok_words；要密钥的写 secrets："
-                        "[{env: 交给工具时的环境变量名, label: 显示名}]，只写名字，密钥由用户在卡上填"),
+                        "[{env: 交给工具时的环境变量名, label: 显示名}]，只写名字，密钥由用户在提议上填"),
         "parameters": {"type": "object", "properties": {
             "template": {"type": "string", "description": "预置模板名：codex / cursor / agy"},
-            "card": {"type": "object", "description": "自定义的 CLI 接法卡"},
+            "card": {"type": "object", "description": "自定义的 CLI 接法说明"},
         }, "additionalProperties": False},
     }},
     {"type": "function", "function": {
         "name": "propose_connect_api",
-        "description": ("向用户出示接入大模型 API 的提议卡（含密钥框，密钥由用户在框里填）。按整家接：一家平台一块，"
-                        "不选模型，卡上没有模型一栏，检测时程序自己拿这家的模型名单并试通。腾讯云、阿里百炼都只要一把 API 密钥，"
-                        "卡上只有一个密钥框；不是云账号的 SecretId、SecretKey 那一对。没调用这个工具，用户屏幕上就没有卡"),
+        "description": ("向用户出示接入大模型 API 的提议（含密钥框，密钥由用户在框里填）。按整家接：一家平台一个积木块，"
+                        "不选模型，提议上没有模型一栏，检测时程序自己拿这家的模型名单并试通。腾讯云、阿里百炼都只要一把 API 密钥，"
+                        "提议上只有一个密钥框；不是云账号的 SecretId、SecretKey 那一对。没调用这个工具，用户屏幕上就没有提议"),
         "parameters": {"type": "object", "properties": {
             "provider": {"type": "string", "description": "tencent / bailian / other"},
             "name": {"type": "string", "description": "other 时填这家平台的名字（如 DeepSeek）；腾讯云、阿里百炼不用填"},
@@ -105,7 +105,7 @@ TOOLS.extend([
     {"type": "function", "function": {
         "name": "propose_web_install",
         "description": ("核实名单里没有的工具：把官网上那一页的网址和页面上原样的安装命令交给程序，程序自己读页面核对、"
-                        "查安装包底细，都过了才向用户出示安装卡。只支持 npm install -g、brew install、"
+                        "查安装包底细，都过了才向用户出示安装提议。只支持 npm install -g、brew install、"
                         "curl … | sh/bash 三种写法"),
         "parameters": {"type": "object", "properties": {
             "url": {"type": "string", "description": "写着安装命令的官网页面网址"},
@@ -119,7 +119,7 @@ TOOLS.extend([
     {"type": "function", "function": {
         "name": "list_models",
         "description": ("问这家大模型平台它真有哪些模型（用已经存好的密钥，只读、不花额度）。用户问起这家有哪些模型时用；"
-                        "接入不需要先查，出卡不用选模型"),
+                        "接入不需要先查，出提议不用选模型"),
         "parameters": {"type": "object", "properties": {
             "provider": {"type": "string", "description": "tencent / bailian（只能查这两家）"},
             "keyword": {"type": "string", "description": "只看名字里带这几个字母的，例如 hy、qwen、deepseek；不填看全部"},
@@ -134,7 +134,7 @@ TOOLS.extend([
     }},
     {"type": "function", "function": {
         "name": "propose_connect_search",
-        "description": "基础层里还没有联网搜索时，向用户出示接入联网搜索（Tavily）的卡，用户在卡上填 Tavily 密钥",
+        "description": "基础层里还没有联网搜索时，向用户出示接入联网搜索（Tavily）的提议，用户在提议上填 Tavily 密钥",
         "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
     }},
 ])
@@ -143,8 +143,8 @@ TOOLS.extend([
 BLOCK_LABELS = {
     "scan_environment": "查电脑", "check_installed": "查安装", "install_options": "查安装", "read_help": "读帮助",
     "list_blocks": "看基础层", "list_models": "查模型", "web_search": "搜网上", "read_page": "读网页", "read_manual": "翻手册",
-    "propose_install": "出卡", "propose_connect_cli": "出卡", "propose_connect_api": "出卡",
-    "propose_web_install": "出卡", "propose_connect_search": "出卡",
+    "propose_install": "出提议", "propose_connect_cli": "出提议", "propose_connect_api": "出提议",
+    "propose_web_install": "出提议", "propose_connect_search": "出提议",
 }
 LABELS.update(BLOCK_LABELS)
 
@@ -187,7 +187,7 @@ def describe(name: str, args: dict, result: str) -> str:
     elif name == "install_options":
         text = f"查安装方式：{args.get('tool') or ''} → {first}"
     elif name.startswith("propose_"):
-        text = ("出卡：" + first) if first.startswith("已向用户出示确认框") else ("没出卡：" + first)
+        text = ("出提议：" + first) if first.startswith("已向用户出示确认框") else ("没出提议：" + first)
     else:
         text = f"{BLOCK_LABELS.get(name, name)} → {first}"
     return blocks_check._mask_cut(text, _ACTION_LIMIT)
@@ -298,7 +298,7 @@ def _install_options(args: dict) -> str:
     return "\n".join(lines)
 
 
-_NO_SEARCH = ("基础层里没有联网搜索，或者还没填它的密钥：用 propose_connect_search 出卡，请用户填一把 Tavily 密钥；"
+_NO_SEARCH = ("基础层里没有联网搜索，或者还没填它的密钥：用 propose_connect_search 出提议，请用户填一把 Tavily 密钥；"
               "也可以请用户把官网链接贴给你，用 read_page 读。")
 
 
@@ -331,12 +331,12 @@ def _list_models(args: dict) -> str:
     provider = str(args.get("provider") or "").strip()
     known = find_provider(provider)
     if known is None or not known.get("base_url"):
-        return ("只能查腾讯云、阿里百炼这两家的模型名单。别的平台：接进基础层以后，点开那一块就能看到名单。"
-                "接入不用选模型，直接出卡。不要凭记忆编模型名。")
+        return ("只能查腾讯云、阿里百炼这两家的模型名单。别的平台：接进基础层以后，点开那个积木块就能看到名单。"
+                "接入不用选模型，直接出提议。不要凭记忆编模型名。")
     key = clerk_tasks.key_source(account_for(provider, known["base_url"])) if clerk_tasks.key_source else ""
     if not key:
-        return ("还没存这家的密钥，查不了它有哪些模型。接入不用选模型：直接出卡，用户填好密钥点检测，"
-                "程序会自己拿名单；接好后点开基础层那一块就能看到。不要凭记忆编模型名。")
+        return ("还没存这家的密钥，查不了它有哪些模型。接入不用选模型：直接出提议，用户填好密钥点检测，"
+                "程序会自己拿名单；接好后点开基础层那个积木块就能看到。不要凭记忆编模型名。")
     try:
         names = blocks_check.fetch_models(known["base_url"], key)
     except BlockError as exc:

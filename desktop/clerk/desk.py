@@ -20,12 +20,12 @@ from collab import blocks
 
 FOLDER = Path(".collab") / "行政对话"
 _AUTH_HEADER = re.compile(r"(?i)(bearer|authorization:)\s+[A-Za-z0-9._~+/=-]{12,}")
-KEY_NOTICE = "你刚才贴的内容里有一串像密钥的字（也可能只是编号），已经隐藏，没有发给模型。如果真是密钥，为了安全，请到那家平台把它作废，换一把新的，以后填在提议卡的密钥框里。"
+KEY_NOTICE = "你刚才贴的内容里有一串像密钥的字（也可能只是编号），已经隐藏，没有发给模型。如果真是密钥，为了安全，请到那家平台把它作废，换一把新的，以后填在提议的密钥框里。"
 INDEX = "索引.json"
 HISTORY_LIMIT = 40  # 带给模型的最近几句话，够接上话，也不让费用越滚越大
 TITLE_LIMIT = 24
 MAX_TOOL_ROUNDS = 5
-BLOCKS_TOOL_ROUNDS = 8  # 积木库：翻手册、搜、读网页、出卡一套下来步数多（用户真实接高德时 5 步不够，2026-11-10）
+BLOCKS_TOOL_ROUNDS = 8  # 积木库：翻手册、搜、读网页、出提议一套下来步数多（用户真实接高德时 5 步不够，2026-11-10）
 # 模型把工具调用当文字吐出来（DeepSeek 的 DSML、常见的 <tool_call> 等写法）：从这里起都不给用户看
 # 只认这几种协议写法：<｜…（DeepSeek）、<|tool_calls_begin|>、<tool_call>；正常的表格、代码例子不动（复查）
 _TOOL_MARKUP = re.compile(r"<(?:｜|\|[A-Za-z_▁]{1,40}\|>|/?tool_calls?>)", re.I)
@@ -33,31 +33,37 @@ _MAYBE_MARKUP = re.compile(r"<[^\s>]{0,44}$")  # 比协议名最长 40 再多留
 _LAST_ROUND = ("（这是系统提示，不是用户说的）这一轮能用的步骤用完了，不能再调用任何工具，也不要写出工具调用。"
                "用大白话告诉用户做到哪一步、还差什么，请用户说“继续”接着做。")
 
-# 行政说“提议卡/确认框已经弹出来了”这一类话（第 9 项整体验收：模型有时没调用出卡的工具却这么说）
-_CARD = r"(?:提议卡|接法卡|安装卡|卡片|确认框|确认卡)"
+# 行政说“提议/确认框已经弹出来了”这一类话（第 9 项整体验收：模型有时没调用出提议的工具却这么说）
+_CARD = r"(?:安装提议|接入提议|提议|提议卡|接法卡|安装卡|卡片|确认框|确认卡)"  # 旧叫法：提议卡|接法卡|安装卡 仍认
 _DONE = (r"(?:弹出来了|弹出了|已经?弹出|出来了|出好了|已经?发出|已经?发送|已经?给出|已经?生成|已经?显示|已经?出示"
          r"|已经出了|已出(?![现错结]))")
-_CLAIM_AFTER = re.compile(_CARD + r"([^。！？\n]{0,15}?)" + _DONE)  # “提议卡已经弹出来了”
+_CLAIM_AFTER = re.compile(_CARD + r"([^。！？\n]{0,15}?)" + _DONE)  # “提议已经弹出来了”
 _CLAIM_BEFORE = re.compile(r"(?:已经?[^。！？\n]{0,4}?(?:弹出|出示|生成|发(?![现过])|出(?![现错过结]))"
                            r"|(?:给你|为你)(?:弹出|出示|出|生成|发)了)"
-                           r"了?[一个张份]{0,2}[^。！？\n]{0,4}?" + _CARD  # “我已经给你出了一张提议卡”“给你出了接法卡”
-                           + r"|已经?把" + _CARD + r"(?:发给你|给你|发你)了")  # “我已经把接法卡发给你了”
-_NOT_CARD_ITSELF = re.compile(r"结果|命令|检测|里的|内容")  # “接法卡的检测结果出来了”说的不是卡
+                           r"了?[一个张份]{0,2}[^。！？\n]{0,4}?" + _CARD  # “我已经给你出了一个提议”
+                           + r"|已经?把" + _CARD + r"(?:发给你|给你|发你)了")  # “我已经把提议发给你了”
+_NOT_CARD_ITSELF = re.compile(r"结果|命令|检测|里的|内容")  # “提议的检测结果出来了”说的不是提议本身
 _IF_BEFORE = re.compile(r"(?:如果|要是|一旦|等到)[^，,。！？\n]{0,6}$")  # “如果确认框出来了”（不跨逗号）
-_ASKING = re.compile(r"吗|？|\?|要不要|可以|之前|能不能")  # “要我给你出一张接法卡吗？”是在问，不是说出了
+_ASKING = re.compile(r"吗|？|\?|要不要|可以|之前|能不能")  # “要我给你出一个提议吗？”是在问，不是说出了
 _WAIT_THEN = re.compile(r"等[^，,；;]*再")  # “等确认框弹出了再点”
-_PAREN = re.compile(r"（[^）]*）|\([^)]*\)")  # “提议卡（含检测命令）已经弹出来了”：括号里的不算
+_PAREN = re.compile(r"（[^）]*）|\([^)]*\)")  # “提议（含检测命令）已经弹出来了”：括号里的不算
 _LATER_AFTER = re.compile(r"^(?:以后|之后|后)")  # “确认框出来了以后”
-_CLAIM_REMINDER = ("（这是系统提示，不是用户说的）你刚才说已经出了提议卡或确认框，但这一轮你没有调用任何 propose_ 开头的工具，"
-                   "用户什么卡都看不到。要出卡就现在调用对应的工具；不需要出卡，就如实告诉用户刚才没有出卡。")
-_CARD_SHOWN = "已向用户出示确认框"  # 出卡工具成功时回给模型的话（clerk_tasks._publish_block 等）
+# “提议”当动词，两头一起看（复查第 1–5 轮换个说法就漏，不再一个个补词）：
+# 前面是说话的人或副词（我提议、我们提议、我个人提议、我想/也/还是/就提议）；或后面跟着要做的事（提议你先…、提议先…、提议把/将…）。
+# “提议给你……”两种意思都有（“我提议给你换个模型”“接入提议给你看看”），只按前面那头认。
+# 前面是 的/个/张/出/进 这类时是名词（“上面的提议”“出了一个提议”“填进提议里”），不按动词排。
+_PROPOSE_AS_VERB = re.compile(r"(?<=[我们咱他她人想也还是就再倒才都只刚又])提议"
+                              r"|(?<![的张个份置卡])提议(?:你|先|把|将)")
+_CLAIM_REMINDER = ("（这是系统提示，不是用户说的）你刚才说已经出了提议或确认框，但这一轮你没有调用任何 propose_ 开头的工具，"
+                   "用户什么提议都看不到。要出提议就现在调用对应的工具；不需要，就如实告诉用户刚才没有出提议。")
+_CARD_SHOWN = "已向用户出示确认框"  # 出提议工具成功时回给模型的话（clerk_tasks._publish_block 等）
 
 
 def claims_card(text: str) -> bool:
-    """回话里是不是说了“卡已经出了”（说检测结果、命令内容，或“如果/等…出来了以后”都不算）"""
-    # 按半句看（逗号也切开）：“提议卡已经弹出来了，你可以点确认”后半句的“可以”不该让前半句算成在问（第三轮复查）
+    """回话里是不是说了“提议已经出了”（说检测结果、命令内容，或“如果/等…出来了以后”都不算）"""
+    # 按半句看（逗号也切开）：“提议已经弹出来了，你可以点确认”后半句的“可以”不该让前半句算成在问（第三轮复查）
     for sentence in re.findall(r"[^，,；;。！？!?\n]+[，,；;。！？!?]?", _PAREN.sub("", text or "")):
-        if _ASKING.search(sentence) or _WAIT_THEN.search(sentence):
+        if _ASKING.search(sentence) or _WAIT_THEN.search(sentence) or _PROPOSE_AS_VERB.search(sentence):
             continue
         for pattern in (_CLAIM_AFTER, _CLAIM_BEFORE):
             for found in pattern.finditer(sentence):
@@ -71,9 +77,9 @@ def claims_card(text: str) -> bool:
     return False
 
 
-# 说得像卡就在屏幕上（“接法卡给你”“卡片已经送到你屏幕上了”“这张卡还在”“填进卡上”）：屏幕上其实没卡时要提醒
-# 用户真实接腾讯云混元时管家没出卡却这么说了三次，上面的 claims_card 一句都没认出来（2026-11-10）
-_CARD_WORD = r"(?:卡片|接法卡|提议卡|安装卡|确认卡|确认框|这张卡|卡)"
+# 说得像提议就在屏幕上（“提议就在上面”“填进提议里”）：屏幕上其实没有时要提醒
+# 用户真实接腾讯云混元时管家没出提议却这么说了三次，上面的 claims_card 一句都没认出来（2026-11-10）
+_CARD_WORD = r"(?:安装提议|接入提议|提议|卡片|接法卡|提议卡|安装卡|确认卡|确认框|这张卡|卡)"  # 旧叫法：接法卡|提议卡|安装卡 仍认
 _POINTS = re.compile(
     _CARD_WORD + r"[^。！？\n]{0,4}?(?:给你|送到|发到|放到|摆在|就在|还在|在你?的?屏幕上|在上面)"
     r"|(?:屏幕上|上面)的?[^。！？\n]{0,3}?" + _CARD_WORD
@@ -83,9 +89,10 @@ _FUTURE = re.compile(r"会|将|再|到时|之后|以后|等|装好|接好|待会
 
 
 def points_at_card(text: str) -> bool:
-    """回话说得像屏幕上已经有卡（在问、在说以后的事不算）"""
+    """回话说得像屏幕上已经有提议（在问、在说以后的事不算）"""
     for sentence in re.findall(r"[^，,；;。！？!?\n]+[，,；;。！？!?]?", _PAREN.sub("", text or "")):
-        if _ASKING.search(sentence) or _WAIT_THEN.search(sentence) or _FUTURE.search(sentence):
+        if (_ASKING.search(sentence) or _WAIT_THEN.search(sentence) or _FUTURE.search(sentence)
+                or _PROPOSE_AS_VERB.search(sentence)):
             continue
         found = _POINTS.search(sentence)
         if found and not _NOT_CARD_ITSELF.search(sentence[found.start():found.end() + 4]):
@@ -94,13 +101,13 @@ def points_at_card(text: str) -> bool:
 
 
 def _claim_reminder(open_cards: list) -> str:
-    """上面还有没处理的卡时，点名那张：说的是它就照实说在上面，说的是新卡就现在出"""
+    """上面还有没处理的提议时，点名那个：说的是它就照实说在上面，说的是新提议就现在出"""
     if not open_cards:
         return _CLAIM_REMINDER
     names = "、".join(f"「{clerk_tasks.card_label(c)}」"
                      for c in open_cards[:3])
-    return (f"（这是系统提示，不是用户说的）你刚才说出了提议卡或确认框，但这一轮你没有调用任何 propose_ 开头的工具。"
-            f"上面还有没处理的卡：{names}。你说的如果是上面这张，就照实告诉用户它在上面；说的是新的卡，就现在调用对应的工具。")
+    return (f"（这是系统提示，不是用户说的）你刚才说出了提议或确认框，但这一轮你没有调用任何 propose_ 开头的工具。"
+            f"上面还有没处理的提议：{names}。你说的如果是上面这个，就照实告诉用户它在上面；说的是新的提议，就现在调用对应的工具。")
 ROLE = ("你是超级助手的行政人员，用户的前台和行政。用大白话简短回答，不说技术术语。"
         "你能查项目说明、台账、卡片和团队设置；也能查本机 PATH 里有没有装 Codex、Cursor（agent 命令）、agy，只查不运行。"
         "问进度必须先查，不能凭记忆。"
@@ -137,7 +144,7 @@ def _who(project) -> str:
 
 
 class _ThisTurn:
-    """交给出卡的对话：多带一个“是哪一轮出的”，出卡前程序再看一眼这一轮被停掉没有（复查第二轮第 2 条）。"""
+    """交给出提议的对话：多带一个“是哪一轮出的”，出提议前程序再看一眼这一轮被停掉没有（复查第二轮第 2 条）。"""
 
     def __init__(self, conv, turn: int):
         self._conv, self.turn_expected = conv, turn
@@ -507,14 +514,14 @@ class ClerkDesk:
             role = blocks_tools.role_text()
             for name in conv.manuals:  # 翻过的手册后面每句都带着
                 role += "\n\n" + blocks_tools.manual_block(name)
-            # 管家看不见屏幕：每一句都告诉它屏幕上现在有没有卡，省得它以为自己出过（用户真实遇到，2026-11-10）
+            # 管家看不见屏幕：每一句都告诉它屏幕上现在有没有待处理的提议，省得它以为自己出过（用户真实遇到，2026-11-10）
             open_cards = clerk_tasks.open_proposals(conv.project, conv.id)
             if open_cards:
                 names = "、".join(f"「{clerk_tasks.card_label(c)}」" for c in open_cards[:3])
-                role += (f"\n\n屏幕上现在有一张待处理的卡：{names}，用户还没点。"
-                         "它只管它自己那件事：用户要办的是另一样东西，要另出一张卡。")
+                role += (f"\n\n屏幕上现在有一张待处理的提议：{names}，用户还没点。"
+                         "它只管它自己那件事：用户要办的是另一样东西，要另出一个提议。")
             else:
-                role += "\n\n屏幕上现在没有待处理的卡。要让用户填密钥、点确认，必须先调用 propose_ 开头的工具出卡。"
+                role += "\n\n屏幕上现在没有待处理的提议。要让用户填密钥、点确认，必须先调用 propose_ 开头的工具出提议。"
         else:
             role = ROLE.format(name=Path(conv.project).name)
             hint = team_incomplete_hint(conv.project)
@@ -585,10 +592,10 @@ class ClerkDesk:
                 self._keep_reply(conv, words)
             holder.update(item=uuid.uuid4().hex, done="", raw="", sent=0)
             holder["said"] = True
-            holder["sealed"] = holder.get("sealed", "") + words + "\n"  # 起标题要用（出卡后这一轮不再有回话）
+            holder["sealed"] = holder.get("sealed", "") + words + "\n"  # 起标题要用（出提议后这一轮不再有回话）
 
         on_text.new_round = new_round
-        on_text.card_shown = lambda: holder.update(said=True)  # 只出卡不说话也算回过话，不补“没有得到回复”
+        on_text.card_shown = lambda: holder.update(said=True)  # 只出提议不说话也算回过话，不补“没有得到回复”
 
         failure, reply = None, ""
         try:
@@ -612,8 +619,8 @@ class ClerkDesk:
         if failure:
             conv.emit({"type": "error", "text": failure})
         conv.emit({"type": "turn_done"})
-        named = reply or holder.get("sealed") or ("（出了一张卡）" if holder.get("said") else "")
-        if first and named and not failure:  # 第一句就出了卡也起标题（Codex 复查第 2 条）
+        named = reply or holder.get("sealed") or ("（出了一个提议）" if holder.get("said") else "")
+        if first and named and not failure:  # 第一句就出了提议也起标题（Codex 复查第 2 条）
             threading.Thread(target=self._name, args=(conv, client, named), daemon=True).start()
 
     def _tool_loop(self, conv: _Conversation, client, turn: int, on_text, seal) -> str:
@@ -622,7 +629,7 @@ class ClerkDesk:
         allowed = self._tools_for(conv)
         names = {tool.get("function", {}).get("name") for tool in allowed}
         parts = []
-        proposed = reminded = False  # 这一轮出过卡没有；“说出了卡却没出”提醒过没有（只提醒一次）
+        proposed = reminded = False  # 这一轮出过提议没有；“说出了提议却没出”提醒过没有（只提醒一次）
         # 只在积木库里提醒：项目窗口卡片对话里的修改提议是一轮结束才出框，提醒会让同一条修改记两遍（复查发现）
         can_propose = blocks_tools.is_blocks_home(conv.project) and any(
             str(n or "").startswith("propose_") for n in names)
@@ -653,7 +660,7 @@ class ClerkDesk:
                     and (claims_card(reply) or points_at_card(reply))):
                 open_now = clerk_tasks.open_proposals(conv.project, conv.id)  # 只读一次（复查）
                 if claims_card(reply) or not open_now:
-                    reminded = True  # 说出了卡、这一轮却没出：提醒它一次，真出卡或如实说没出；上面有没处理的卡就点名
+                    reminded = True  # 说出了提议、这一轮却没出：提醒它一次，真出提议或如实说没出；上面有没处理的提议就点名
                     messages.append({"role": "assistant", "content": reply})
                     messages.append({"role": "user", "content": _claim_reminder(open_now)})
                     continue
@@ -676,7 +683,7 @@ class ClerkDesk:
                 if not self._alive(conv, turn):
                     raise _Stopped
                 if shown_now and blocks_tools.is_blocks_home(conv.project):
-                    break  # 积木库：同一批里出卡之后的不再执行，免得刚出的卡被顶掉、卡后还在忙（Codex 复查第 1 条）
+                    break  # 积木库：同一批里出提议之后的不再执行，免得刚出的提议被顶掉、提议后还在忙（Codex 复查第 1 条）
                 call_id = call.get("id") or f"call{round_no}_{i}"
                 name = call.get("name") or ""
                 raw = call.get("arguments") or "{}"
@@ -718,12 +725,12 @@ class ClerkDesk:
                 except OSError:
                     result = "存不下来：请用户检查磁盘空间或文件夹权限，这次没有生成确认框。"
                 if name.startswith("propose_") and str(result).startswith(_CARD_SHOWN):
-                    proposed = shown_now = True  # 真出了卡才算；出卡工具返回错误（缺字段、不合格）不算
+                    proposed = shown_now = True  # 真出了提议才算；出提议工具返回错误（缺字段、不合格）不算
                 label = LABELS.get(name, "读 资料")
                 activity = {"type": "activity", "item": call_id, "label": label, "status": "done"}
                 if blocks_tools.is_blocks_home(conv.project) and name in names:
                     if name.startswith("propose_") and not str(result).startswith(_CARD_SHOWN):
-                        label = activity["label"] = "没出卡"  # 被程序拦下的不能算“出了卡”
+                        label = activity["label"] = "没出提议"  # 被程序拦下的不能算“出了提议”
                     plain = args if isinstance(args, dict) else {}
                     said = self._forget_keys(conv, client, blocks_tools.describe(name, plain, str(result)))
                     activity["text"] = said
@@ -741,8 +748,8 @@ class ClerkDesk:
                     conv.emit(activity)
                 messages.append({"role": "tool", "tool_call_id": call_id, "content": result})
             if shown_now and blocks_tools.is_blocks_home(conv.project):
-                # 积木库：卡一出来这一轮就结束，卡后不再说话（用户 2026-11-10：上面文字、下面卡，卡后的话都是重复）。
-                # 会替换哪块写在卡上，失效的旧卡自己会变样；下一句话的开头也会告诉管家屏幕上有哪张卡
+                # 积木库：提议一出来这一轮就结束，提议后不再说话（用户 2026-11-10：上面文字、下面提议，提议后的话都是重复）。
+                # 会替换哪个积木块写在提议上，失效的旧提议自己会变样；下一句话的开头也会告诉管家屏幕上有哪个提议
                 getattr(on_text, "card_shown", lambda: None)()
                 return "\n".join(parts)
         return "\n".join(parts)

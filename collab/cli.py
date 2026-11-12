@@ -175,7 +175,7 @@ def cmd_run(args, ask_fn=None, judge_fn=None, **_):
     allowed = read_allowed((_collab(args.project) / "cards" / args.card_id / "需求卡.md")
                            .read_text(encoding="utf-8"))
     if not allowed:
-        print("需求卡里还没有写明允许改动的文件范围（“## 允许改动的范围”下面列出文件）", file=sys.stderr)
+        print("任务卡片里还没有写明允许改动的文件范围（“## 允许改动的范围”下面列出文件）", file=sys.stderr)
         return 1
 
     # 用谁干活：命令里写了就用命令里的，没写就用团队配置（在动手之前确定，配置坏了就在这里停下）
@@ -360,10 +360,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--remove-old-package", action="store_true", help="删除项目里的旧协作包副本（用户同意后才加）")
     p.set_defaults(func=cmd_migrate)
 
-    p = sub.add_parser("new-card", help="新建需求卡")
+    p = sub.add_parser("new-card", help="新建任务卡片")
     p.add_argument("project")
     p.add_argument("card_id")
-    p.add_argument("--requirement", required=True, help="需求卡正文文件")
+    p.add_argument("--requirement", required=True, help="任务卡片正文文件")
     p.set_defaults(func=cmd_new_card)
 
     p = sub.add_parser("run", help="派发一张卡")
@@ -391,7 +391,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("card_id")
     p.set_defaults(func=cmd_approve)
 
-    p = sub.add_parser("plan", help="按需求卡写拆解方案（只读）")
+    p = sub.add_parser("plan", help="按任务卡片写拆解方案（只读）")
     p.add_argument("project")
     p.add_argument("card_id")
     p.set_defaults(func=cmd_plan)

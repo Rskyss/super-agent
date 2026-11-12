@@ -1,4 +1,4 @@
-"""积木库：按接法卡检测（52 号单）。
+"""积木库：按接法说明检测（52 号单）。
 
 CLI：在新建的临时文件夹里让工具干一件小事（建一个文件），以文件真的建出来为准，不听工具自己说。
 没核实过的卡（命令或参数和预置不一样），用户看过完整命令、确认之前一律不跑（用户 2026-11-08 拍板）。
@@ -266,7 +266,7 @@ def check_search(card, key, root=None, record=True) -> dict:
 
 def check_cli(card, root=None, approved=None, runner=None, timeout=DEFAULT_TIMEOUT, path=None,
               terminal_path=None, record=True, keys=None) -> dict:
-    """检测一张 CLI 接法卡。返回 {ok, status(ok/missing/fail), reason, how, seconds, verified}。
+    """检测一张 CLI 接法说明。返回 {ok, status(ok/missing/fail), reason, how, seconds, verified}。
     没核实过的卡，approved 必须是用户确认时看到的那条完整命令（preview 的结果），
     和现在要跑的对不上（卡改过、换了程序）就抛 BlockError，什么都不跑。"""
     card = blocks.validate_card(card)
@@ -597,7 +597,7 @@ def _check_whole(card, key, client_factory, models_fetcher) -> dict:
 
 def check_api(card, api_key, root=None, need_tools=False, client_factory=None, record=True, whole=False,
               models_fetcher=None) -> dict:
-    """检测一张大模型 API 接法卡。
+    """检测一张大模型 API 接法说明。
     whole=True（基础层的块）：拿模型名单，再自动挑一个试通，结果里带 models（名单）和 model（试通的那个）。
     否则（管家绑定自己的模型）：只试卡上写的那一个；need_tools 时再测会不会用工具。
     返回 {ok, status(ok/fail/no_tools/quota), reason, how, seconds, tools}。密钥只在这次调用里用，不保存。"""
@@ -607,7 +607,7 @@ def check_api(card, api_key, root=None, need_tools=False, client_factory=None, r
     if not isinstance(api_key, str) or not api_key.strip():
         raise BlockError("还没填密钥：先在密钥框里填好再检测")
     if not whole and not card.get("model"):
-        raise BlockError("这张卡没写模型，只能按整家检测")
+        raise BlockError("这份接法说明没写模型，只能按整家检测")
     key = api_key.strip()
     with _OneAtATime(card["id"]):
         started = time.time()

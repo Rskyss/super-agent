@@ -542,7 +542,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 card = blocks.load_card(card_id, home)
             except BlockError:
-                self._json({"error": "基础层里没有这一块"}, 404)
+                self._json({"error": "基础层里没有这个积木块"}, 404)
                 return
             preview = ""
             if card["kind"] == "cli":
@@ -634,12 +634,12 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"error": "编号不对"}, 400)
                 return
             if blocks_check.checking(card_id):
-                self._json({"error": "正在检测这一块，等检测完再移出"}, 409)
+                self._json({"error": "正在检测这个积木块，等检测完再移出"}, 409)
                 return
             try:
                 blocks.remove_card(card_id, home)
             except BlockError:
-                self._json({"error": "基础层里没有这一块"}, 404)
+                self._json({"error": "基础层里没有这个积木块"}, 404)
                 return
             self._json({"ok": True})
         elif path == "/api/blocks/scan":
@@ -656,7 +656,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 card = blocks.load_card(card_id, home)
             except BlockError:
-                self._json({"error": "基础层里没有这一块"}, 404)
+                self._json({"error": "基础层里没有这个积木块"}, 404)
                 return
             approved = body.get("approved")
             api_key = (self._blocks_key(body, card.get("key_account", ""), card.get("provider", ""),
@@ -683,7 +683,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"error": "只有 Codex、Cursor、agy 能一键接入"}, 400)
                 return
             if blocks._card_path(name, home).is_file():
-                self._json({"error": "基础层里已经有这一块"}, 409)
+                self._json({"error": "基础层里已经有这个积木块"}, 409)
                 return
             card = blocks.builtin_card(name)
             job = self._blocks_job("check", self._blocks_check_work(home, card, auto_save=True), card=card)
@@ -1116,7 +1116,7 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"error": "没有这个地址"}, 404)
 
     def _blocks_proposal(self, project: str, conversation: str, body: dict) -> None:
-        """积木库的提议卡：确认后真的去安装或检测。整段排队做，两次确认同时到也不会乱。"""
+        """积木库的提议：确认后真的去安装或检测。整段排队做，两次确认同时到也不会乱。"""
         server, desk = self.server, self.server.desk
         pid, decision = str(body.get("id") or ""), str(body.get("decision") or "")
         with server.blocks_confirm_lock:

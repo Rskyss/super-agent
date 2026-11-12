@@ -306,7 +306,7 @@ if (typeof document !== "undefined") (function () {
       if (!$("bindWrap").hidden) syncBindKey();
       if (currentDetail) syncDetailKey();
     }).catch(function () {});
-    try {  // 聊天页嵌在里面、同源：它的提议卡也跟着变
+    try {  // 聊天页嵌在里面、同源：它的提议也跟着变
       var chatWin = $("chatFrame").contentWindow;
       if (chatWin && chatWin.chatKeysChanged) chatWin.chatKeysChanged();
     } catch (_) {}
@@ -534,7 +534,7 @@ if (typeof document !== "undefined") (function () {
     html += broken.map(function (b) {
       return '<div class="block-item broken' + (activeBlock === b.id ? " on" : "") + '" data-broken="' + BlocksCore.esc(b.id) + '" data-problem="' + BlocksCore.esc(b.problem) + '">' +
         '<div class="block-top"><span class="block-name">' + BlocksCore.esc(b.id) + '</span></div>' +
-        '<div class="block-status"><i class="dot bad"></i><span>这张接法卡坏了</span></div>' +
+        '<div class="block-status"><i class="dot bad"></i><span>接法说明有问题</span></div>' +
       "</div>";
     }).join("");
     pending.forEach(function (p) {  // 页面重新加载时还在检测的：接着跟，不显示成“点一下”（复查发现）
@@ -661,7 +661,7 @@ if (typeof document !== "undefined") (function () {
     }).catch(function (err) {
       if (activeBlock !== id) return;
       currentDetail = null;
-      $("detailTitle").textContent = err && err.status === 404 ? "基础层里没有这一块了" : "详情没取到：" + err.message;
+      $("detailTitle").textContent = err && err.status === 404 ? "基础层里没有这个积木块了" : "详情没取到：" + err.message;
       ["detailStatus", "detailWarn", "detailRows", "detailPreview", "detailKeyBox", "detailCheck", "detailRemove", "detailCard"].forEach(function (k) { $(k).hidden = true; });
     });
   }
@@ -700,7 +700,7 @@ if (typeof document !== "undefined") (function () {
     $("chatFrame").hidden = true;
     $("blockDetail").hidden = false;
     $("detailTitle").textContent = id;
-    $("detailStatus").textContent = "这张接法卡坏了：" + problem;
+    $("detailStatus").textContent = "接法说明有问题：" + problem;
     $("detailStatus").className = "detail-status bad";
     $("detailStatus").hidden = false;
     ["detailWarn", "detailRows", "detailPreview", "detailKeyBox", "detailCheck", "detailCard"].forEach(function (k) { $(k).hidden = true; });

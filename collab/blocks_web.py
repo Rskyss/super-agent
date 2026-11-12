@@ -412,7 +412,7 @@ def tavily_extract(url, key) -> str:
 
 def verify_install(url, install, command=None, search_key=None) -> dict:
     """核对行政找来的安装命令：程序自己读那一页，命令要一字不差在原文里（空白不算）；
-    再查安装包底细。都过了返回提议卡要用的说明；哪一步不过就抛 BlockError，不出卡。
+    再查安装包底细。都过了返回提议要用的说明；哪一步不过就抛 BlockError，不出提议。
     command 是装好后要找的命令名：npm 不写就用包里登记的；脚本安装必须写。"""
     spec = parse_install(install)
     page = read_page(url)

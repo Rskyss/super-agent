@@ -53,7 +53,7 @@ def new_card(project, title, do, not_do, done_when, conversation="") -> str:
 
 
 def revise_card(project, card_id: str, text: str) -> None:
-    """把新要求追加到需求卡。验收中或卡住时回到开发，写方案时保持待对齐。"""
+    """把新要求追加到任务卡片。验收中或卡住时回到开发，写方案时保持待对齐。"""
     project = Path(project)
     cdir = project / ".collab" / "cards" / card_id
     state_path = cdir / "状态.json"

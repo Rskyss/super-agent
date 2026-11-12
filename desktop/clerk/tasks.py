@@ -157,7 +157,7 @@ def propose(conv, arguments: dict) -> str:
 
 
 _BLOCK_KINDS = ("install", "connect", "connect_api", "web_install", "connect_search")
-_STRIKES = 3  # 一段对话里行政起草的接法卡连续检测不通过几次就停
+_STRIKES = 3  # 一段对话里行政起草的接法说明连续检测不通过几次就停
 _HTTPS_URL = re.compile(r"https://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[^\s]*)?")
 
 
@@ -167,9 +167,9 @@ def open_proposals(project: str, conversation: str) -> list:
 
 
 def card_label(data: dict) -> str:
-    """提议卡在对行政说话时叫什么：接入卡用名字，安装卡用 label（“用 npm 装 Codex”），任务卡用标题"""
+    """提议在对行政说话时叫什么：接入提议用名字，安装提议用 label（“用 npm 装 Codex”），任务卡用标题"""
     return str(data.get("name") or data.get("label") or (data.get("block") or {}).get("name")
-               or data.get("title") or "一张卡")
+               or data.get("title") or "一个提议")
 
 
 _NO_WAIT = contextlib.nullcontext()
@@ -177,13 +177,13 @@ _NO_WAIT = contextlib.nullcontext()
 
 def _publish_block(conv, data: dict) -> str:
     """积木库的三种提议共用：先存新提议，再把旧的标成被替换；新的存不上时旧的不动。
-    接法卡放在 block 字段；card 字段在提议里只表示项目窗口的任务卡编号，这里永远是空的。"""
+    接法说明放在 block 字段；card 字段在提议里只表示项目窗口的任务卡编号，这里永远是空的。"""
     expected = getattr(conv, "turn_expected", None)
     cond = getattr(conv, "cond", None)
     with _lock, (cond if expected is not None and cond is not None else _NO_WAIT):
-        # 积木库：出卡要花时间核对，这期间用户点了停止，旧卡就不出了，也不顶掉新卡（锁的先后和确认卡片一致）
+        # 积木库：出提议要花时间核对，这期间用户点了停止，旧提议就不出了，也不顶掉新提议（锁的先后和确认卡片一致）
         if expected is not None and getattr(conv, "turn", expected) != expected:
-            return "没有出卡：用户已经停止了这一轮。"
+            return "没有出提议：用户已经停止了这一轮。"
         olds = _open_in_conversation(conv.project, conv.id)
         pid = uuid.uuid4().hex
         data = dict(data, id=pid, conversation=conv.id, card="", state="open", time=time.time())
@@ -199,8 +199,8 @@ def _publish_block(conv, data: dict) -> str:
     voided = "、".join(f"「{card_label(old)}」" for old in olds)
     if voided:  # 同一段对话一次只留一张没处理的卡：行政不知道的话会说“两张都能点”（第 9 项走查发现）
         reply += f"这段对话里上面没处理的{voided}已经失效、点不了了；用户还要它，就再出一次。"
-    if data.get("replaces"):  # 行政看不到卡上的字：会替换哪一块要在这里告诉它
-        reply += f"这张卡会替换基础层里的「{data['replaces']}」，检测通过放进去后旧的那块就没了。"
+    if data.get("replaces"):  # 行政看不到提议上的字：会替换哪个积木块要在这里告诉它
+        reply += f"这个提议会替换基础层里的「{data['replaces']}」，检测通过放进去后旧的那个积木块就没了。"
     return reply
 
 
@@ -222,7 +222,7 @@ def _record_time(record: dict) -> float:
 
 
 def _strikes(conv) -> int:
-    """这段对话里行政起草、用户确认过的接法卡，从最近一张往前数，连续几张检测不通过。
+    """这段对话里行政起草、用户确认过的接法说明，从最近一张往前数，连续几张检测不通过。
     按对话算、不按编号算，换个编号绕不过去；预置模板不算，登录好了随时能再接。"""
     folder = _folder(conv.project)
     tried = []
@@ -265,7 +265,7 @@ def propose_install(conv, args: dict) -> str:
     return _publish_block(conv, dict(info, kind="install", install=install_id))
 
 
-# 管家起草接法卡的样子：写错时附在回话里，照着改一次就对（用户真实接高德时连错 3 次，2026-11-10）
+# 管家起草接法说明的样子：写错时附在回话里，照着改一次就对（用户真实接高德时连错 3 次，2026-11-10）
 CARD_EXAMPLE = json.dumps({"id": "amap-gui", "kind": "cli", "name": "高德地图", "command": "amap-gui", "role": "tool",
                            "probe": ["status"], "ok_words": ["running"], "version_args": [],
                            "secrets": [{"env": "AMAP_KEY", "label": "高德 Key"}]}, ensure_ascii=False)
@@ -290,7 +290,7 @@ def _fill_card(drafted: dict, project) -> dict:
 
 
 def propose_connect_cli(conv, args: dict) -> str:
-    """模型调用 propose_connect_cli：预置模板直接用；起草的卡来源强制写成 clerk，没核实过的要亮出完整命令。"""
+    """模型调用 propose_connect_cli：预置模板直接用；起草的接法说明来源强制写成 clerk，没核实过的要亮出完整命令。"""
     template = args.get("template")
     drafted = args.get("card")
     try:
@@ -303,14 +303,14 @@ def propose_connect_cli(conv, args: dict) -> str:
     except BlockError as exc:
         if template:
             return str(exc)
-        return (f"{exc}。照这个样子重写接法卡再出卡（只能有这些项；AI 助手把 role、probe、ok_words 换成 "
+        return (f"{exc}。照这个样子重写接法说明再出提议（只能有这些项；AI 助手把 role、probe、ok_words 换成 "
                 f"\"run\": [\"{{prompt}}\"] 这样的写法）：{CARD_EXAMPLE}")
     verified = blocks.is_verified(block)
     if not template and not verified:
         if block["id"] in blocks.BUILTIN:
-            return f"{block['id']} 是预置接法的编号，起草的卡要换一个编号。"
+            return f"{block['id']} 是预置接法的编号，起草的接法说明要换一个编号。"
         if _strikes(conv) >= _STRIKES:
-            return (f"这段对话里起草的接法卡已经连续 {_STRIKES} 次检测不通过。先停下，"
+            return (f"这段对话里起草的接法说明已经连续 {_STRIKES} 次检测不通过。先停下，"
                     "把卡在哪一步告诉用户，不要再提议。")
     data = {"kind": "connect", "block": block, "name": block["name"], "verified": verified,
             "category": blocks.CATEGORY_LABELS[blocks.category(block)]}
@@ -345,7 +345,7 @@ def propose_connect_api(conv, args: dict) -> str:
     """模型调用 propose_connect_api：按整家接，不选模型。认得的服务商用它固定的地址和名字；
     不认得的按“其他”处理，必须给 https 地址，model 只在平台不给名单时用来试通。"""
     if blocks._has_secret(args):
-        return "参数里有像密钥的东西。密钥只能由用户填在提议卡的密钥框里，不要放进参数，也不要让用户贴在聊天里。"
+        return "参数里有像密钥的东西。密钥只能由用户填在提议的密钥框里，不要放进参数，也不要让用户贴在聊天里。"
     provider = str(args.get("provider") or "").strip().lower()
     model = str(args.get("model") or "").strip()
     name = str(args.get("name") or "").strip()
@@ -428,12 +428,12 @@ def _one_line(value, limit: int) -> str:
 
 def _need_risk(on_code_host: bool) -> str:
     why = "网址在代码托管站上（或跳转到了那里），" if on_code_host else ""
-    return (f"没有出卡：{why}这个算非官方（别人做的），要在 risk 里写清风险（比如读浏览器登录、破解接口、可能封号、"
-            "个人维护可能停更），用户才知道自己在装什么。先跟用户说清，再带上 risk 重新出卡。")
+    return (f"没有出提议：{why}这个算非官方（别人做的），要在 risk 里写清风险（比如读浏览器登录、破解接口、可能封号、"
+            "个人维护可能停更），用户才知道自己在装什么。先跟用户说清，再带上 risk 重新出提议。")
 
 
 def propose_web_install(conv, args: dict) -> str:
-    """模型调用 propose_web_install：程序自己读页面核对命令、查安装包底细，都过了才出卡。
+    """模型调用 propose_web_install：程序自己读页面核对命令、查安装包底细，都过了才出提议。
     官方不官方：管家说是、而且不在代码托管站上才算官方；非官方必须写风险（积木库管家方案第三、四节）。"""
     args = args or {}
     url = str(args.get("url") or "").strip()
@@ -447,9 +447,9 @@ def propose_web_install(conv, args: dict) -> str:
     try:
         spec = blocks_web.verify_install(url, line, command=command, search_key=search_key() or None)
     except BlockError as exc:
-        return f"没有出卡：{exc}"
+        return f"没有出提议：{exc}"
     except Exception:  # noqa: BLE001 — 网站、npm 回的东西什么样都有，不能让行政这一轮断掉（复查第 8 条）
-        return "没有出卡：核对时出了意外，换一页官网再试，或者请用户自己装"
+        return "没有出提议：核对时出了意外，换一页官网再试，或者请用户自己装"
     if official and code_hosting(spec.get("source")):  # 跳转到了代码托管站：按最后到的那一页算（复查第 1 条）
         official = False
         if not risk:
@@ -472,7 +472,7 @@ def propose_web_install(conv, args: dict) -> str:
 
 
 def propose_connect_search(conv, args: dict) -> str:
-    """模型调用 propose_connect_search：接法预置（Tavily），卡上只有一个密钥框。"""
+    """模型调用 propose_connect_search：接法预置（Tavily），提议上只有一个密钥框。"""
     block = blocks.search_card("tavily")
     data = {"kind": "connect_search", "block": block, "name": block["name"], "verified": True,
             "category": blocks.CATEGORY_LABELS["search"], "key_account": block["key_account"]}
@@ -494,7 +494,7 @@ def _block_result(data: dict, repeat: bool) -> dict:
     else:
         result["block"] = data.get("block")
         # 点确认只是开始检测，不等于接好了（用户真实看到“已确认接入”下面是“模型名不对”，2026-11-10）
-        result["reply"] = f"你点了确认，开始检测「{data.get('name') or ''}」。接上了才能放进基础层，结果看上面那张卡。"
+        result["reply"] = f"你点了确认，开始检测「{data.get('name') or ''}」。接上了才能放进基础层，结果看上面那个提议。"
     if kind == "connect":
         result["approved"] = data.get("preview")
     return result
