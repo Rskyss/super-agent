@@ -141,7 +141,7 @@ if (typeof document !== "undefined") (function () {
       return;
     }
     if (act === "discard" && !window.confirm("这次的改动不会进入项目，你的项目不会变。改好的版本也会删除。")) return;
-    if (act === "accept_issues" && !window.confirm(PanelCore.acceptIssuesConfirm(view.card.phase && view.card.phase.detail))) return;
+    if (act === "accept_issues" && !window.confirm(PanelCore.acceptIssuesConfirm(view.card.phase && (view.card.phase.issues || view.card.phase.detail)))) return;
     var cardId = view.card.id;   // 问的时候可能切了卡：批准的必须是点的那张
     if (act === "approve") {
       actionBusy = true;

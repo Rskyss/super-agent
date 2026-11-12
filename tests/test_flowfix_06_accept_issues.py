@@ -26,7 +26,8 @@ class StateMachine(unittest.TestCase):
 class Button(Case):
     def blocked(self, reason):
         cdir = self.make_card(state="需Claude介入", plan=True)
-        record(cdir, "转人工", src="程序", dst="调度员", summary=reason)
+        cause = "复查不通过" if reason == REVIEW_STOP else None  # 程序记的标记（复查第 1 轮：不能只看文字）
+        record(cdir, "转人工", src="程序", dst="调度员", summary=reason, cause=cause, text=reason)
         self.make_copy()
         return cdir
 

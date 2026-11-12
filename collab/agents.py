@@ -33,7 +33,9 @@ def kill_current_tool_process_group() -> None:
 
 
 def cursor_command(prompt: str, model: str = DEFAULT_MODELS["cursor"]):
-    return ["agent", "-p", "--trust", "--model", model, "--output-format", "json", prompt]
+    """沙箱一律打开：派活时会放行本卡测试命令（流程修理 ⑯），沙箱保证它只能写施工副本和临时文件夹。
+    2026-11-12 实测：开沙箱后 python3 能跑、能写副本和临时文件夹，写不到用户主目录。"""
+    return ["agent", "-p", "--trust", "--sandbox", "enabled", "--model", model, "--output-format", "json", prompt]
 
 
 def codex_command(prompt: str, model: str = DEFAULT_MODELS["codex"],
@@ -243,7 +245,8 @@ def ask(adapter: str, prompt: str, cwd, expect_file=None, timeout=DEFAULT_TIMEOU
                 return AgentResult(ok=False, output="超时", attempts=attempt)
             if code != 0:
                 continue
-            final = _read_last(last_path) or readable(output)
+            # Codex 写了最后回复文件就只认它（空的就是没回话），不能退回去拿整段过程当结论
+            final = _read_last(last_path) if last_path.exists() else readable(output)
             if expect_file is None and not final.strip():  # 检测连通看的是建没建出文件，不看回话
                 output = (output or "") + f"\n{EMPTY_REPLY}"
                 continue

@@ -245,7 +245,13 @@ class LastReviewFixes(Case):
         need.write_text(need.read_text(encoding="utf-8") + "- src/guide.md\n", encoding="utf-8")
         write_script(self.bin / "agent", 'git mv docs/guide.md src/guide.md\necho 写好了\n')
         self.assertEqual(self.act("approve")[0], 200)
-        self.assertEqual(self.finished(), "需Claude介入")
+        # 流程修理复查第 1 轮（11-12）：撤销越界改动连暂存区一起恢复，git mv 挪走的原文件现在能撤回来，
+        # 所以不再因“撤不掉”转人工，而是撤回原位、记一笔，照常往下走
+        self.assertEqual(self.finished(), "待验收")
+        self.assertTrue((self.worktree / "docs" / "guide.md").is_file(), "挪出允许范围的原文件被撤回原位")
+        from collab.flow import read_flow
+        scope = [e for e in read_flow(self.collab / "cards" / "CARD-001") if e.get("kind") == "范围"]
+        self.assertTrue(any("docs/guide.md" in e.get("summary", "") for e in scope), "撤销要记下来")
 
     def test_cache_files_do_not_count_as_tests(self):
         write_script(self.bin / "codex", 'mkdir __pycache__\necho x > __pycache__/a.pyc\necho 请确认\n')

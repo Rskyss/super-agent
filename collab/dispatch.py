@@ -210,6 +210,15 @@ def is_test_path(rel: str) -> bool:
     return any(p in _TEST_DIRS for p in parts[:-1]) or bool(_TEST_NAME.match(parts[-1]))
 
 
+def _in_product_folder(worktree, rel: str) -> bool:
+    """新文件放在一个本来就有被管理文件的文件夹里（比如 src/），算产品代码，不算测试。"""
+    parent = str(Path(rel).parent)
+    if parent in ("", "."):
+        return False
+    out = subprocess.run(["git", "ls-files", "--", parent], cwd=str(worktree), capture_output=True, text=True).stdout
+    return bool(out.strip())
+
+
 def _tracked(worktree, rel: str) -> bool:
     return subprocess.run(["git", "ls-files", "--error-unmatch", "--", rel], cwd=str(worktree),
                           capture_output=True).returncode == 0
@@ -234,10 +243,16 @@ def _undo_tester_changes(cdir: Path, worktree, paths: list, before: dict, revert
     fresh_only = []
     for rel in paths:
         saved = cdir / _TEST_BACKUP / rel
+        dest = root / rel
         if rel in before and saved.is_file():
-            dest = root / rel
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(saved, dest)
+            subprocess.run(["git", "reset", "-q", "--", rel], cwd=str(root), capture_output=True)  # 它 git add 过也拿掉
+        elif rel in before and before.get(rel) is None:
+            # 派活前这个文件就是被删掉的（开发员删的），它又建回来：照旧删掉（流程修理复查第 1 轮）
+            if dest.is_file() or dest.is_symlink():
+                dest.unlink()
+            subprocess.run(["git", "reset", "-q", "--", rel], cwd=str(root), capture_output=True)
         else:
             fresh_only.append(rel)
     if fresh_only:
@@ -500,6 +515,9 @@ def cursor_permissions(worktree, test_command):
     def restore():
         try:
             if before is None:
+                # 它若 git add 过，暂存区里也要拿掉，不然放进项目时被当成越界文件（流程修理复查第 1 轮）
+                subprocess.run(["git", "rm", "-q", "--cached", "--ignore-unmatch", "--", ".cursor/cli.json"],
+                               cwd=str(worktree), capture_output=True)
                 if path.is_file():
                     path.unlink()
                 if not folder_was_there and path.parent.is_dir() and not any(path.parent.iterdir()):
@@ -574,9 +592,9 @@ def _dispatch(ask_fn, cdir: Path, role: str, adapter: str, step: str, prompt: st
     return result
 
 
-def _escalate(collab: Path, cdir: Path, card: Card, reason: str) -> None:
-    """转需Claude介入，并在流转记录里写明原因。"""
-    record(cdir, "转人工", src="程序", dst="调度员", summary=reason)
+def _escalate(collab: Path, cdir: Path, card: Card, reason: str, cause: str = "", text=None) -> None:
+    """转需Claude介入，并在流转记录里写明原因。cause="复查不通过" 时用户可以接受剩下的问题（只认这个标记，不认文字）。"""
+    record(cdir, "转人工", src="程序", dst="调度员", summary=reason, cause=cause or None, text=text)
     card.transition("需Claude介入")
     _save(collab, card)
 
@@ -681,14 +699,16 @@ def run_card(card: Card, collab_dir, worktree, test_command, dev_adapter, test_a
         fresh = []
         clashing = set(conflict_names(cdir))
         for rel in _expand_to_files(worktree, [p for p in _changed_list(worktree)
-                                               if not is_cache(p) and p not in clashing]):
+                                               if not is_cache(p) and p not in clashing
+                                               and not p.startswith(".collab")]):
             digest = _file_digest(root / rel)
             if rel not in before_map or before_map.get(rel) != digest:
                 fresh.append(rel)
         # 写测试的只许动测试文件（68b 里它去改了 desk.py，被当成测试文件锁住，开发员白干，⑱）
-        # 只管它改了“原来就有的”非测试文件（产品代码）；它新建的文件夹、文件按测试算（e2e/ 这类各项目叫法不一）
+        # 不按测试算的：改了原有的非测试文件，或在原有产品文件夹里新建文件（流程修理复查第 1 轮）；
+        # 新建的顶层文件夹（e2e/ 这类各项目叫法不一）照旧按测试算
         stray = [rel for rel in fresh if not is_test_path(rel)
-                 and (rel in before_map or _tracked(worktree, rel))]
+                 and (rel in before_map or _tracked(worktree, rel) or _in_product_folder(worktree, rel))]
         if stray:
             _undo_tester_changes(cdir, worktree, stray, before_map, revert_fn)
             fresh = [rel for rel in fresh if rel not in stray]
@@ -840,7 +860,7 @@ def run_card(card: Card, collab_dir, worktree, test_command, dev_adapter, test_a
                 if rejects > MAX_REVIEW_RETURNS:
                     _escalate(collab, cdir, card,
                               f"复查员（{reviewer_adapter}）复查不通过（已自动退回 {MAX_REVIEW_RETURNS} 次）："
-                              f"{_first_issues(review_text)}")
+                              f"{_first_issues(review_text)}", cause="复查不通过", text=review_text)
                     return card, verdict
                 # 复查不通过自动退回写代码的（用户 11-12 定最多 2 次），只给复查员最后写的结论，不算返工
                 record(cdir, "退回", src="程序", dst="开发员",

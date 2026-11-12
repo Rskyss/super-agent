@@ -194,7 +194,7 @@ class Handler(BaseHTTPRequestHandler):
 
         if action == "accept_issues":
             # 用户接受复查剩下的问题（流程修理 ㉒）：卡片进入待确认，照常点“确认没问题，放进项目”才放进去
-            issues = phase.get("detail") or ""
+            issues = phase.get("issues") or phase.get("detail") or ""  # 复查员剩下的全部问题，不是截短的摘要
             try:
                 card.transition("待验收")
             except InvalidTransition:

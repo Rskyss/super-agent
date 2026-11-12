@@ -153,6 +153,24 @@ def _failure_detail(events: list) -> str:
     return ""
 
 
+def _last_stop(events: list):
+    for e in reversed(events):
+        if e.get("kind") == "转人工":
+            return e
+    return None
+
+
+def _stop_text(project, card_id: str, event: dict) -> str:
+    """转人工时存下的全文（复查员剩下的全部问题），流转摘要只有前 80 字。"""
+    rel = event.get("text")
+    if not rel:
+        return ""
+    try:
+        return (Path(project) / ".collab" / "cards" / card_id / rel).read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
 def _blocked_detail(events: list) -> str:
     for e in reversed(events):
         if e.get("kind") == "转人工":
@@ -303,13 +321,14 @@ def card_phase(project: str, card_id: str) -> dict:
     if state == "需Claude介入":
         detail = _blocked_detail(events)
         actions = ["resume", "revise", "discard"]
-        if "复查不通过" in detail:
-            # 只在复查不通过而卡住时：用户可以带着剩下的问题进入待确认（测试没过、环境出错不行）
+        out = {"code": "blocked", "label": "卡住了", "tone": "bad", "needs_you": True, "detail": detail}
+        stop = _last_stop(events)
+        if stop and stop.get("cause") == "复查不通过":
+            # 只在复查不通过而停下时（看程序记的标记，不看文字）：用户可以带着剩下的问题进入待确认
             actions = ["resume", "revise", "accept_issues", "discard"]
-        return {
-            "code": "blocked", "label": "卡住了", "tone": "bad", "needs_you": True,
-            "detail": detail, "actions": actions,
-        }
+            out["issues"] = _stop_text(project, card_id, stop) or detail
+        out["actions"] = actions
+        return out
 
     if state == "待验收":
         branch = _branch_name(project)

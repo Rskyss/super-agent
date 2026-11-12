@@ -78,12 +78,18 @@ def revert_paths(worktree, paths) -> None:
         rel = raw.rstrip("/")
         if not rel:
             continue
-        tracked = subprocess.run(["git", "ls-files", "--error-unmatch", "--", rel], cwd=root,
+        in_head = subprocess.run(["git", "cat-file", "-e", f"HEAD:{rel}"], cwd=root,
                                  capture_output=True).returncode == 0
+        staged = subprocess.run(["git", "ls-files", "--error-unmatch", "--", rel], cwd=root,
+                                capture_output=True).returncode == 0
         target = root / rel
-        if tracked:
-            subprocess.run(["git", "checkout", "--", rel], cwd=root, capture_output=True)
-        elif target.is_dir() and not target.is_symlink():
+        if in_head:
+            # 连暂存区一起恢复：只 checkout 工作区的话，被 git add 过的改动会原样留着（流程修理复查第 1 轮）
+            subprocess.run(["git", "checkout", "HEAD", "--", rel], cwd=root, capture_output=True)
+            continue
+        if staged:
+            subprocess.run(["git", "rm", "-q", "--cached", "-r", "--", rel], cwd=root, capture_output=True)
+        if target.is_dir() and not target.is_symlink():
             shutil.rmtree(target, ignore_errors=True)
         elif target.exists() or target.is_symlink():
             target.unlink()

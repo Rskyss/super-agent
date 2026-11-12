@@ -26,7 +26,7 @@ class Words(ChatCase):
     def test_card_chat_news_on_stop_says_what_to_click(self):
         cdir = self.building()
         cid = self.open()
-        record(cdir, "转人工", src="程序", dst="调度员", summary=STOP)
+        record(cdir, "转人工", src="程序", dst="调度员", summary=STOP, cause="复查不通过")
         from collab.state import Card
         Card("CARD-001", state="需Claude介入").save(cdir / "状态.json")
         TaskWatcher(self.desk).tick(self.project)
