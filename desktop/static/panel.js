@@ -18,6 +18,7 @@ var PanelCore = {
       stop: { key: "stop", label: "停下" },
       accept: { key: "accept", label: "确认没问题，放进项目" },
       revise: { key: "revise", label: "不满意，继续改" },
+      accept_issues: { key: "accept_issues", label: "接受剩下的问题，进入待确认" },
     };
     var actions = (phase && phase.actions) || [];
     var out = [];
@@ -26,6 +27,11 @@ var PanelCore = {
       if (spec) out.push(spec);
     }
     return out;
+  },
+  // 点“接受剩下的问题”前给用户看的话：剩下什么、接受后还要再点什么
+  acceptIssuesConfirm: function (detail) {
+    return "复查员还剩这些问题：\n" + String(detail || "（没有写明）") +
+      "\n\n接受后卡片进入待确认，你还要再点“确认没问题，放进项目”才会放进项目。要接受吗？";
   },
 };
 if (typeof module !== "undefined") module.exports = PanelCore;
@@ -135,6 +141,7 @@ if (typeof document !== "undefined") (function () {
       return;
     }
     if (act === "discard" && !window.confirm("这次的改动不会进入项目，你的项目不会变。改好的版本也会删除。")) return;
+    if (act === "accept_issues" && !window.confirm(PanelCore.acceptIssuesConfirm(view.card.phase && view.card.phase.detail))) return;
     var cardId = view.card.id;   // 问的时候可能切了卡：批准的必须是点的那张
     if (act === "approve") {
       actionBusy = true;

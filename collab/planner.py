@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -200,7 +201,23 @@ def _replace_allowed_section(requirement_text: str, allowed_paths: list) -> str:
     return requirement_text.rstrip() + "\n\n" + "\n".join(new_scope) + "\n"
 
 
-def _build_prompt(card_dir: Path, requirement_text: str, need_profile: bool) -> str:
+_ORDER_PATH = re.compile(r"[\w./\-\u4e00-\u9fff]*施工单[\w./\-\u4e00-\u9fff]*\.md")
+
+
+def existing_orders(project, requirement_text: str) -> list:
+    """任务卡片里提到的、项目里真实存在的施工单文件（相对项目根）。"""
+    found = []
+    root = Path(project) if project else None
+    for raw in _ORDER_PATH.findall(requirement_text or ""):
+        rel = raw.strip("./")
+        if root is None or not rel or ".." in rel.split("/"):
+            continue
+        if (root / rel).is_file() and rel not in found:
+            found.append(rel)
+    return found
+
+
+def _build_prompt(card_dir: Path, requirement_text: str, need_profile: bool, project=None) -> str:
     lines = [
         "你可以用只读命令查看项目，但不要修改任何文件。",
         "根据下面的任务卡片，用大白话写一份拆解方案。这份方案是写给后面干活的人看的。",
@@ -225,6 +242,13 @@ def _build_prompt(card_dir: Path, requirement_text: str, need_profile: bool) -> 
         )
     else:
         lines.append("- profile：项目里已有项目说明时，填空字符串。")
+    orders = existing_orders(project, requirement_text)
+    if orders:
+        # 施工单已经写好了（68b 里调度员仍从头写方案 5 分 42 秒，⑦）：只摘，不重新设计
+        lines.append("")
+        lines.append(f"这张卡已经有写好的施工单：{'、'.join(orders)}。不要重新设计、不要从头调研项目，读施工单照着摘："
+                     "summary、steps、result、not_do 按施工单概括；allowed 照施工单里“改哪些文件”逐条抄；"
+                     "test_command 照施工单“验收”里写的测试命令；施工单没写清的才写进 questions。")
     lines.append("")
     lines.append("任务卡片原文：")
     lines.append(requirement_text.strip())
@@ -259,7 +283,7 @@ def plan_card(project: str, card_id: str) -> int:
     try:
         requirement = req_path.read_text(encoding="utf-8")
         need_profile = _need_profile(project)
-        prompt = _build_prompt(card_dir, requirement, need_profile)
+        prompt = _build_prompt(card_dir, requirement, need_profile, project=project)
         models = load_models(project)
         model = models.get("codex") or "gpt-6.1-sol"
         effort = str(models.get("codex_effort") or "xhigh")

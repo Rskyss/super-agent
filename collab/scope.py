@@ -11,7 +11,13 @@ _ALWAYS_IGNORED = (".collab/", ".collab", "node_modules", "node_modules/")
 _CACHE_DIRS = ("__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache")
 
 
+TOOL_SETTINGS = (".cursor/cli.json",)  # 派活前给工具写的放行设置（只在施工副本里，不算谁的改动、不进项目）
+
+
 def is_cache(path: str) -> bool:
+    """运行时自动生成的东西，不是谁改的代码：测试缓存、派活前写给工具的放行设置。"""
+    if path.replace("\\", "/").strip("/") in TOOL_SETTINGS:
+        return True
     parts = [p for p in path.split("/") if p]
     return path.endswith(".pyc") or any(part in _CACHE_DIRS for part in parts)
 

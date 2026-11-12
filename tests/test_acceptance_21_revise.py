@@ -126,9 +126,13 @@ class NewRound(ReviseCase):
         write_script(self.bin / "agy", 'echo 结论：不通过\n')
         self.start()
         wait_until(lambda: self.state() == "需Claude介入", 25)
+        # 流程修理（11-12）：复查不通过先自动退回写代码的 2 次才卡住，所以卡住前写代码的已经干了 3 次
+        before = len(self.rounds(self.dev_log))
+        self.assertEqual(before, 3)
         write_script(self.bin / "agy", 'echo 结论：通过\n')
         self.assertEqual(self.revise()[0], 200)
-        self.wait_second_round()
+        wait_until(lambda: self.state() == "待验收" and len(self.rounds(self.dev_log)) == before + 1, 25,
+                   "继续改后没有做完")
 
     def test_merge_failure_can_be_revised(self):
         self.logged_tools()

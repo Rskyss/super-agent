@@ -1193,7 +1193,8 @@ class TaskWatcher:
             last = int(json.loads(pointer.read_text(encoding="utf-8")).get("seq") or 0)
         except (OSError, ValueError, TypeError):
             last = 0
-        news = {"方案", "方案失败", "开跑", "判定", "转人工", "结束", "停下", "合并失败", "合并"}
+        # 提醒：干活的人几分钟没动静（流程修理 ⑲ 第一步）；退回：复查不通过自动退回写代码的（⑧）
+        news = {"方案", "方案失败", "开跑", "判定", "转人工", "结束", "停下", "合并失败", "合并", "提醒", "退回"}
         cid = card_conversation_id(card_id)
         newest = last
         for ev in _flow_events(cdir):

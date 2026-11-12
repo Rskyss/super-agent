@@ -243,6 +243,9 @@ def _commit_work(project: Path, worktree: Path, cdir: Path, card_id: str, base: 
     if not files and _ahead(worktree, base) == 0:
         raise _Stop("这张卡没有改动可以放进项目")
     changed = _names(worktree, "diff", "--name-only", f"{base}...HEAD")
+    # 卡片版本和项目现在一模一样的文件不算这张卡带来的改动（中途补的测试先进了项目、再搬进副本，68b ㉔）
+    differs = set(_names(worktree, "diff", "--name-only", base, "HEAD"))
+    changed = [name for name in changed if name in differs]
     allowed, tester = _scope(cdir)
     stray = [name for name in changed if not _keep(name, allowed, tester)]
     if stray:

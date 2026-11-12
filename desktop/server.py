@@ -190,6 +190,23 @@ class Handler(BaseHTTPRequestHandler):
             self._card_action_error("现在不能做这个操作，请先看我说的阶段。")
             return
 
+        if action == "accept_issues":
+            # 用户接受复查剩下的问题（流程修理 ㉒）：卡片进入待确认，照常点“确认没问题，放进项目”才放进去
+            issues = phase.get("detail") or ""
+            try:
+                card.transition("待验收")
+            except InvalidTransition:
+                self._card_action_error("这张卡现在不能这样做。")
+                return
+            card.save(state_path)
+            flow_record(cdir, "接受", src="你", dst="程序", summary="接受剩下的问题，进入待确认", text=issues)
+            flow_record(cdir, "结束", src="程序", dst="你", state="待验收",
+                        summary="你接受了复查剩下的问题，等你确认放进项目")
+            render_board(Path(project) / ".collab")
+            ledger_add(project, f"{card_id}：接受复查剩下的问题，进入待确认")
+            self._json({"ok": True})
+            return
+
         if action == "discard":
             try:
                 told = undo_interrupted(project, card_id)

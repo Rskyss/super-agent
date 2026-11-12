@@ -7,15 +7,17 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import re
+import shlex
 import shutil
 import subprocess
 import time
 from datetime import datetime
 from pathlib import Path
 
-from collab.agents import ask as default_ask, readable
+from collab.agents import QUIET_LIMIT, ask as default_ask, readable
 from collab.flow import read_flow, record, reply_summary, text_of
 from collab.judge import Verdict, ENV_ERROR, FAIL, PASS, TIMEOUT, judge as default_judge
 from collab.scope import is_cache, out_of_scope
@@ -104,6 +106,19 @@ def reply_text(result) -> str:
     return (getattr(result, "final", "") or readable(result.output)).strip()
 
 
+def _command_text(test_command) -> str:
+    if isinstance(test_command, (list, tuple)):
+        return str(test_command[-1]) if test_command else ""
+    return str(test_command or "")
+
+
+def _run_hint(test_command) -> str:
+    cmd = _command_text(test_command).strip()
+    if not cmd:
+        return ""
+    return f"本卡的测试命令：{cmd}。要确认就只跑这一条，不要跑全部测试（全部测试留到最后验收）。"
+
+
 _REPORT_ASK = "完成后，在回复的最后一行写“汇报：”加不超过100字的说明（改了什么、测试情况）。不要另建汇报文件。"
 _TEST_FILES = "测试文件.json"
 _BEFORE_TESTER = "测试前改动.json"
@@ -174,10 +189,59 @@ def _save_before_map(cdir: Path, worktree) -> dict:
 
 
 def _remember_before_tester(cdir: Path, worktree) -> dict:
-    """第一次派测试员前记下每个文件的内容摘要；已有文件不覆盖。"""
+    """第一次派测试员前记下每个文件的内容摘要和内容备份；已有记录不覆盖。"""
     if (cdir / _BEFORE_TESTER).is_file():
         return _load_before_map(cdir)
-    return _save_before_map(cdir, worktree)
+    before = _save_before_map(cdir, worktree)
+    _backup_before_tester(cdir, worktree, before)
+    return before
+
+
+_TEST_BACKUP = "测试前备份"
+_TEST_DIRS = {"tests", "test", "__tests__", "spec", "specs", "e2e", "cypress", "playwright", "integration"}
+_TEST_NAME = re.compile(r"(?:test_.+\.py|.+_test\.\w+|.+\.test\.\w+|.+\.spec\.\w+|.+_spec\.\w+|.+_check\.js)$")
+
+
+def is_test_path(rel: str) -> bool:
+    """一看就是测试的文件：在测试目录里，或名字是测试的写法。写测试的改了原有的非测试文件会被撤掉。"""
+    parts = [p for p in str(rel).replace("\\", "/").split("/") if p]
+    if not parts:
+        return False
+    return any(p in _TEST_DIRS for p in parts[:-1]) or bool(_TEST_NAME.match(parts[-1]))
+
+
+def _tracked(worktree, rel: str) -> bool:
+    return subprocess.run(["git", "ls-files", "--error-unmatch", "--", rel], cwd=str(worktree),
+                          capture_output=True).returncode == 0
+
+
+def _backup_before_tester(cdir: Path, worktree, before: dict) -> None:
+    """派测试员前把副本里已改动文件的内容存一份：它若越界改了开发员改过的文件，撤的时候还原到这一份。"""
+    backup = cdir / _TEST_BACKUP
+    shutil.rmtree(backup, ignore_errors=True)
+    root = Path(worktree)
+    for rel in before:
+        src = root / rel
+        if src.is_file() and not src.is_symlink():
+            dest = backup / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dest)
+
+
+def _undo_tester_changes(cdir: Path, worktree, paths: list, before: dict, revert_fn) -> None:
+    """撤掉写测试的在测试以外的改动：派活前就改过的还原备份，派活前没改过的恢复成提交时的样子或删掉。"""
+    root = Path(worktree)
+    fresh_only = []
+    for rel in paths:
+        saved = cdir / _TEST_BACKUP / rel
+        if rel in before and saved.is_file():
+            dest = root / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(saved, dest)
+        else:
+            fresh_only.append(rel)
+    if fresh_only:
+        revert_fn(worktree, fresh_only)
 
 
 def _after_revise(events: list) -> list:
@@ -402,14 +466,79 @@ def unresolved_conflicts(worktree, cdir) -> list:
     return left
 
 
+_NOT_PROGRAMS = {"cd", "export", "env", "true", "set", "source", "."}
+
+
+def _programs_in(cmd: str) -> list:
+    """测试命令里真正要跑的程序名：“cd web && npm test; python3 -m x” → npm、python3。"""
+    found = []
+    for part in re.split(r"&&|\|\||;|\|", cmd or ""):
+        try:
+            words = shlex.split(part)
+        except ValueError:
+            continue
+        words = [w for w in words if "=" not in w.split("/")[0]]  # 去掉开头的 A=1 这类环境变量
+        if not words or words[0] in _NOT_PROGRAMS:
+            continue
+        name = Path(words[0]).name
+        if name and name not in found:
+            found.append(name)
+    return found
+
+
+def cursor_permissions(worktree, test_command) -> None:
+    """Cursor 在后台干活时每条命令都要人点同意，没人点就全被拒（68b 里它因此绕路、开浏览器卡死，⑯⑰）。
+    派活前在施工副本写项目级放行设置：只放行本卡测试命令用的那个程序（Cursor 只能按程序名放行），
+    浏览器、搜索这类插件一律不许用。2026-11-12 实测：放行后能跑 python3，node 和浏览器仍被拒；不写就全被拒。"""
+    programs = _programs_in(_command_text(test_command))
+    path = Path(worktree) / ".cursor" / "cli.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+    except (OSError, ValueError):
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    perms = data.get("permissions") if isinstance(data.get("permissions"), dict) else {}
+    allow = [x for x in perms.get("allow") or [] if isinstance(x, str)]
+    deny = [x for x in perms.get("deny") or [] if isinstance(x, str)]
+    for program in programs:
+        if f"Shell({program})" not in allow:
+            allow.append(f"Shell({program})")
+    if "Mcp(*:*)" not in deny:
+        deny.append("Mcp(*:*)")
+    data["permissions"] = {"allow": allow, "deny": deny}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def _accepts(fn, name: str) -> bool:
+    """假实现（测试里）可能不认新参数，认才传。"""
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+    return name in params or any(p.kind == p.VAR_KEYWORD for p in params.values())
+
+
 def _dispatch(ask_fn, cdir: Path, role: str, adapter: str, step: str, prompt: str,
-              worktree, models, round_no: int):
+              worktree, models, round_no: int, test_command=None):
     """派一次活：开始时记“派活”（含原文、预留实时输出），干完记“回复”（含全文、用时）。"""
+    if adapter == "cursor":
+        cursor_permissions(worktree, test_command)
     sent = record(cdir, "派活", src="调度员", dst=role, tool=adapter, step=step, round=round_no,
                   summary=_STEP_SUMMARY[step], text=prompt, live=True)
     started = time.time()
+    extra = {}
+    if _accepts(ask_fn, "on_quiet"):
+        def on_quiet(seconds, role=role, adapter=adapter):
+            minutes = max(1, seconds // 60)
+            left = max(1, (QUIET_LIMIT - seconds) // 60)
+            record(cdir, "提醒", src="程序", dst="你", role=role, tool=adapter,
+                   summary=f"{role}（{adapter}）已经 {minutes} 分钟没有动静（没改文件，也没有新输出）。"
+                           f"可以再等等，再过约 {left} 分钟还没动静程序会自动停下；也可以点“停下”再点“接着跑”。")
+        extra["on_quiet"] = on_quiet
     result = ask_fn(adapter, prompt, worktree, expect_file=None, models=models,
-                    live_path=str(cdir / sent["live"]))
+                    live_path=str(cdir / sent["live"]), **extra)
     text = reply_text(result)
     record(cdir, "回复", src=role, dst="调度员", tool=adapter, step=step, round=round_no,
            ok=bool(result.ok), seconds=round(time.time() - started), reply_to=sent["seq"],
@@ -494,19 +623,29 @@ def run_card(card: Card, collab_dir, worktree, test_command, dev_adapter, test_a
     if require_tests and test_done and (cdir / _BEFORE_TESTER).is_file() and not _load_test_files(cdir):
         # 测试员上次没交活：重新派，并把当前改动算作基线，不能当成它写的测试
         test_done = False
-        _save_before_map(cdir, worktree)
+        _backup_before_tester(cdir, worktree, _save_before_map(cdir, worktree))
     plan_hint = _plan_hint(cdir)
 
     # 复查不通过后接着跑：只看最后一条追加要求之后的记录
     force_after_review_reject, review_notes = _review_reject_pending(cdir, past)
 
     # 第一步：测试员按验收标准先写测试（测试先行；如果断点续跑前已经写完交活，直接跳过）
+    run_hint = _run_hint(test_command)
     if not test_done:
         before_map = _remember_before_tester(cdir, worktree)
-        prep = _dispatch(ask_fn, cdir, "测试员", test_adapter, "写测试",
-                         f"{_READ_RULES}按任务卡 {needs} 的验收标准编写自动化测试，放进项目的测试目录。"
-                         f"只写测试，不改产品代码。{revise_bit}{plan_hint}{_tester_conflict_note(cdir)}",
-                         worktree, models, 1)
+        old_tests = [p for p in _load_test_files(cdir) if (Path(worktree) / p).is_file()]
+        if revise_note and old_tests:
+            # 继续改：只为追加要求补测试，不整个重写（68b 里重写一遍 15 分钟，⑭）
+            tester_prompt = (f"{_READ_RULES}任务卡 {needs} 的测试之前已经写好：{'、'.join(old_tests)}。"
+                             f"现在有追加要求，只为追加要求补测试（可以在原测试文件里追加，或新建测试文件），"
+                             f"已有的测试不要重写；追加要求不需要新测试就直接说明。"
+                             f"只改测试文件，不改产品代码，改了也会被撤掉。{revise_bit}{run_hint}{_tester_conflict_note(cdir)}")
+        else:
+            tester_prompt = (f"{_READ_RULES}按任务卡 {needs} 的验收标准编写自动化测试，放进项目的测试目录。"
+                             f"只写测试，不改产品代码，改了也会被撤掉。{revise_bit}{plan_hint}{run_hint}"
+                             f"{_tester_conflict_note(cdir)}")
+        prep = _dispatch(ask_fn, cdir, "测试员", test_adapter, "写测试", tester_prompt, worktree, models, 1,
+                         test_command=test_command)
         # 摘要变了或新出现的文件算测试文件；以前的测试文件还在的也保留
         root = Path(worktree)
         fresh = []
@@ -516,6 +655,17 @@ def run_card(card: Card, collab_dir, worktree, test_command, dev_adapter, test_a
             digest = _file_digest(root / rel)
             if rel not in before_map or before_map.get(rel) != digest:
                 fresh.append(rel)
+        # 写测试的只许动测试文件（68b 里它去改了 desk.py，被当成测试文件锁住，开发员白干，⑱）
+        # 只管它改了“原来就有的”非测试文件（产品代码）；它新建的文件夹、文件按测试算（e2e/ 这类各项目叫法不一）
+        stray = [rel for rel in fresh if not is_test_path(rel)
+                 and (rel in before_map or _tracked(worktree, rel))]
+        if stray:
+            _undo_tester_changes(cdir, worktree, stray, before_map, revert_fn)
+            fresh = [rel for rel in fresh if rel not in stray]
+            _append(cdir / "返工记录.md",
+                    f"- {datetime.now():%Y-%m-%d %H:%M} 写测试的改了测试以外的文件，已撤掉：{'、'.join(stray)}\n")
+            record(cdir, "范围", src="程序", ok=True,
+                   summary=f"写测试的改了测试以外的文件，已撤掉：{'、'.join(stray)}", text="\n".join(stray))
         previous = [p for p in _load_test_files(cdir) if (root / p).is_file()]
         added = []
         seen = set()
@@ -539,15 +689,15 @@ def run_card(card: Card, collab_dir, worktree, test_command, dev_adapter, test_a
 
     # 第二步：开发员照着测试写代码，直到测试通过
     dev_prompt = (f"{_READ_RULES}按任务卡实现功能：{needs}。测试已经写好，请让它们全部通过。"
-                  f"{revise_bit}{_DEV_TEST_NOTE}{plan_hint}{_REPORT_ASK}")
+                  f"{revise_bit}{_DEV_TEST_NOTE}{plan_hint}{run_hint}{_REPORT_ASK}")
     last_output = None  # 上一轮测试的报错，用来发现“原地打转”
     past_fails = [e for e in past if e.get("kind") in ("判定", "页面检查") and e.get("result") == FAIL]
     if past_fails and card.rework > 0:
         last_output = text_of(cdir, past_fails[-1])
         dev_prompt = (f"{_READ_RULES}上一版测试没过，测试输出如下，请修复后重新提交。\n\n{last_output}\n\n"
-                      f"任务卡：{needs}。{revise_bit}{_DEV_TEST_NOTE}{plan_hint}{_REPORT_ASK}")
+                      f"任务卡：{needs}。{revise_bit}{_DEV_TEST_NOTE}{plan_hint}{run_hint}{_REPORT_ASK}")
     if force_after_review_reject:
-        dev_prompt = _review_return_prompt(review_notes, needs, revise_bit, plan_hint)
+        dev_prompt = _review_return_prompt(review_notes, needs, revise_bit, plan_hint + run_hint)
 
     dev_prompt += _conflict_note(worktree, cdir)
 
@@ -579,7 +729,7 @@ def run_card(card: Card, collab_dir, worktree, test_command, dev_adapter, test_a
             else:
                 step_name = "返工修改"
             dev = _dispatch(ask_fn, cdir, "开发员", dev_adapter, step_name,
-                            dev_prompt, worktree, models, rnd)
+                            dev_prompt, worktree, models, rnd, test_command=test_command)
             if not dev.ok:
                 return _worker_failed(collab, cdir, card, "开发员", dev_adapter, dev)
             _save_report(cdir, reply_text(dev))
@@ -642,11 +792,11 @@ def run_card(card: Card, collab_dir, worktree, test_command, dev_adapter, test_a
             # 独立复查：由另一个 AI 只读检查改动是否符合需求，写“结论：通过/不通过”
             review = _dispatch(ask_fn, cdir, "复查员", reviewer_adapter, "复查",
                                f"{_READ_RULES}只读复查：对照任务卡 {needs} 检查本次改动是否符合需求和验收标准。"
-                               f"{plan_hint}"
+                               f"{plan_hint}{run_hint}"
                                f"{_tester_files_hint(cdir)}"
                                f"台账、归档这些流程记录由程序在施工结束后补写，现在没有不算问题。"
                                f"第一行写“结论：通过”或“结论：不通过”，之后列出问题。不要修改任何文件。",
-                               worktree, models, card.rework + 1)
+                               worktree, models, card.rework + 1, test_command=test_command)
             review_text = reply_text(review)
             _append(cdir / "复查结果.md", f"\n## 复查（{reviewer_adapter}）\n{review_text}\n")
             verdict_kind = review_verdict(review_text)
@@ -667,7 +817,7 @@ def run_card(card: Card, collab_dir, worktree, test_command, dev_adapter, test_a
                        summary=f"复查不通过，自动退回写代码的（第 {rejects} 次，最多 {MAX_REVIEW_RETURNS} 次）")
                 card.transition("开发中")
                 _save(collab, card)
-                dev_prompt = _review_return_prompt(review_text, needs, revise_bit, plan_hint) \
+                dev_prompt = _review_return_prompt(review_text, needs, revise_bit, plan_hint + run_hint) \
                     + _conflict_note(worktree, cdir)
                 last_output = None
                 continue
@@ -707,4 +857,4 @@ def run_card(card: Card, collab_dir, worktree, test_command, dev_adapter, test_a
                    summary=f"返工 {card.rework} 次后测试仍没过，需要调度员处理")
             return card, verdict
         dev_prompt = (f"{_READ_RULES}上一版测试没过，测试输出如下，请修复后重新提交。\n\n{verdict.output}\n\n"
-                      f"任务卡：{needs}。{revise_bit}{_DEV_TEST_NOTE}{plan_hint}{_REPORT_ASK}")
+                      f"任务卡：{needs}。{revise_bit}{_DEV_TEST_NOTE}{plan_hint}{run_hint}{_REPORT_ASK}")

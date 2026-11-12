@@ -301,9 +301,14 @@ def card_phase(project: str, card_id: str) -> dict:
         }
 
     if state == "需Claude介入":
+        detail = _blocked_detail(events)
+        actions = ["resume", "revise", "discard"]
+        if "复查不通过" in detail:
+            # 只在复查不通过而卡住时：用户可以带着剩下的问题进入待确认（测试没过、环境出错不行）
+            actions = ["resume", "revise", "accept_issues", "discard"]
         return {
             "code": "blocked", "label": "卡住了", "tone": "bad", "needs_you": True,
-            "detail": _blocked_detail(events), "actions": ["resume", "revise", "discard"],
+            "detail": detail, "actions": actions,
         }
 
     if state == "待验收":

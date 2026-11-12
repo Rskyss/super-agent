@@ -149,13 +149,26 @@ def _output_file(live_path):
     return tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace")
 
 
-def watched_runner(cmd, cwd, timeout, quiet_limit=QUIET_LIMIT, poll=POLL_SECONDS, live_path=None):
-    """边跑边看：总时长超过 timeout 抛 TimeoutExpired；副本里连续 quiet_limit 秒
-    没有任何文件变化抛 QuietTimeout。输出写文件，避免管道写满卡住；
+REMIND_AT = (5 * 60, 10 * 60)  # 没动静多久提醒一次（行政在卡片对话里说）
+
+
+def _output_mtime(out) -> float:
+    try:
+        return os.fstat(out.fileno()).st_mtime
+    except (OSError, ValueError):
+        return 0.0
+
+
+def watched_runner(cmd, cwd, timeout, quiet_limit=QUIET_LIMIT, poll=POLL_SECONDS, live_path=None,
+                   on_quiet=None, remind_at=REMIND_AT):
+    """边跑边看：总时长超过 timeout 抛 TimeoutExpired；连续 quiet_limit 秒没有动静抛 QuietTimeout。
+    “动静”= 副本里有文件变化，或者它的输出还在涨（只看不改的复查员靠这个，68b 里被误杀过，㉓）。
+    没动静到 remind_at 里的每个时刻调用一次 on_quiet(秒数)。输出写文件，避免管道写满卡住；
     live_path 给了就写到那里并保留，供实时查看。"""
     global _active_tool
     started = time.time()
     last_activity = started
+    reminded = set()
     with _output_file(live_path) as out:
         proc = subprocess.Popen(cmd, cwd=cwd, stdout=out, stderr=subprocess.STDOUT,
                                 stdin=subprocess.DEVNULL, text=True, start_new_session=True)
@@ -167,11 +180,22 @@ def watched_runner(cmd, cwd, timeout, quiet_limit=QUIET_LIMIT, poll=POLL_SECONDS
                 except subprocess.TimeoutExpired:
                     pass
                 now = time.time()
-                last_activity = max(last_activity, _newest_mtime(cwd))
+                newest = max(last_activity, _newest_mtime(cwd), _output_mtime(out))
+                if newest > last_activity:
+                    reminded.clear()  # 又有动静了，下次再安静从头算
+                last_activity = newest
                 if now - started > timeout:
                     raise subprocess.TimeoutExpired(cmd, timeout)
                 if now - last_activity > quiet_limit:
                     raise QuietTimeout(int(now - last_activity))
+                for mark in remind_at or ():
+                    if now - last_activity >= mark and mark not in reminded:
+                        reminded.add(mark)
+                        if on_quiet:
+                            try:
+                                on_quiet(int(now - last_activity))
+                            except Exception:  # noqa: BLE001 — 提醒出错不能停掉干活的人
+                                pass
         finally:
             _stop(proc)
             if _active_tool is proc:
@@ -195,13 +219,15 @@ def _read_last(path) -> str:
 
 
 def ask(adapter: str, prompt: str, cwd, expect_file=None, timeout=DEFAULT_TIMEOUT,
-        runner=watched_runner, models=None, live_path=None) -> AgentResult:
+        runner=watched_runner, models=None, live_path=None, on_quiet=None) -> AgentResult:
     """让某家工具执行一次任务。成功条件：退出码 0、有回复文字，且（若指定）期望文件真的存在。
     models 缺省时用包默认值；派发程序应传入 load_models(项目目录) 的结果。
     默认带看门人：长时间没动静会被停掉，并且不重试（卡住的再跑一遍多半还是卡住）。
     live_path：实时输出写到哪里（流转记录预留的位置），不给就不保留。
     退出码 0 却一个字都没回（68b 里 Cursor 收到超长交代时就这样）：再试一次，还空就算没完成。"""
     extra = {"live_path": live_path} if live_path else {}  # 旧的 runner 不认这个参数，不给就不传
+    if on_quiet:
+        extra["on_quiet"] = on_quiet
     output = ""
     with tempfile.TemporaryDirectory(prefix="collab-last-") as tmp:
         last_path = Path(tmp) / "最后回复.txt"
@@ -218,7 +244,7 @@ def ask(adapter: str, prompt: str, cwd, expect_file=None, timeout=DEFAULT_TIMEOU
             if code != 0:
                 continue
             final = _read_last(last_path) or readable(output)
-            if not final.strip():
+            if expect_file is None and not final.strip():  # 检测连通看的是建没建出文件，不看回话
                 output = (output or "") + f"\n{EMPTY_REPLY}"
                 continue
             if expect_file is None or (Path(cwd) / expect_file).exists():
