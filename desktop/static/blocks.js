@@ -261,7 +261,7 @@ if (typeof document !== "undefined") (function () {
   var threads = [], deleted = {}, locks = {}, pendingThread = null, threadKey = "", blocksKey = "";
   var threadTimer = null, blocksTimer = null;
   var lastScan = null, scanBlocks = [], scanBroken = [], scanRunning = false, manualExpand = null, scanError = "";
-  var activeBlock = null, currentDetail = null, checkTimer = null, pendingKey = "", checkGen = 0, activeTrials = {}, activeChecks = {};
+  var activeBlock = null, currentDetail = null, checkTimer = null, pendingKey = "", checkGen = 0, activeTrials = {}, activeChecks = {}, resumedChecks = {};
   var scanPending = [], pendingJobs = {}, pendingSecrets = {};  // 待接入的预置工具和它们的检测；详情里新填的工具密钥
   // 60 号单：钥匙串里有这一家的密钥时显示“已保存的密钥 / 换一把”；点了“换一把”或存的没通过才露输入框
   var bindWantNew = false, detailWantNew = false, usedSaved = false;
@@ -648,6 +648,21 @@ if (typeof document !== "undefined") (function () {
     getJson("/api/blocks/detail", { id: id }).then(function (d) {
       if (activeBlock !== id) return;
       currentDetail = d;
+      // 切走后页面不再跟着看检测：以程序说的为准，做完了就清掉记号，免得按钮一直灰着（68c 收尾）
+      if (!d.checking) {
+        delete activeChecks[id];
+        if (resumedChecks[id]) {  // 回来接着看的那次检测做完了：去掉“正在检测…”，结果看上面那行状态
+          delete resumedChecks[id];
+          $("detailResult").textContent = "";
+          $("detailResult").className = "detail-result";
+        }
+      } else if (!activeTrials[id] && !checkTimer) {
+        activeChecks[id] = true;
+        resumedChecks[id] = true;
+        $("detailResult").textContent = "正在检测…";
+        $("detailResult").className = "detail-result running";
+        setTimeout(function () { if (activeBlock === id) openDetail(id, true); }, 2000);
+      }
       var card = d.card || {};
       var scanItem = (lastScan && lastScan.items || []).find(function (it) { return it.name === id; }) || null;
       var v = BlocksCore.detailView(d, scanItem);
@@ -874,10 +889,10 @@ if (typeof document !== "undefined") (function () {
     $("chatFrame").hidden = true;
     $("blockDetail").hidden = false;
     $("detailTitle").textContent = id;
+    hideBlockDetailContent();  // 先统一隐藏，再显示原因：反过来会把原因也藏掉（68c 收尾）
     $("detailStatus").textContent = "接法说明有问题：" + problem;
     $("detailStatus").className = "detail-status bad";
     $("detailStatus").hidden = false;
-    hideBlockDetailContent();
     $("detailRemove").hidden = false;
     currentDetail = { card: { id: id, name: id } };
   }

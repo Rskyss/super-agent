@@ -155,7 +155,8 @@ assert.strictEqual(A.promptText(search), "");
 
 // 移出确认、换模型
 assert.strictEqual(A.removeConfirm(article), "把「写文章」移出能力层？记录和成果都留着。");
-assert.deepStrictEqual([A.canChangeModel(article), A.canChangeModel(draw), A.canChangeModel(search)], [true, false, false]);
+// 68c：出图用的是预置 Codex，也能从名单换模型；搜资料（联网搜索）照旧不能换
+assert.deepStrictEqual([A.canChangeModel(article), A.canChangeModel(draw), A.canChangeModel(search)], [true, true, false]);
 
 // 第 2 轮：试做示例显示那次填的内容（按“你要填什么”的顺序，只列填了的项）
 assert.strictEqual(typeof A.inputsView, "function", "AbilitiesCore 要有 inputsView");

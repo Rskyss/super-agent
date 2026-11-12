@@ -176,7 +176,9 @@ class DetailTest(AbilityCase):
         status, d = self.bget("/api/abilities/detail", id="write-article")
         self.assertEqual(status, 200, d)
         self.assertEqual(d["ability"]["id"], "write-article")
-        self.assertEqual(d["block"], {"id": "bailian", "name": "阿里百炼", "exists": True, "kind": "llm_api", "model": ""})
+        # 68c：积木块信息多带命令和是否核实过（页面据此判断能不能换模型）
+        self.assertEqual(d["block"], {"id": "bailian", "name": "阿里百炼", "exists": True, "kind": "llm_api", "model": "",
+                                      "command": "", "verified": False})
         self.assertEqual(d["models"], MODELS)
         self.assertEqual((d["status"], d["example"], d["runs"], d["running"], d["job"]), ("ok", None, [], False, ""))
 
@@ -345,10 +347,13 @@ class ModelTest(AbilityCase):
 
     def test_not_api_card(self):
         self.models_known()
-        for ability_id in ("draw-image", "search-web"):
-            status, data = self.change(id=ability_id, model="qwen3.6-plus", backup_models=[])
-            self.assertEqual(status, 400, ability_id)
-            self.assertIn("不能换模型", data["error"])
+        status, data = self.change(id="search-web", model="qwen3.6-plus", backup_models=[])
+        self.assertEqual(status, 400)
+        self.assertIn("不能换模型", data["error"])
+        # 68c：出图用预置 Codex，能换模型，但要先在基础层检测拿到名单
+        status, data = self.change(id="draw-image", model="qwen3.6-plus", backup_models=[])
+        self.assertEqual(status, 409, data)
+        self.assertIn("模型名单", data["error"])
 
 
 # ---------- 移出、成果文件、在访达里打开 ----------

@@ -91,14 +91,16 @@ var cliDetail = {
 };
 var cv = B.detailView(cliDetail, codexOk);
 assert.strictEqual(cv.title, "Codex");
-assert.deepStrictEqual(cv.rows.map(function (r) { return r.label; }), ["类型", "命令", "版本", "登录", "来源", "上次检测"]);
+// 68c：预置的 Codex、Cursor、agy 按整家接，多一行“这家的模型”
+assert.deepStrictEqual(cv.rows.map(function (r) { return r.label; }), ["类型", "命令", "版本", "登录", "来源", "这家的模型", "上次检测"]);
 assert.strictEqual(cv.rows[0].text, "CLI");
 assert.strictEqual(cv.rows[1].text, "codex");
 assert.strictEqual(cv.rows[1].code, true);
 assert.strictEqual(cv.rows[2].text, "codex-cli 0.167.0");
 assert.strictEqual(cv.rows[3].text, "已登录");
 assert.strictEqual(cv.rows[4].text, "预置接法，核实过");
-assert.strictEqual(cv.rows[5].text, "2026-11-09 10:01:02 · 用了 4.2 秒");
+assert.strictEqual(cv.rows[5].text, "点一次“检测”后显示名单");  // 68c：这次检测记录里没带名单
+assert.strictEqual(cv.rows[6].text, "2026-11-09 10:01:02 · 用了 4.2 秒");
 assert.deepStrictEqual(cv.status, { cls: "ok", text: "能用" });
 assert.strictEqual(cv.needsKey, false);
 assert.strictEqual(cv.needsApprove, false);

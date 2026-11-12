@@ -615,6 +615,8 @@ class Handler(BaseHTTPRequestHandler):
                         "last_check": last_check,
                         "last_install": blocks.last_record(card_id, home, type="install"),
                         "status": status,
+                        # 此刻是不是正在检测或试模型（一次一个的那把锁）：页面切走再回来时按它定按钮（68c 收尾）
+                        "checking": blocks_check.checking(card_id),
                         "models_from": (last_check or {}).get("models_from", ""),
                         "model_status": blocks.model_status(card_id, home)})
         elif path == "/api/blocks/job":
