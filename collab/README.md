@@ -95,7 +95,7 @@ python3 collab run <P> CARD-xxx --test-command "npm test" --session-jsonl auto
   - “继续改”框下多一栏“还要改这些文件”：写了就加进任务卡片的“允许改动的范围”，流转记“追加范围”；绝对路径、..、.collab 一律退回。
   - 行政：按施工单路径建卡时把路径原样写进卡片、不先读文件；出框后只说“点确认就建卡，之后调度员写方案给你批”。
   - 已知取舍：Cursor 沙箱在部分位置建不了 .git（Operation not permitted），设置里没有可靠开关；交代里让它别为此绕路，程序交活后会完整跑本卡测试。
-- **千问（临时，用户 2026-11-13 加）**：团队设置里写测试、写代码、复查都能选“千问”（不当调度员）。实际是 Codex 的壳，模型来源换成千问 Token Plan（`https://token-plan.maas.qianwenaiapi.com/compatible-mode/v1`，responses 接法），模型在下拉里换（默认 deepseek-v4.1-flash）。密钥放本机 `~/.config/super-agent/qwen-token-plan.key`（只有自己能读，不在项目里），派活时放进环境变量交给 Codex，命令行里看不到；没放密钥时“检测”直接说“千问还没配密钥”。派活同样关插件、按 Codex 的格式认最后回复和实时输出。
+- **千问（临时，用户 2026-11-13 加）**：团队设置里写测试、写代码、复查都能选“千问”（不当调度员）。实际是 Codex 的壳，模型来源换成千问 Token Plan（`https://token-plan.maas.qianwenaiapi.com/compatible-mode/v1`，responses 接法），模型在下拉里换（默认 deepseek-v4.1-flash）。密钥放本机 `~/.config/super-agent/qwen-token-plan.key`（只有自己能读，不在项目里），派活时放进环境变量交给 Codex，命令行里看不到；没放密钥时“检测”直接说“千问还没配密钥”。接千问时关掉 Codex 给自家模型的附加功能（`features.multi_agent/apps/computer_use/plugins/browser_use/in_app_browser=false`）：它们会打包成部分千问模型不认的工具格式，Qwen4 Max Preview 因此整条请求被拒（11-13 抓包查明）；检测输出里有“Invalid request parameters”时说“这个模型不接受这样的请求”，不再误报没登录。派活同样关插件、按 Codex 的格式认最后回复和实时输出。
 - **流程修理第二轮（2026-11-13）**：
   - 交接资料：开工时调度员（Codex，调度员这一岗的模型，只读 `-s read-only`）和写测试的同时干，写 `cards/<卡>/交接资料.md`（改哪里、现在怎么写、可照抄的写法、相关规矩、会跟着变的老测试）；写代码、复查的交代里都会让先读它。没备成只记一条“交接资料”，不挡流程；已有就不重备。
   - 单条命令时限：派活时看干活的人自己拉起的命令（bash/sh/zsh/python/node，工具启动前 15 秒拉起的帮手和插件不算），本卡测试命令 5 分钟、其他 2 分钟，超了只停那一条并在实时输出里记“[看门人] 这条命令跑了……”；体检、能力运行不受这条管。
