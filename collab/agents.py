@@ -288,6 +288,16 @@ def _output_file(live_path):
 REMIND_AT = (5 * 60, 10 * 60)  # 没动静多久提醒一次（行政在卡片对话里说）
 
 
+def _tail_of(out, size: int = 256 * 1024) -> str:
+    """实时输出的最后一截（不动它的读写位置）。"""
+    try:
+        fd = out.fileno()
+        end = os.fstat(fd).st_size
+        return os.pread(fd, size, max(0, end - size)).decode("utf-8", errors="replace")
+    except (OSError, ValueError):
+        return ""
+
+
 def _output_mtime(out) -> float:
     try:
         return os.fstat(out.fileno()).st_mtime
@@ -404,9 +414,41 @@ def _stuck_commands(table: dict, tool_pid: int, tool_age: float, limits: tuple, 
     return found
 
 
+def _last_command(tail: str) -> str:
+    """干活的人自己记下的“最近开始跑的那条命令”：agy、Cursor 一行一个 JSON，Codex 是 exec 下一行。"""
+    last = ""
+    lines = tail.splitlines()
+    for i, ln in enumerate(lines):
+        ln = ln.strip()
+        if ln.startswith("{") and ln.endswith("}"):
+            try:
+                ev = json.loads(ln)
+            except ValueError:
+                continue
+            step = ev.get("step_update") if isinstance(ev.get("step_update"), dict) else None
+            if step and step.get("state") == "ACTIVE" and step.get("tool_name") == "run_command":
+                params = (step.get("tool_info") or {}).get("parameters") or {}
+                last = str(params.get("CommandLine") or params.get("command") or last)
+            call = ev.get("tool_call") if ev.get("type") == "tool_call" and ev.get("subtype") == "started" else None
+            if isinstance(call, dict) and "shellToolCall" in call:
+                last = str(((call["shellToolCall"] or {}).get("args") or {}).get("command") or last)
+        elif ln == "exec" and i + 1 < len(lines):
+            last = lines[i + 1].strip() or last
+    return last
+
+
+def _same_command(a: str, b: str) -> bool:
+    norm = lambda t: " ".join(_strip_env(t).split())
+    return bool(a and b) and (norm(a) == norm(b) or norm(b) in norm(a))
+
+
 def _stop_stuck_commands(tool_pid: int, tool_age: float, limits: tuple, test_command: str, grace: float,
-                         note) -> None:
-    """超过时限的命令只掐那一条（连同它的子进程），再在实时输出里记一笔（㊹）。"""
+                         note, tail: str = "") -> None:
+    """超过时限的命令只掐那一条（连同它的子进程），再在实时输出里记一笔（㊹）。
+    它此刻跑的是不是本卡测试，先看它自己记下的最近那条命令：agy 跑命令时进程参数里看不到原文，
+    只靠进程列表会把本卡测试按 2 分钟掐掉（69 接着跑时掐了两次）。"""
+    if test_command and _same_command(_last_command(tail), test_command):
+        limits = (limits[1], limits[1])
     table = _process_table()
     for pid, age in _stuck_commands(table, tool_pid, tool_age, limits, test_command, grace):
         _kill_tree(table, pid)
@@ -443,7 +485,8 @@ def watched_runner(cmd, cwd, timeout, quiet_limit=QUIET_LIMIT, poll=POLL_SECONDS
                 if command_limit:
                     _stop_stuck_commands(proc.pid, now - started, (command_limit, test_limit), test_command,
                                          HELPER_GRACE if helper_grace is None else helper_grace,
-                                         lambda words: os.write(out.fileno(), words.encode("utf-8")))
+                                         lambda words: os.write(out.fileno(), words.encode("utf-8")),
+                                         tail=_tail_of(out))
                 newest = max(last_activity, _newest_mtime(cwd), _output_mtime(out))
                 if newest > last_activity:
                     reminded.clear()  # 又有动静了，下次再安静从头算

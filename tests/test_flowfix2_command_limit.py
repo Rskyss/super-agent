@@ -2,6 +2,7 @@
 
 69 里 agy 写了一段验证小脚本，自己把自己锁死（CPU 0%），agy 一直等它，6 分半后 Claude 手动掐掉。
 """
+import json
 import sys
 import tempfile
 import time
@@ -206,3 +207,34 @@ class ReviewRound3C(ReviewRound1C):
         self.assertEqual(_names_in_config('mcp_servers.playwright = { command = "npx", args = ["@playwright/mcp"] }\n'),
                          ["playwright"])
 
+
+
+class WalkFix(unittest.TestCase):
+    """69 接着跑时发现：agy 跑本卡测试，进程参数里看不到原文，被按 2 分钟掐了两次；改成看它自己记下的最近那条命令。"""
+
+    TEST = "for p in 'test_acceptance_69_*.py'; do python3 -m unittest discover -s tests -p \"$p\" || exit 1; done"
+
+    def test_last_command_from_agy_stream(self):
+        from collab.agents import _last_command, _same_command
+        line = json.dumps({"event": "step_update", "step_update": {
+            "state": "ACTIVE", "step_type": "tool", "tool_name": "run_command",
+            "tool_info": {"name": "run_command", "parameters": {"CommandLine": self.TEST}}}})
+        self.assertTrue(_same_command(_last_command(line + "\n"), self.TEST))
+        self.assertFalse(_same_command(_last_command("codex\nexec\nls -la\n"), self.TEST))
+
+    def test_card_tests_run_by_agy_get_five_minutes(self):
+        """假 agy：先在输出里记下“开始跑本卡测试”，再起一个看不出原文的子命令跑 4 秒；时限按 2 秒设也不能掐"""
+        line = json.dumps({"event": "step_update", "step_update": {
+            "state": "ACTIVE", "step_type": "tool", "tool_name": "run_command",
+            "tool_info": {"name": "run_command", "parameters": {"CommandLine": self.TEST}}}})
+        tool = ("import subprocess, sys\n"
+                f"print({line!r}, flush=True)\n"
+                "subprocess.run([sys.executable, '-c', 'import time; time.sleep(4)'])\n"
+                "print('测试跑完了', flush=True)\n")
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "tool.py").write_text(tool, encoding="utf-8")
+            code, out = watched_runner([sys.executable, str(Path(tmp, "tool.py"))], tmp, 60, poll=0.3,
+                                       live_path=Path(tmp) / "live.log", helper_grace=0,
+                                       command_limit=2, test_limit=30, test_command=self.TEST)
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("这条命令跑了", out)
