@@ -624,6 +624,9 @@ _CURSOR_SANDBOX_NOTE = ("你在沙箱里跑测试时，要建临时 git 仓库�
 _NO_PLUGINS_NOTE = "不要打开浏览器，不要用搜索、数据库、设计稿这类插件；这单只需要读代码、改文件、跑本卡测试。"
 
 
+_PROGRESS_ON: set = set()   # 哪些卡开了进度（只在真的施工时开，测试替身不开）
+
+
 def _dispatch(ask_fn, cdir: Path, role: str, adapter: str, step: str, prompt: str,
               worktree, models, round_no: int, test_command=None):
     """派一次活：开始时记“派活”（含原文、预留实时输出），干完记“回复”（含全文、用时）。"""
@@ -645,10 +648,16 @@ def _dispatch(ask_fn, cdir: Path, role: str, adapter: str, step: str, prompt: st
     if _accepts(ask_fn, "watch_commands"):
         extra["watch_commands"] = True  # 它自己跑的命令卡住只掐那一条（㊹）
         extra["test_command"] = _command_text(test_command) if test_command else ""  # 本卡测试时限长一点
+    job = None
+    if str(cdir) in _PROGRESS_ON and step in ("写测试", "开发", "返工修改"):
+        from collab.progress import ProgressJob
+        job = ProgressJob(cdir, worktree, step, sent["seq"], _load_test_files(cdir)).start()
     try:
         result = ask_fn(adapter, prompt, worktree, expect_file=None, models=models,
                         live_path=str(cdir / sent["live"]), **extra)
     finally:
+        if job is not None:
+            job.stop()
         if restore:
             restore()
     text = reply_text(result)
@@ -1139,7 +1148,7 @@ def run_card(card: Card, collab_dir, worktree, test_command, dev_adapter, test_a
              ask_fn=default_ask, judge_fn=default_judge, models=None,
              allowed=None, changed_fn=None, page_command=None, reviewer_adapter=None,
              revert_fn=None, require_tests=False, role_models=None, handover=None, full_runner=None,
-             draft=False):
+             draft=False, progress=False):
     """交接资料（第二轮 ㉚）：调度员在后台和写测试的同时备；不管施工怎么结束（交活、卡住、出错、被停），
     都在这里收尾——还没备完就停掉它，不留下后台的工具进程（复查 B 第 5 条、C 第 1 条）。"""
     import threading
@@ -1152,12 +1161,15 @@ def run_card(card: Card, collab_dir, worktree, test_command, dev_adapter, test_a
                                      args=(ask_fn, cdir, handover[0], handover[1], cdir / "需求卡.md", worktree))
         notes_job.start()
     full = _FullSlot(full_runner, worktree, cdir)
+    if progress:
+        _PROGRESS_ON.add(str(cdir))   # 写测试、写代码时右栏的进度（第四轮 53）
     try:
         return _run_card(card, collab_dir, worktree, test_command, dev_adapter, test_adapter, ask_fn, judge_fn,
                          models, allowed, changed_fn, page_command, reviewer_adapter, revert_fn, require_tests,
                          role_models, notes_job, full, draft)
     finally:
         full.stop()
+        _PROGRESS_ON.discard(str(cdir))
         if notes_job is not None and notes_job.is_alive():
             _agents.kill_current_tool_process_group()
             notes_job.join(30)

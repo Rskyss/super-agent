@@ -281,6 +281,7 @@ def cmd_run(args, ask_fn=None, judge_fn=None, **_):
         handover=_handover_worker(args.project) if ask_fn is None else None,  # 测试替身不备资料
         full_runner=_full_runner() if ask_fn is None else None,
         draft=ask_fn is None and os.environ.get("SUPERAGENT_NO_DRAFT") != "1",   # 停下后起草继续改（第四轮 56 甲）
+        progress=ask_fn is None and os.environ.get("SUPERAGENT_NO_PROGRESS") != "1",   # 右栏进度条（第四轮 53）
     )
     if session:
         record_card_usage(_collab(args.project), args.card_id, usage_since(session, offset))

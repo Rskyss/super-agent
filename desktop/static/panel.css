@@ -59,6 +59,13 @@ body { background: var(--bg-side); }
 .w { font-size: var(--fs-sm); color: var(--faint); white-space: normal; text-align: right; justify-self: end; overflow-wrap: anywhere; }
 .k { grid-column: 2 / -1; font-size: var(--fs-sm); line-height: 1.55; color: var(--faint); margin-top: 2px; }
 .k:empty { display: none; }
+/* 写测试、写代码那步的进度（第四轮 53）：标题行和说明之间，条 + “通过 x/y” */
+.p { grid-column: 2 / -1; display: flex; align-items: center; gap: 8px; margin: 4px 0 2px; font-size: var(--fs-sm); color: var(--dim); }
+.p[hidden] { display: none; }
+.p .bar { flex: 1 1 auto; min-width: 60px; height: 6px; border-radius: 3px; background: rgba(255, 255, 255, .08); overflow: hidden; display: block; }
+.p .bar[hidden] { display: none; }
+.p .fill { display: block; height: 100%; width: 0; background: var(--ok); transition: width var(--t-fast) var(--ease); }
+.p .pt { flex: none; font-variant-numeric: tabular-nums; }
 .d { grid-column: 2 / -1; font-size: var(--fs-sm); line-height: 1.55; color: var(--dim); white-space: normal; overflow: hidden; overflow-wrap: anywhere; }
 /* 每步说明最多 3 行，多出来的鼠标停上去看全文（流程修理第二轮 ㊷） */
 .step .d { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }

@@ -706,6 +706,14 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
     detail = live_hint(cdir / open_ev["live"], limit=150, tool=open_ev.get("tool", ""),
                        test_command=card_test_cmd) if working and open_ev.get("live") else ""
     view["now"] = {"text": now_text, "tone": tone}
+    # 写测试、写代码时的进度（第四轮 53）：程序记在 进度.json，只认这一次派活的
+    if working and open_ev.get("dst") in ("测试员", "开发员"):
+        from collab.progress import read as read_progress
+        prog = read_progress(cdir)
+        if prog.get("seq") == open_ev.get("seq"):
+            key = "test" if open_ev.get("dst") == "测试员" else "dev"
+            st = next(x for x in stations if x["key"] == key)
+            st["progress"] = {k: prog[k] for k in ("passed", "total", "written", "computing", "error") if k in prog}
     # 停下后替你起草的“继续改”（第四轮 56 甲）：最新一条、之后还没用过（没有追加要求）才给
     drafted = [e for e in events if e.get("kind") == "起草" and e.get("phase") == "好了"]
     if drafted and state == "需Claude介入" and not any(

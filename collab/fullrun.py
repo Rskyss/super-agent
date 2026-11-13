@@ -47,13 +47,29 @@ def safe_env(folder: Path) -> dict:
 
 
 def copy_tree(src, dst) -> None:
-    """rsync 一份（排除 .git、依赖、运行记录），再在副本里建一个新仓库。"""
-    args = ["rsync", "-a", "--delete"]
+    """复制一份再在副本里建一个新仓库。是 git 仓库就只复制仓库里的文件和新建的（不含 .gitignore 忽略的
+    编译产物、密钥文件——本项目 desktop/mac 下的编译产物有 1.6G）；不是就 rsync 并排除 .git、依赖、运行记录。"""
+    Path(dst).mkdir(parents=True, exist_ok=True)
+    listed = subprocess.run(["git", "ls-files", "-co", "--exclude-standard", "-z"], cwd=str(src),
+                            capture_output=True)
+    args = ["rsync", "-a"]
     for ex in _EXCLUDES:
         args += ["--exclude", ex]
-    subprocess.run(args + [f"{src}/", f"{dst}/"], check=True, capture_output=True)
-    for cmd in (["git", "init", "-q"], ["git", "add", "-A"],
-                ["git", "-c", "user.name=collab", "-c", "user.email=collab@local", "commit", "-qm", "副本"]):
+    if listed.returncode == 0:
+        names = [n for n in listed.stdout.split(b"\0") if n and (Path(src) / n.decode("utf-8", "replace")).exists()]
+        with tempfile.NamedTemporaryFile("wb", delete=False) as fh:
+            fh.write(b"\0".join(names))
+            listing = fh.name
+        try:
+            subprocess.run(args + ["--from0", f"--files-from={listing}", f"{src}/", f"{dst}/"], check=True,
+                           capture_output=True)
+        finally:
+            os.unlink(listing)
+    else:
+        subprocess.run(args + [f"{src}/", f"{dst}/"], check=True, capture_output=True)
+    quiet = ["-c", "gc.auto=0", "-c", "maintenance.auto=false", "-c", "core.fsmonitor=false"]  # 不留后台整理进程
+    for cmd in (["git", "init", "-q"], ["git", *quiet, "add", "-A"],
+                ["git", *quiet, "-c", "user.name=collab", "-c", "user.email=collab@local", "commit", "-qm", "副本"]):
         subprocess.run(cmd, cwd=str(dst), capture_output=True)
 
 

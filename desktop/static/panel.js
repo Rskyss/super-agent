@@ -28,6 +28,17 @@ var PanelCore = {
     }
     return out;
   },
+  // 写测试、写代码那步的进度（第四轮 53）：{passed,total} → 条 + “通过 x/y”；{written} → “已写 N 项”
+  progressText: function (p) {
+    if (!p) return null;
+    if (p.written != null) return { text: "已写 " + p.written + " 项", pct: null };
+    if (p.error) return { text: "进度算不出来（" + p.error + "）", pct: null };
+    if (p.total != null && p.total > 0) {
+      return { text: "通过 " + p.passed + "/" + p.total, pct: Math.round(100 * p.passed / p.total) };
+    }
+    if (p.computing || p.total === 0) return { text: "正在算通过了几项…", pct: 0 };
+    return null;
+  },
   // 继续改框：用户还没写字时，填上调度员起草好的话（第四轮 56 甲）；写了就不动
   reviseDraft: function (current, draft) {
     return String(current || "").trim() ? current : String(draft || "");
@@ -302,7 +313,8 @@ if (typeof document !== "undefined") (function () {
   for (var i = 0; i < 7; i++) {
     var li = document.createElement("li");
     li.innerHTML = '<button class="step idle" type="button"><span class="g"></span><span class="t"></span>' +
-      '<span class="w"></span><span class="d"></span><span class="k"></span></button>';
+      '<span class="w"></span><span class="p" hidden><i class="bar"><i class="fill"></i></i><span class="pt"></span></span>' +
+      '<span class="d"></span><span class="k"></span></button>';
     (function (idx) {
       li.querySelector("button").addEventListener("click", function () {
         var s = view && view.stations[idx];
@@ -333,6 +345,14 @@ if (typeof document !== "undefined") (function () {
       b.querySelector(".t").textContent = s.role;
       // 工具 · 模型（强度）（第二轮 ㉗ ㊳）；点步骤看交接仍按工具名 s.who 找
       b.querySelector(".w").textContent = s.who + (s.model ? " · " + s.model : "") + (v.back && s.key === "dev" ? " · 退回返工" : "");
+      var prog = kind === "active" ? PanelCore.progressText(s.progress) : null;
+      var pbox = b.querySelector(".p");
+      pbox.hidden = !prog;
+      if (prog) {
+        pbox.querySelector(".bar").hidden = prog.pct == null;
+        pbox.querySelector(".fill").style.width = (prog.pct || 0) + "%";
+        pbox.querySelector(".pt").textContent = prog.text;
+      }
       b.querySelector(".d").textContent = kind === "idle" ? "" : stepText(s);
       b.querySelector(".k").textContent = kind === "idle" ? "" : clockText(s);
       b.title = PanelCore.cleanDetail(s.detail);
