@@ -135,6 +135,24 @@ var ChatCore = (function () {
             if (ev[k] != null) pblock.info[k] = ev[k];
           });
         }
+        if (pkind === "ability") {
+          pblock.ability = ev.ability || null;
+          pblock.name = ev.name || "";
+          pblock.block_name = ev.block_name || "";
+          pblock.warns = Array.isArray(ev.warns) ? ev.warns : [];
+          pblock.replaces = ev.replaces || "";
+          pblock.trial = ev.trial || null;
+          pblock.saved = !!ev.saved;
+          var same = null;
+          for (i = 0; i < this.blocks.length; i++) {
+            if (this.blocks[i].kind === "proposal" && this.blocks[i].id === ev.id) { same = this.blocks[i]; break; }
+          }
+          if (same) {   // 同一张草稿后来又送来一次：按编号更新，不再多出一个框
+            Object.keys(pblock).forEach(function (k) { same[k] = pblock[k]; });
+            this._touch(same);
+            break;
+          }
+        }
         this._push(pblock);
         break;
       case "proposal_done":
@@ -507,6 +525,496 @@ if (typeof document !== "undefined") (function () {
       });
   }
 
+  /* ---------------- 能力卡片（草稿）：试做、放进能力层（69b） ---------------- */
+  var ABILITY_JOB_MS = 1500;
+  var ABILITY_RETRY_MS = 3000;
+  var ABILITY_OFFLINE = "没连上本机服务，过一会儿再试…";
+  var ABILITY_LOST = "这次试做的结果没留下来（超级助手重开过）。跟管家说再出一次草稿。";
+  var abilityJobs = {};   // 提议编号 -> 这次试做的跟进情况；同一个草稿同时只有一个查询在路上
+
+  function abilityRec(pid) {
+    return abilityJobs[pid] || (abilityJobs[pid] = {
+      job: "", result: null, saved: false, asking: false, timer: null, file: false,
+      confirming: false, cancelling: false, saving: false, inputs: null,
+      error: "", saveError: "", started: 0, lost: false, restoreError: "",
+    });
+  }
+
+  function abilityStage(draft, rec) {
+    var state = draft.state || "open";
+    if (state === "cancelled" || state === "voided" || state === "replaced" || state === "confirmed") return state;
+    if (rec && (rec.confirming || rec.started || rec.result || rec.lost || rec.restoreError)) return "confirmed";
+    return "open";
+  }
+
+  function abilityFields(ability) {
+    var fields = AbilitiesCore.formFields(ability && ability.inputSchema);
+    var props = (ability && ability.inputSchema && ability.inputSchema.properties) || {};
+    fields.forEach(function (field) {
+      var examples = (props[field.name] || {}).examples;
+      if (Array.isArray(examples) && examples.length) field.value = examples[0];   // 例子优先于默认值
+    });
+    return fields;
+  }
+
+  function abilityJobUrl(pid) {
+    return "/api/blocks/job?" + new URLSearchParams({ proposal: pid, token: token }).toString();
+  }
+
+  function abilityRestorable(trial) {
+    return !!(trial && trial.ok && trial.run_id);
+  }
+
+  function abilityTrialWhole(trial) {
+    // 事件里的 trial 只是摘要：成了的那次得有正文或成果文件名，才画得出完整结果
+    return !!trial && (!trial.ok || (trial.output !== undefined && trial.output !== null));
+  }
+
+  function abilityBusy(rec) {
+    return !!(rec.asking || rec.timer);   // 查询在路上、或正在等下一次问：都不许再发
+  }
+
+  function abilityQueryWanted(pid, rec) {
+    // 拿到完整成果、或服务明确回过“没有”，就不用再问；连不上不算没了，接着问
+    if (rec.confirming || rec.result || rec.lost || rec.restoreError) return false;
+    var draft = findProposal(pid);
+    if (!draft || abilityStage(draft, rec) !== "confirmed") return false;
+    return !(draft.trial && !draft.trial.ok);   // 没成的试做：摘要里的原因已经够用
+  }
+
+  function abilityFileName(ability) {
+    var outType = (ability && ability.output && ability.output.type) || "";
+    return outType === "text" ? "结果.txt" : outType === "list" ? "结果.json" :
+      String((ability && ability.how && ability.how.output_file) || "");
+  }
+
+  function abilityFileUrl(ability, trial, name) {
+    return "/api/abilities/file?" + new URLSearchParams({
+      token: token, id: (ability && ability.id) || "", run: (trial && trial.run_id) || "", name: name,
+    }).toString();
+  }
+
+  // 服务明确说任务没了：摘要里成了的那次转去按地址取成果文件，取不回来的才算结果没留下来
+  function abilityJobGone(rec, draft) {
+    var ability = draft.ability || {}, trial = draft.trial || {};
+    var name = abilityFileName(ability);
+    if (!abilityRestorable(trial) || !name || !ability.id) {
+      rec.lost = true;
+      return false;
+    }
+    rec.file = true;   // 文字、列表、图片、文件都经统一查询取回，不再凭摘要直接当成功
+    return true;
+  }
+
+  // 草稿重开后的查进度、取成果文件、接着轮询都走这一条：同一个草稿同时只有一个查询在路上
+  function abilityQuery(pid, wait) {
+    var rec = abilityRec(pid);
+    if (abilityBusy(rec)) return;   // 查询在路上、或已排了重试：都不许再发
+    if (wait) {
+      rec.next = Date.now() + wait;   // 记住最早能再问的时刻：切到别的对话也留着，切回来不会立刻重查
+      rec.timer = setTimeout(function () { rec.timer = null; abilityQuery(pid, 0); }, wait);
+      return;
+    }
+    if (rec.next && Date.now() < rec.next) {   // 还在等重试：重画只能排剩余时间，不能立刻问
+      abilityQuery(pid, rec.next - Date.now());
+      return;
+    }
+    if (!abilityQueryWanted(pid, rec)) return;
+    var draft = findProposal(pid);   // 发出前就记下这张草稿：回话晚到、人已切走，也按它恢复
+    var ability = draft.ability || {}, trial = draft.trial || {};
+    var name = abilityFileName(ability);
+    var outType = (ability.output && ability.output.type) || "";
+    var asList = outType === "list";
+    var binary = outType === "image" || outType === "file";
+    rec.asking = true;   // 请求发出前就占住：重画插不进来
+    if (!rec.started) rec.started = Date.now();
+    fetch(rec.file ? abilityFileUrl(ability, trial, name) : abilityJobUrl(pid))
+      .then(function (r) {
+        if (r.status === 404) return null;   // 只有服务明确回“没有”，才算任务或文件没了
+        if (!r.ok) throw new Error("查询暂时出错：" + r.status);
+        if (rec.file && binary) return name;   // 图片、文件只确认还在，正文仍按地址显示
+        return rec.file && !asList ? r.text() : r.json();
+      })
+      .then(function (data) {
+        rec.asking = false;
+        rec.error = "";
+        if (rec.file) {
+          if (data === null) rec.restoreError = ABILITY_LOST;
+          else rec.result = Object.assign({}, trial, { output: data, files: [name] });
+          touchProposal(pid);
+          return;
+        }
+        if (data) {
+          rec.job = data.job || rec.job;
+          rec.saved = !!data.saved;
+          if (!data.done) {
+            abilityQuery(pid, ABILITY_JOB_MS);   // 先占住下一次，再重画，免得画一次又多问一遍
+            touchProposal(pid);
+            return;
+          }
+          rec.result = data.error ? { ok: false, status: "error", reason: data.error } : (data.result || null);
+        }
+        if (!rec.result && abilityJobGone(rec, draft)) abilityQuery(pid, 0);   // 任务没了：接着取上次的成果文件
+        touchProposal(pid);
+      })
+      .catch(function () {
+        rec.asking = false;
+        rec.error = ABILITY_OFFLINE;   // 连不上、服务出错都只算暂时连不上，不当成结果没了
+        abilityQuery(pid, ABILITY_RETRY_MS);   // 先排好 3 秒后重试，再重画
+        touchProposal(pid);
+      });
+  }
+
+  function submitAbilityTrial(pid, box) {
+    var draft = findProposal(pid);
+    if (!draft) return;
+    var rec = abilityRec(pid);
+    if (rec.confirming || abilityBusy(rec)) return;
+    var raw = {};
+    box.querySelectorAll("[data-name]").forEach(function (control) {
+      raw[control.getAttribute("data-name")] = control.value;
+    });
+    var got = AbilitiesCore.collectInputs(abilityFields(draft.ability), raw);
+    rec.inputs = raw;
+    if (!got.ok) {
+      rec.error = got.error;
+      touchProposal(pid);
+      return;
+    }
+    rec.error = "";
+    rec.confirming = true;
+    touchProposal(pid);
+    api("/api/clerk/proposal", { conversation: currentThread || "", id: pid, decision: "confirm", inputs: got.inputs })
+      .then(function (data) {
+        rec.confirming = false;
+        rec.job = (data && data.job) || "";
+        rec.started = Date.now();
+        abilityQuery(pid, 0);
+        touchProposal(pid);
+      })
+      .catch(function (err) {
+        rec.confirming = false;
+        rec.error = err.message;   // 例子不对、正在用：原因留在框里，改了还能再点
+        touchProposal(pid);
+      });
+  }
+
+  function cancelAbilityProposal(pid) {
+    var rec = abilityRec(pid);
+    if (rec.cancelling) return;
+    rec.cancelling = true;
+    api("/api/clerk/proposal", { conversation: currentThread || "", id: pid, decision: "cancel" })
+      .then(function (data) {
+        rec.cancelling = false;
+        var draft = findProposal(pid);
+        if (draft) {
+          draft.state = (data && data.state) || "cancelled";
+          model._touch(draft);
+        }
+        render();
+      })
+      .catch(function (err) {
+        rec.cancelling = false;
+        rec.error = err.message;
+        touchProposal(pid);
+      });
+  }
+
+  function refreshAbilityList() {
+    try {
+      var page = window.parent && window.parent.AbilitiesPage;
+      if (page && typeof page.refresh === "function") page.refresh();
+    } catch (_) {}
+  }
+
+  function saveAbilityDraft(pid) {
+    var rec = abilityRec(pid);
+    if (rec.saving || rec.saved) return;
+    rec.saving = true;
+    rec.saveError = "";
+    touchProposal(pid);
+    api("/api/abilities/save", { proposal: pid })
+      .then(function () {
+        rec.saving = false;
+        rec.saved = true;
+        touchProposal(pid);
+        refreshAbilityList();
+      })
+      .catch(function (err) {
+        rec.saving = false;
+        rec.saveError = err.message;
+        touchProposal(pid);
+      });
+  }
+
+  function renderAbilityResult(box, result, ability) {
+    var view = AbilitiesCore.resultView(result, ability);
+    if (result && result.status === "model") {
+      view.tip = "草稿上不能换模型：跟管家说换个模型，它会重新出草稿。";   // 模型下拉框只在能力层页面上
+    }
+    var head = document.createElement("p");
+    head.className = "prop-result " + view.tone;
+    head.textContent = view.head;
+    box.appendChild(head);
+    if (view.said || view.tip) {
+      var note = document.createElement("p");
+      note.className = "ability-note";
+      note.textContent = view.said || view.tip;
+      box.appendChild(note);
+    }
+    if (!view.body) return;
+    var body = document.createElement("div");
+    body.className = "ability-output";
+    if (view.body.type === "text") {
+      var pre = document.createElement("pre");
+      pre.className = "ability-text";
+      pre.textContent = view.body.text;
+      body.appendChild(pre);
+    } else if (view.body.type === "list") {
+      var listEl = document.createElement("ul");
+      listEl.className = "ability-list";
+      (view.body.items || []).forEach(function (item) {
+        var li = document.createElement("li");
+        var link = document.createElement("a");
+        link.href = item.url || "#";
+        link.target = "_blank";
+        link.rel = "noopener";
+        link.textContent = item.title || item.url || "无标题";
+        li.appendChild(link);
+        if (item.summary || item.snippet) {
+          var summary = document.createElement("p");
+          summary.textContent = item.summary || item.snippet;
+          li.appendChild(summary);
+        }
+        listEl.appendChild(li);
+      });
+      body.appendChild(listEl);
+    } else {
+      var query = new URLSearchParams({
+        token: token, id: (ability && ability.id) || "", run: result.run_id || "", name: view.body.name,
+      });
+      var url = "/api/abilities/file?" + query.toString();
+      if (view.body.type === "image") {
+        var img = document.createElement("img");
+        img.src = url;
+        img.alt = view.body.name;
+        img.className = "ability-image";
+        body.appendChild(img);
+      } else {
+        var fileLink = document.createElement("a");
+        fileLink.href = url;
+        fileLink.target = "_blank";
+        fileLink.rel = "noopener";
+        fileLink.textContent = "成果文件：" + view.body.name;
+        body.appendChild(fileLink);
+      }
+    }
+    box.appendChild(body);
+    if (result.files && result.files.length && result.run_id) {
+      var actions = document.createElement("div");
+      actions.className = "btns";
+      var reveal = document.createElement("button");
+      reveal.type = "button";
+      reveal.className = "btn";
+      reveal.textContent = "在访达里打开";
+      reveal.addEventListener("click", function () {
+        api("/api/abilities/reveal", { id: (ability && ability.id) || "", run: result.run_id })
+          .catch(function (err) { showError(err.message); });
+      });
+      actions.appendChild(reveal);
+      box.appendChild(actions);
+    }
+  }
+
+  function renderAbilityDraft(el, draft) {
+    var ability = draft.ability || {};
+    var rec = abilityJobs[draft.id] || null;
+    var stage = abilityStage(draft, rec);
+    var isSearch = !!(ability.how && ability.how.kind === "search");
+    el.className = "ask proposal ability-draft" + (stage === "open" ? "" : (stage === "cancelled" ? " no" : " done"));
+    el.innerHTML = "<h3></h3><p class=\"ability-desc\"></p><div class=\"rows\"></div>";
+    el.querySelector("h3").textContent = "能力卡片（草稿）「" + (draft.name || ability.title || "") + "」";
+    el.querySelector(".ability-desc").textContent = ability.description || "";
+    var rows = el.querySelector(".rows");
+    function row(label, value) {
+      var wrap = document.createElement("div");
+      var name = document.createElement("span");
+      name.textContent = label;
+      var text = document.createElement("p");
+      text.textContent = value;
+      wrap.appendChild(name);
+      wrap.appendChild(text);
+      rows.appendChild(wrap);
+    }
+    row("用哪个积木块", draft.block_name || ability.block || "");
+    var models = ability.model || "";
+    if (isSearch) models = "不涉及";
+    else if (ability.backup_models && ability.backup_models.length) models += "（备用：" + ability.backup_models.join("、") + "）";
+    row("用哪个模型", models);
+    row("交回什么", AbilitiesCore.outputText(ability.output && ability.output.type));
+    if (draft.replaces) {
+      var replace = document.createElement("p");
+      replace.className = "ability-replace";
+      replace.textContent = "放进能力层后会替换原来的「" + draft.replaces + "」";
+      rows.after(replace);
+    }
+    if (draft.warns && draft.warns.length) {
+      var warns = document.createElement("ul");
+      warns.className = "ability-warns";
+      draft.warns.forEach(function (warning) {
+        var li = document.createElement("li");
+        li.textContent = warning;
+        warns.appendChild(li);
+      });
+      el.appendChild(warns);
+    }
+    var prompt = isSearch ? ((ability.how && ability.how.query) || "") : AbilitiesCore.promptText(ability);
+    if (prompt) {
+      var details = document.createElement("details");
+      details.className = "ability-prompt";
+      details.open = true;
+      var summary = document.createElement("summary");
+      summary.textContent = isSearch ? "搜什么" : "交代原文";
+      var pre = document.createElement("pre");
+      pre.textContent = prompt;
+      details.appendChild(summary);
+      details.appendChild(pre);
+      el.appendChild(details);
+    }
+    if (stage === "open") {
+      var form = document.createElement("div");
+      form.className = "ability-form";
+      abilityFields(ability).forEach(function (field) {
+        var wrap = document.createElement("div");
+        wrap.className = "field";
+        var label = document.createElement("label");
+        var inputId = "abilityInput_" + draft.id + "_" + field.name;
+        label.setAttribute("for", inputId);
+        label.textContent = field.title + (field.required ? " *" : "");
+        var value = rec && rec.inputs && rec.inputs[field.name] !== undefined ? rec.inputs[field.name] : field.value;
+        var control;
+        if (field.kind === "select") {
+          control = document.createElement("select");
+          (field.options || []).forEach(function (option) {
+            var opt = document.createElement("option");
+            opt.value = option;
+            opt.textContent = option;
+            if (String(option) === String(value)) opt.selected = true;
+            control.appendChild(opt);
+          });
+        } else if (field.kind === "textarea") {
+          control = document.createElement("textarea");
+          control.value = value === undefined || value === null ? "" : String(value);
+          control.placeholder = field.placeholder || "";
+        } else {
+          control = document.createElement("input");
+          control.type = field.kind === "number" ? "number" : "text";
+          control.value = value === undefined || value === null ? "" : String(value);
+          control.placeholder = field.placeholder || "";
+        }
+        control.id = inputId;
+        control.setAttribute("data-name", field.name);
+        wrap.appendChild(label);
+        wrap.appendChild(control);
+        form.appendChild(wrap);
+      });
+      el.appendChild(form);
+      var error = document.createElement("p");
+      error.className = "prop-result fail";
+      error.textContent = (rec && rec.error) || "";
+      error.hidden = !(rec && rec.error);
+      el.appendChild(error);
+      var btns = document.createElement("div");
+      btns.className = "btns";
+      var trialBtn = document.createElement("button");
+      trialBtn.type = "button";
+      trialBtn.className = "btn primary";
+      trialBtn.setAttribute("data-ability-act", "trial");
+      trialBtn.textContent = "试做";
+      var cancelBtn = document.createElement("button");
+      cancelBtn.type = "button";
+      cancelBtn.className = "btn";
+      cancelBtn.setAttribute("data-ability-act", "cancel");
+      cancelBtn.textContent = "先不做";
+      btns.appendChild(trialBtn);
+      btns.appendChild(cancelBtn);
+      el.appendChild(btns);
+      return;
+    }
+    if (stage === "cancelled" || stage === "voided" || stage === "replaced") {
+      var ended = document.createElement("p");
+      ended.className = "prop-result";
+      ended.textContent = stage === "cancelled" ? "先不做了" : stage === "replaced" ? "已换成新的草稿" : "已失效";
+      el.appendChild(ended);
+      return;
+    }
+    abilityQuery(draft.id, 0);
+    rec = abilityJobs[draft.id];
+    var result = rec.result || (!rec.lost && !rec.restoreError && abilityTrialWhole(draft.trial) ? draft.trial : null);
+    if (!result) {
+      var running = document.createElement("p");
+      if (rec.restoreError) {
+        running.className = "prop-result lost";
+        running.textContent = rec.restoreError;
+      } else if ((rec.file && rec.asking) || abilityRestorable(draft.trial)) {
+        running.className = "prop-result running";
+        running.textContent = "正在取回上次的试做结果…";
+      } else if (rec.lost) {
+        running.className = "prop-result lost";
+        running.textContent = ABILITY_LOST;
+      } else {
+        var spent = Math.round((Date.now() - (rec.started || Date.now())) / 1000);
+        running.className = "prop-result running";
+        running.textContent = "正在试做… " + (spent < 1 ? "用时不到 1 秒" : "已用 " + spent + " 秒");
+      }
+      el.appendChild(running);
+      if (rec.error) {
+        var offline = document.createElement("p");
+        offline.className = "prop-result fail";
+        offline.textContent = rec.error;
+        el.appendChild(offline);
+      }
+      return;
+    }
+    renderAbilityResult(el, result, ability);
+    if (rec.restoreError) {
+      var restoreNote = document.createElement("p");
+      restoreNote.className = "prop-result fail";
+      restoreNote.textContent = rec.restoreError;
+      el.appendChild(restoreNote);
+    }
+    if (!result.ok) {
+      var guide = document.createElement("p");
+      guide.className = "ability-note";
+      guide.textContent = "跟管家说哪里不对，它会改了重新出草稿";
+      el.appendChild(guide);
+      return;
+    }
+    if (draft.saved || rec.saved) {
+      var saved = document.createElement("p");
+      saved.className = "prop-result ok";
+      saved.textContent = "已放进能力层";
+      el.appendChild(saved);
+    } else {
+      var saveBtns = document.createElement("div");
+      saveBtns.className = "btns";
+      var saveBtn = document.createElement("button");
+      saveBtn.type = "button";
+      saveBtn.className = "btn primary";
+      saveBtn.setAttribute("data-ability-save", "1");
+      saveBtn.textContent = rec.saving ? "放进中…" : "放进能力层";
+      saveBtn.disabled = !!rec.saving;
+      saveBtns.appendChild(saveBtn);
+      el.appendChild(saveBtns);
+    }
+    if (rec.saveError) {
+      var saveError = document.createElement("p");
+      saveError.className = "prop-result fail";
+      saveError.textContent = rec.saveError;
+      el.appendChild(saveError);
+    }
+  }
+
   function passKeyToWindow(account, key) {
     if (!account || !key) return;
     var handler = null;
@@ -570,7 +1078,9 @@ if (typeof document !== "undefined") (function () {
         return ({ codex: "Codex", cursor: "Cursor", agy: "agy", none: "不复查" })[tool] || tool;
       }
       el.className = "ask proposal" + (b.state === "open" ? "" : (b.state === "cancelled" ? " no" : " done"));
-      if (ChatCore.isBlockKind(b.proposalKind)) {
+      if (butlerMode && b.proposalKind === "ability") {
+        renderAbilityDraft(el, b);
+      } else if (ChatCore.isBlockKind(b.proposalKind)) {
         if (b.state === "open") {
           var bc = ChatCore.blockCard(b);
           el.innerHTML = "<h3></h3><div class=\"rows\"></div>" +
@@ -855,6 +1365,21 @@ if (typeof document !== "undefined") (function () {
       if (nkBox) nkBox.focus();
       return;
     }
+    var abilityAct = t.closest("[data-ability-act]");
+    if (abilityAct) {
+      var abilityBox = abilityAct.closest("[data-proposal]");
+      var abilityPid = abilityBox.getAttribute("data-proposal");
+      abilityBox.querySelectorAll("button").forEach(function (btn) { btn.disabled = true; });
+      if (abilityAct.getAttribute("data-ability-act") === "trial") submitAbilityTrial(abilityPid, abilityBox);
+      else cancelAbilityProposal(abilityPid);
+      return;
+    }
+    var abilitySave = t.closest("[data-ability-save]");
+    if (abilitySave) {
+      var saveBox = abilitySave.closest("[data-proposal]");
+      saveAbilityDraft(saveBox.getAttribute("data-proposal"));
+      return;
+    }
     var prop = t.closest("[data-prop]");
     if (prop) {
       var box = prop.closest("[data-proposal]");
@@ -1081,9 +1606,27 @@ if (typeof document !== "undefined") (function () {
 
   window.SuperAgentChat = {
     pause: pause, resume: resume,
-    isWorking: function () { return !clerkMode && !stopped && !!(model.busy || (pendingModel && pendingModel.busy)); },
+    isWorking: function () { return (butlerMode || !clerkMode) && !stopped && !!(model.busy || (!clerkMode && pendingModel && pendingModel.busy)); },
     startFresh: function () {
       if (clerkMode) { hideCard(); clerkOpen(null); } else switchSession("fresh", true, null);
+    },
+    startFromBlock: function (blockId, blockName) {
+      if (!butlerMode) return;   // 只有积木库管家能提取能力
+      hideCard();
+      clerkOpen(null);           // 和“新对话”一样：先清空当前对话
+      var mine = gen;
+      api("/api/clerk/send", { conversation: "", text: "我想从「" + blockName + "」提取能力卡片", block: blockId })
+        .then(function (d) {
+          if (gen !== mine) return;
+          currentThread = d.conversation;
+          if (!viewingCard) mainThread = currentThread;
+          api("/api/clerk/focus", { conversation: currentThread }).catch(function () {});
+          var myGen = ++gen;
+          poll(myGen);
+        })
+        .catch(function (err) {
+          if (gen === mine) showError(err.message);   // 积木块不存在：报错，不留空对话
+        });
     },
     threadDeleted: function (id) {
       var next = ChatCore.afterThreadDeleted(id, { clerk: clerkMode, current: currentThread, main: mainThread, viewingCard: viewingCard });

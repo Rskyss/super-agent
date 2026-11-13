@@ -15,6 +15,30 @@
 .prop-result.ok { color: var(--ok); }
 .prop-result.fail { color: var(--bad); }
 .prop-result.warn { color: var(--accent); }
+
+/* 能力卡片（草稿）：表单、交代原文、成果、计时和保存状态。只在草稿框里生效，项目窗口的提议照旧（69b） */
+.ability-draft .ability-desc { margin: 0 0 10px; font-size: var(--fs-base); color: var(--dim); }
+.ability-draft .ability-replace { margin: 0 0 10px; font-size: var(--fs-base); font-weight: 500; color: var(--accent); }
+.ability-draft .ability-warns { margin: 0 0 10px; padding-left: 18px; font-size: var(--fs-sm); color: var(--accent); }
+.ability-draft .ability-warns li { margin: 2px 0; }
+.ability-draft .ability-prompt { margin: 0 0 12px; padding: 8px 10px; background: var(--bg-side); border-radius: var(--r-md); }
+.ability-draft .ability-prompt summary { font-size: var(--fs-sm); color: var(--dim); cursor: default; }
+.ability-draft .ability-prompt pre { margin: 8px 0 0; font: var(--fs-sm)/1.6 var(--font-mono); color: var(--text); white-space: pre-wrap; word-break: break-word; max-height: 240px; overflow-y: auto; }
+.ability-draft .ability-form { display: grid; gap: 10px; margin: 0 0 12px; }
+.ability-draft .ability-form .field { display: grid; gap: 4px; }
+.ability-draft .ability-form label { font-size: var(--fs-sm); color: var(--dim); }
+.ability-draft .ability-form input, .ability-draft .ability-form select, .ability-draft .ability-form textarea { font: inherit; width: 100%; color: var(--text); background: var(--bg-side); border: 0; box-shadow: inset 0 0 0 1px var(--hair-2); border-radius: var(--r-md); padding: 7px 10px; }
+.ability-draft .ability-form textarea { min-height: 72px; line-height: 1.5; resize: vertical; }
+.ability-draft .ability-note { margin: 0 0 10px; font-size: var(--fs-sm); color: var(--dim); }
+.ability-draft .ability-output { margin: 0 0 12px; }
+.ability-draft .ability-text { margin: 0; font: var(--fs-sm)/1.6 var(--font-mono); background: var(--bg-side); border-radius: var(--r-md); padding: 10px 12px; white-space: pre-wrap; word-break: break-word; max-height: 280px; overflow-y: auto; }
+.ability-draft .ability-list { margin: 0; padding-left: 18px; display: grid; gap: 6px; }
+.ability-draft .ability-list a { color: var(--accent); }
+.ability-draft .ability-list p { margin: 2px 0 0; font-size: var(--fs-sm); color: var(--dim); }
+.ability-draft .ability-image { display: block; width: min(320px, 100%); height: auto; border-radius: var(--r-md); }
+.ability-draft .prop-result.bad { color: var(--bad); }
+.ability-draft .prop-result.running, .ability-draft .prop-result.lost { color: var(--dim); }
+.ability-draft .btns { margin-top: 4px; }
 .chat { height: 100%; display: grid; grid-template-rows: auto minmax(0, 1fr) auto auto; }
 .chat-head { display: flex; align-items: center; gap: 8px; padding: 2px 12px 8px 20px; min-height: 40px; flex-wrap: wrap; }
 #cardHead, #cardInfo { flex: 1 0 100%; }

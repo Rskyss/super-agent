@@ -502,9 +502,14 @@ code.detail-value { font-family: var(--font-mono); color: var(--text); }
 
 .detail-actions {
   display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   gap: 12px;
   margin-bottom: 16px;
 }
+/* 管家还在回话时，“提取能力卡片”旁边说清为什么点不了（69b） */
+.detail-extract-tip { font-size: var(--fs-sm); color: var(--accent); }
+.detail-extract-tip[hidden] { display: none; }
 
 .detail-result {
   margin-bottom: 16px;

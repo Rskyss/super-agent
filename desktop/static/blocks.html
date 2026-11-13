@@ -110,6 +110,8 @@
         <div class="detail-actions">
           <button class="btn primary" id="detailCheck" type="button">检测</button>
           <button class="btn" id="detailRemove" type="button">移出基础层</button>
+          <button class="btn" id="detailExtract" type="button" hidden>提取能力卡片</button>
+          <span class="detail-extract-tip" id="detailExtractTip" hidden>管家还在回话，等它说完再点</span>
         </div>
         <div class="detail-result" id="detailResult"></div>
         <details class="detail-card" id="detailCard">
@@ -193,6 +195,7 @@
   </main>
 </div>
 
+<script src="/static/abilities_core.js"></script>
 <script src="/static/abilities.js"></script>
 <script src="/static/blocks.js"></script>
 </body>

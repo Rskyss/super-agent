@@ -262,6 +262,7 @@ if (typeof document !== "undefined") (function () {
   var threadTimer = null, blocksTimer = null;
   var lastScan = null, scanBlocks = [], scanBroken = [], scanRunning = false, manualExpand = null, scanError = "";
   var activeBlock = null, currentDetail = null, checkTimer = null, pendingKey = "", checkGen = 0, activeTrials = {}, activeChecks = {}, resumedChecks = {};
+  var extractEntry = null;  // 详情里“提取能力卡片”指的积木块：读详情时定下，离开详情就清掉
   var scanPending = [], pendingJobs = {}, pendingSecrets = {};  // 待接入的预置工具和它们的检测；详情里新填的工具密钥
   // 60 号单：钥匙串里有这一家的密钥时显示“已保存的密钥 / 换一把”；点了“换一把”或存的没通过才露输入框
   var bindWantNew = false, detailWantNew = false, usedSaved = false;
@@ -516,6 +517,7 @@ if (typeof document !== "undefined") (function () {
       threads = list;
       threadsLoaded = true;
       drawThreads();
+      syncExtractEntry();
     }).catch(function () {
       if (!threadsLoaded) $("threads").innerHTML = '<div class="empty">没连上本机服务，请稍后再试</div>';
     });
@@ -622,13 +624,26 @@ if (typeof document !== "undefined") (function () {
   }
 
   function hideBlockDetailContent() {
-    ["detailStatus", "detailWarn", "detailRows", "detailCliModels", "detailPreview", "detailKeyBox", "detailSecrets", "detailCheck", "detailRemove", "detailCard"].forEach(function (k) {
+    extractEntry = null;
+    ["detailStatus", "detailWarn", "detailRows", "detailCliModels", "detailPreview", "detailKeyBox", "detailSecrets", "detailCheck", "detailRemove", "detailExtract", "detailExtractTip", "detailCard"].forEach(function (k) {
       var el = $(k);
       if (el) {
         el.hidden = true;
         if (k === "detailCliModels") el.innerHTML = "";
       }
     });
+  }
+
+  // 提取入口按聊天在不在回话决定能不能点；停在详情里也跟着变（69b）
+  function syncExtractEntry() {
+    var btn = $("detailExtract"), tip = $("detailExtractTip");
+    if (!btn || !tip) return;
+    var show = !!extractEntry && !$("blockDetail").hidden;
+    btn.hidden = !show;
+    var chat = show ? chatApi() : null;
+    var busy = !!(chat && typeof chat.isWorking === "function" && chat.isWorking());
+    btn.disabled = busy;
+    tip.hidden = !(show && busy);
   }
 
   function openDetail(id, keepResult) {
@@ -771,6 +786,8 @@ if (typeof document !== "undefined") (function () {
       $("detailCheck").disabled = isBlockBusy;
       $("detailRemove").hidden = false;
       $("detailRemove").disabled = isBlockBusy;
+      extractEntry = card.role === "tool" ? null : { id: card.id, name: card.name || card.id };
+      syncExtractEntry();
       $("detailCard").hidden = false;
       $("detailCard").querySelector("pre").textContent = v.cardText;
     }).catch(function (err) {
@@ -919,6 +936,16 @@ if (typeof document !== "undefined") (function () {
     closeBlockStage();
     $("chatFrame").hidden = false;
   }
+
+  $("detailExtract").addEventListener("click", function () {
+    var entry = extractEntry;   // 返回聊天会清掉详情，先把编号和名字拿在手上
+    if (!entry) return;
+    var chat = chatApi();
+    if (!chat || typeof chat.startFromBlock !== "function") return;
+    if (typeof chat.isWorking === "function" && chat.isWorking()) return;
+    backToChat();
+    chat.startFromBlock(entry.id, entry.name);
+  });
 
   $("detailCheck").addEventListener("click", function () {
     if (!currentDetail) return;
