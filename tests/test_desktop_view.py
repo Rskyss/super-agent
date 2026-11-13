@@ -52,7 +52,7 @@ class ViewTest(unittest.TestCase):
         self._start(cdir)
         sent = record(cdir, "派活", src="调度员", dst="测试员", tool="codex", step="写测试",
                       round=1, summary="按验收标准先写测试", live=True)
-        (cdir / sent["live"]).write_text("读取需求卡\n新建测试文件\n写第 9 条测试\n", encoding="utf-8")
+        (cdir / sent["live"]).write_text("codex\n读取需求卡\ncodex\n写第 9 条测试\n", encoding="utf-8")
         view = card_view(self.project)
         self.assertEqual(view["card"]["id"], "CARD-003")
         self.assertEqual(view["card"]["title"], "粘贴链接后显示处理进度")
@@ -83,8 +83,9 @@ class ViewTest(unittest.TestCase):
         view = card_view(self.project, "CARD-003")
         self.assertEqual(view["now"]["text"], "开发员 Cursor 正在返工（第 2 轮）")
         self.assertEqual(_station(view, "dev")["state"], "active")
-        self.assertEqual(_station(view, "check")["state"], "fail")
-        self.assertIn("没过", _station(view, "check")["detail"])
+        # 流程修理第二轮 ㉞：新一轮开始，上一轮“没过”收进交接（返工原因看交接、看“正在返工”）
+        self.assertEqual(_station(view, "check")["state"], "idle")
+        self.assertIn("交接", _station(view, "check")["detail"])
         self.assertEqual(_station(view, "test")["state"], "done")
         self.assertIn("写好 22 条测试", _station(view, "test")["detail"])
         self.assertTrue(view["back"])

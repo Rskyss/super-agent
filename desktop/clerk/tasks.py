@@ -652,11 +652,14 @@ def _save_profile(project: str, text: str) -> None:
     spare.replace(path)
 
 
+CONV_FILE_LOCK = threading.RLock()  # 对话文件的追加和“改写最后一条提醒”共用（流程修理第二轮复查 A 第 1 条）
+
+
 def _append_proposal_line(conv, pid: str) -> None:
     folder = Path(conv.project) / ".collab" / "行政对话"
     folder.mkdir(parents=True, exist_ok=True)
     line = json.dumps({"role": "proposal", "id": pid, "time": time.time()}, ensure_ascii=False)
-    with (folder / f"{conv.id}.jsonl").open("a", encoding="utf-8") as handle:
+    with CONV_FILE_LOCK, (folder / f"{conv.id}.jsonl").open("a", encoding="utf-8") as handle:
         handle.write(line + "\n")
 
 
@@ -773,6 +776,16 @@ def event_from_proposal(data: dict) -> dict:
         base["not_do"] = data.get("not_do") or ""
         base["done_when"] = data.get("done_when") or ""
     return base
+
+
+def _plan_model_label(project) -> str:
+    """写方案用的模型，记进流转给右栏“调度”那步显示（流程修理第二轮 ㊳）。"""
+    try:
+        from collab.config import model_label
+        from collab.planner import plan_models
+        return model_label("codex", plan_models(project))
+    except Exception:  # noqa: BLE001 — 读不出配置不影响写方案
+        return ""
 
 
 def _collab(project: str) -> Path:
@@ -953,7 +966,8 @@ def launch(project: str, kind: str, card_id: str, args: list) -> int:
                 cdir = _collab(project) / "cards" / card_id
                 if kind == "plan":
                     flow_record(cdir, "写方案", src="程序", dst="Codex",
-                                summary="开始写方案", pid=proc.pid, started=started)
+                                summary="开始写方案", pid=proc.pid, started=started,
+                                model=_plan_model_label(project))
                 elif kind == "run":
                     flow_record(cdir, "开工", src="程序", dst="程序",
                                 summary="开始施工", pid=proc.pid, started=started)
@@ -1201,27 +1215,40 @@ class TaskWatcher:
         if not pointer.is_file():
             return
         try:
-            last = int(json.loads(pointer.read_text(encoding="utf-8")).get("seq") or 0)
-        except (OSError, ValueError, TypeError):
-            last = 0
+            played = json.loads(pointer.read_text(encoding="utf-8"))
+            last = int(played.get("seq") or 0)
+        except (OSError, ValueError, TypeError, AttributeError):
+            played, last = {}, 0
+        # 同一个人的“没动静”提醒只留一条：记下上一条提醒是哪条消息、属于哪次派活（第二轮 ㉞）
+        remind = played.get("remind") if isinstance(played, dict) and isinstance(played.get("remind"), dict) else {}
         # 提醒：干活的人几分钟没动静（流程修理 ⑲ 第一步）；退回：复查不通过自动退回写代码的（⑧）
         news = {"方案", "方案失败", "开跑", "判定", "转人工", "结束", "停下", "合并失败", "合并", "提醒", "退回"}
         cid = card_conversation_id(card_id)
         newest = last
+        work = 0  # 最近一次派活的编号：提醒属于哪一次派活
         for ev in _flow_events(cdir):
             seq = int(ev.get("seq") or 0)
+            if ev.get("kind") == "派活":
+                work = seq
             if seq <= last:
                 continue
             newest = max(newest, seq)
-            summary = str(ev.get("summary") or "").strip()
+            # say：给人看的完整一句（退回、卡住时说复查挑出了什么）；summary 只有 80 字
+            summary = str(ev.get("say") or ev.get("summary") or "").strip()
             if ev.get("kind") in news and summary:
                 if ev.get("kind") == "转人工":
                     # 卡住了：顺带说清用户下一步能点什么（⑬）
                     summary = summary.rstrip("。") + "。" + next_step_words(card_phase(project, card_id))
-                self._desk.notify(project, cid, summary)
+                if ev.get("kind") == "提醒":
+                    same = remind.get("work") == work and remind.get("item")
+                    item = self._desk.notify(project, cid, summary, item=remind["item"] if same else "")
+                    remind = {"work": work, "item": item} if item else {}
+                else:
+                    self._desk.notify(project, cid, summary)
+                    remind = {}
         if newest != last:
             spare = pointer.with_suffix(".tmp")
-            spare.write_text(json.dumps({"seq": newest}, ensure_ascii=False), encoding="utf-8")
+            spare.write_text(json.dumps({"seq": newest, "remind": remind}, ensure_ascii=False), encoding="utf-8")
             spare.replace(pointer)
 
     def _offer_saved_revise(self, project: str, cdir: Path, card_id: str, phase: dict) -> None:

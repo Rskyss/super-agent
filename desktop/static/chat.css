@@ -19,7 +19,7 @@
 .chat-head { display: flex; align-items: center; gap: 8px; padding: 2px 12px 8px 20px; min-height: 40px; flex-wrap: wrap; }
 #cardHead, #cardInfo { flex: 1 0 100%; }
 #cardHead { font-weight: 600; }
-#cardNow { flex: 1 0 100%; font-size: var(--fs-sm); color: var(--dim); margin-top: 2px; }
+#cardNow { flex: 1 0 100%; font-size: var(--fs-sm); color: var(--dim); margin-top: 2px; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; overflow-wrap: anywhere; }
 #cardNow.now-warn { color: var(--wait); }
 #cardNow.now-bad { color: var(--bad); }
 #cardNow[hidden] { display: none !important; }

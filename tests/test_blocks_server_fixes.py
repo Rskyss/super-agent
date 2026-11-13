@@ -116,9 +116,28 @@ class ProjectWindowTest(BlocksCase):
         self.assertEqual(self.bget("/api/blocks/state")[1]["setting"]["provider"], "tencent")
 
 
+def _wait_install_idle(case, server=None, limit=20.0):
+    """“正在安装”是整个程序共用的一个标记：前面测试起的安装在后台还没收尾，这里就会被当成“正在装别的”
+    （流程修理第二轮 ㊸：单跑都过、连着跑偶尔两次确认都回 409）。等这份服务的后台任务都做完、标记放下；等不到就报错。"""
+    import time
+    from collab import blocks_install
+    deadline = time.time() + limit
+    def busy():
+        jobs = list((getattr(server, "blocks_jobs", None) or {}).values()) if server is not None else []
+        return blocks_install.installing() or any(not j.get("done") for j in jobs)
+    while busy() and time.time() < deadline:
+        time.sleep(0.1)
+    case.assertFalse(busy(), "上一次安装 20 秒还没收尾")
+
+
 class InstallTest(BlocksCase):
+    def tearDown(self):
+        _wait_install_idle(self, self.server)
+        super().tearDown()
+
     def setUp(self):
         super().setUp()
+        _wait_install_idle(self)
         (self.bin / "codex").unlink()
         os.environ["PATH"] = f"{self.bin}:/usr/bin:/bin"
         self.runs = Path(self.tmp) / "npm.log"

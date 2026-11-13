@@ -14,6 +14,7 @@ kind 的取值：需求、批准、开跑、派活、回复、范围、判定、
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -138,3 +139,53 @@ def card_title(cdir, card_id: str) -> str:
         if title:
             return title
     return card_id
+
+
+# ---- 复查意见说给人听（流程修理第二轮 ㉞ ㊲；派活和卡片右上角、确认框共用）----
+_VERDICT_LINE = re.compile(r"^[ \t*#]*结论")
+_ITEM = re.compile(r"^\s*(\d+)[.、)）]\s*(.+)$")
+TEST_PROBLEM = "【测试的问题】"
+
+
+def _numbered_items(text: str, whole: bool = False) -> list:
+    """复查意见里编号的那几条。whole=True 时连同下面接着写的原因和位置（交给写测试的要用全文，复查 B 第 4 条）。"""
+    items = []
+    for line in (text or "").splitlines():
+        m = _ITEM.match(line)
+        if m:
+            items.append(m.group(2).strip())
+        elif items and whole and line.strip() and not _VERDICT_LINE.match(line):
+            items[-1] += "\n" + line.rstrip()
+    return items
+
+
+# 中文和英文字母之间 \b 不算边界（第 3 轮 B 第 3 条），用“前后不是英文数字”来认
+_A = r"(?<![A-Za-z0-9_])"
+_Z = r"(?![A-Za-z0-9_])"
+_CODE = re.compile(r"`|(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_-]+\.[A-Za-z]{1,5}(?::\d+)?" + _Z +
+                   r"|" + _A + r"[A-Za-z_][A-Za-z0-9_.]*\([^()]*\)"
+                   r"|" + _A + r"[A-Za-z0-9]*_[A-Za-z0-9_]+" + _Z +
+                   r"|" + _A + r"[a-z]+[A-Z][A-Za-z0-9]*" + _Z)
+
+
+def _plain(item: str, limit: int = 60) -> str:
+    """一条复查意见的第一句。去掉文件链接、加粗、级别标记；第一句里还带文件名、函数名、代码名的不算大白话，返回空
+    （硬删会剩下半句话，第 2 轮 B 第 4 条）。"""
+    item = re.sub(r"\[([^\]]*)\]\([^)]*\)", "", item)          # [tasks.py:587](/路径) 这类链接整个去掉
+    item = re.sub(r"\*\*|【测试的问题】", "", item)
+    item = re.sub(r"^\s*\[?P\d(?:[ ／/·|｜]*[^\]：:｜|\s]{0,4})?\]?\s*[：:｜|]?\s*", "", item.strip())  # [P1]、P1／高：
+    item = re.sub(r"^[\[（(【]?(?:P\d|严重|中等|轻微|高|中|低)[^\]）)】]{0,8}[\]）)】]\s*", "", item)
+    item = re.split(r"[。！？!?]", item, maxsplit=1)[0].strip(" ：:；;，,、")
+    if _CODE.search(item):
+        return ""
+    return item if len(item) <= limit else item[:limit - 1] + "…"
+
+
+def _plain_enough(text: str) -> bool:
+    """去掉代码名后还剩一句像样的中文才算（第 2 轮 B 第 4 条）；剩不下就不拿它当大白话。"""
+    return len(re.findall(r"[\u4e00-\u9fff]", text)) >= 4
+
+
+def plain_issues(text: str) -> list:
+    """复查挑出的事，每条一句大白话：只取第一句，去掉文件链接、加粗、级别标记（流程修理第二轮 ㉞ ㊲）。"""
+    return [p for p in (_plain(i) for i in _numbered_items(text)) if p and _plain_enough(p)]

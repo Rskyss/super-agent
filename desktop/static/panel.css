@@ -55,8 +55,10 @@ body { background: var(--bg-side); }
 .step:hover { background: rgba(255, 255, 255, .035); }
 .g { width: 18px; height: 18px; display: grid; place-items: center; }
 .t { font-size: var(--fs-base); font-weight: 500; color: var(--text); }
-.w { font-size: var(--fs-sm); color: var(--faint); white-space: nowrap; }
-.d { grid-column: 2 / -1; font-size: var(--fs-sm); line-height: 1.55; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.w { font-size: var(--fs-sm); color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 62%; justify-self: end; }
+.d { grid-column: 2 / -1; font-size: var(--fs-sm); line-height: 1.55; color: var(--dim); white-space: normal; overflow: hidden; overflow-wrap: anywhere; }
+/* 每步说明最多 3 行，多出来的鼠标停上去看全文（流程修理第二轮 ㊷） */
+.step .d { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
 .d:empty { display: none; }
 
 .pip { width: 6px; height: 6px; border-radius: 50%; background: var(--surface-3); }

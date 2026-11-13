@@ -305,7 +305,8 @@ if (typeof document !== "undefined") (function () {
       var cls = "step " + kind + (s.state === "active" && v.stale ? " stale" : "");
       if (b.className !== cls) { b.className = cls; b.querySelector(".g").innerHTML = GLYPH[kind]; }
       b.querySelector(".t").textContent = s.role;
-      b.querySelector(".w").textContent = s.who + (v.back && s.key === "dev" ? " · 退回返工" : "");
+      // 工具 · 模型（强度）（第二轮 ㉗ ㊳）；点步骤看交接仍按工具名 s.who 找
+      b.querySelector(".w").textContent = s.who + (s.model ? " · " + s.model : "") + (v.back && s.key === "dev" ? " · 退回返工" : "");
       b.querySelector(".d").textContent = kind === "idle" ? "" : stepText(s);
       b.title = PanelCore.cleanDetail(s.detail);
       b.setAttribute("aria-label", s.role + " " + s.who + "，看交接");

@@ -200,6 +200,7 @@ class ClerkDesk:
         self._open = {}
         self._focus = {}
         self._lock = threading.Lock()
+        self._write_lock = clerk_tasks.CONV_FILE_LOCK  # 对话文件的追加和改写最后一条不能交错（复查 A 第 1 条），和提议共用
 
     # ---------- 存取 ----------
 
@@ -226,6 +227,15 @@ class ClerkDesk:
             if role == "user":
                 return self._short(text)
         return ""
+
+    @staticmethod
+    def _last_item(path: Path) -> str:
+        try:
+            raws = [r for r in path.read_bytes().splitlines() if r.strip()]
+            last = json.loads(raws[-1]) if raws else {}
+        except (OSError, ValueError):
+            return ""
+        return str(last.get("item") or "") if isinstance(last, dict) and last.get("role") == "assistant" else ""
 
     @staticmethod
     def _read_lines(path: Path) -> list:
@@ -266,13 +276,16 @@ class ClerkDesk:
             spare.write_text(json.dumps(index, ensure_ascii=False), encoding="utf-8")
             spare.replace(folder / INDEX)
 
-    def _record(self, conv: _Conversation, role: str, text: str) -> None:
+    def _record(self, conv: _Conversation, role: str, text: str, item: str = "") -> None:
         if conv.deleted:
             return
         folder = self._folder(conv.project)
         folder.mkdir(parents=True, exist_ok=True)
-        line = json.dumps({"role": role, "text": text, "time": time.time()}, ensure_ascii=False)
-        with (folder / f"{conv.id}.jsonl").open("a", encoding="utf-8") as handle:
+        entry = {"role": role, "text": text, "time": time.time()}
+        if item:
+            entry["item"] = item
+        line = json.dumps(entry, ensure_ascii=False)
+        with self._write_lock, (folder / f"{conv.id}.jsonl").open("a", encoding="utf-8") as handle:
             handle.write(line + "\n")
         if role != "notice":  # 提醒只给用户看，不进模型的对话
             conv.messages.append({"role": role, "content": text})
@@ -284,7 +297,7 @@ class ClerkDesk:
             return
         folder = self._folder(conv.project)
         folder.mkdir(parents=True, exist_ok=True)
-        with (folder / f"{conv.id}.jsonl").open("a", encoding="utf-8") as handle:
+        with self._write_lock, (folder / f"{conv.id}.jsonl").open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(dict(line, time=time.time()), ensure_ascii=False) + "\n")
 
     def _open_manual(self, conv: _Conversation, name: str) -> None:
@@ -308,7 +321,9 @@ class ClerkDesk:
         if not create and not path.exists():
             return None
         conv = _Conversation(str(project), cid)
-        for role, payload in self._read_lines(path):
+        last_item = self._last_item(path)
+        loaded = self._read_lines(path)
+        for at, (role, payload) in enumerate(loaded):
             if role == "proposal":
                 data = clerk_tasks.load_proposal(project, payload)
                 if data:
@@ -328,7 +343,9 @@ class ClerkDesk:
                 continue
             conv.messages.append({"role": role, "content": payload})
             kind = "user" if role == "user" else "message"
-            conv.emit({"type": kind, "text": payload, "item": f"h{len(conv.events)}", "history": True})
+            # 最后一条是行政的提醒时留着它原来的编号，重开后再来的提醒还能改写它（复查 A 第 4 条）
+            item = last_item if (last_item and at == len(loaded) - 1 and role == "assistant") else f"h{len(conv.events)}"
+            conv.emit({"type": kind, "text": payload, "item": item, "history": True})
         with self._lock:
             if not create and not path.exists():  # 读的时候被删了：不能放回内存，否则之后的通知会把文件写回来
                 return None
@@ -817,16 +834,53 @@ class ClerkDesk:
         return (f"{result}\n\n（你还没翻《{blocks_tools.MANUALS[manual]}》，下面附上，接下来照着办。）\n"
                 + blocks_tools.manual_block(manual))
 
-    def notify(self, project: str, conversation: str, text: str) -> bool:
-        """往来源对话写一条行政通知并发 message 事件。对话不存在则跳过（由调用方决定是否仍记已汇报）。"""
+    def notify(self, project: str, conversation: str, text: str, item: str = "") -> str:
+        """往来源对话写一条行政通知并发 message 事件，返回这条的编号；对话不存在返回空（由调用方决定是否仍记已汇报）。
+        给了 item：改写那一条（同一个人的“没动静”提醒只留一条，第二轮 ㉞）；它还是对话最后一条时，记录里也改写。"""
         if not _ID_SHAPE.fullmatch(conversation or ""):
-            return False
+            return ""
         conv = self._conversation(project, conversation, create=False)
         if conv is None:
-            return False
+            return ""
+        if item and self._rewrite_last(conv, item, text):
+            conv.emit({"type": "message", "item": item, "text": text})
+            return item
         item = uuid.uuid4().hex
         conv.emit({"type": "message", "item": item, "text": text})
-        self._keep_reply(conv, text)
+        try:
+            self._record(conv, "assistant", text, item=item)
+        except OSError:
+            conv.emit({"type": "error", "text": "这段回复没能保存，请检查磁盘空间或文件夹权限。"})
+        return item
+
+    def _rewrite_last(self, conv: _Conversation, item: str, text: str) -> bool:
+        """对话记录最后一条就是 item 那条：把它的字换掉（模型看到的那条也换）。不是最后一条就不动，返回 False。"""
+        path = self._folder(conv.project) / f"{conv.id}.jsonl"
+        with self._write_lock:
+            return self._rewrite_last_locked(conv, path, item, text)
+
+    def _rewrite_last_locked(self, conv: _Conversation, path: Path, item: str, text: str) -> bool:
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return False
+        while lines and not lines[-1].strip():
+            lines.pop()
+        if not lines:
+            return False
+        try:
+            last = json.loads(lines[-1])
+        except ValueError:
+            return False
+        if last.get("item") != item:
+            return False
+        last["text"] = text
+        lines[-1] = json.dumps(last, ensure_ascii=False)
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        for m in reversed(conv.messages):
+            if m.get("role") == "assistant":
+                m["content"] = text
+                break
         return True
 
     def decide_proposal(self, project: str, conversation: str, pid: str, decision: str) -> dict:

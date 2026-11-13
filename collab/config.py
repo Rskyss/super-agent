@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any, Dict, Optional
 from urllib.parse import urlparse
@@ -93,6 +94,36 @@ MODEL_OPTIONS = {
         {"value": "gpt-oss-120b-medium", "label": "GPT-OSS 120B (Medium)"},
     ],
 }
+
+
+_SHORT_EFFORT = {"low": "低", "medium": "中", "high": "高", "xhigh": "极高", "max": "最大", "ultra": "超强"}
+
+
+def model_label(tool: str, models: dict) -> str:
+    """右栏每一步右上角用的“模型（强度）”（流程修理第二轮 ㉗ ㊳）：照团队设置里的名字，认不出就原样。"""
+    if not tool or not isinstance(models, dict):
+        return ""
+    value = str(models.get(tool) or "").strip()
+    if not value:
+        return ""
+    label = next((str(o.get("label") or "") for o in MODEL_OPTIONS.get(tool, []) if o.get("value") == value), "")
+    if not label:
+        name = value
+    else:  # “Gemini 3.8 Flash (High)”“Auto（自动推荐 · 默认）” → 名字 + 强度
+        m = re.match(r"^(.*?)\s*[（(]([^）)]*)[）)]\s*$", label)
+        name, tail = (m.group(1), m.group(2)) if m else (label, "")
+        word = tail.split("·")[0].strip().lower()
+        if word in _SHORT_EFFORT:
+            name = f"{name}（{_SHORT_EFFORT[word]}）"
+    if tool == "codex":
+        effort = _SHORT_EFFORT.get(str(models.get("codex_effort") or ""))
+        if effort:
+            name = f"{name}（{effort}）"
+    elif "（" not in name:  # 名字里没带出强度：看编号结尾（…-high、…-xhigh-fast，复查 A 第 8 条）
+        m = re.search(r"-(low|medium|high|xhigh|max)(?:-fast)?$", value)
+        if m and _SHORT_EFFORT[m.group(1)] not in name:
+            name = f"{name}（{_SHORT_EFFORT[m.group(1)]}）"
+    return name
 
 
 def load_model_options(home_dir=None) -> dict:

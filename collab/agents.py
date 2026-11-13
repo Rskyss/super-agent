@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import signal
 import subprocess
 import tempfile
@@ -22,14 +23,31 @@ QUIET_LIMIT = 15 * 60  # 看门人：副本里连续 15 分钟没有任何文件
 POLL_SECONDS = 15  # 看门人每隔多久看一次
 
 _active_tool = None  # 当前派活里的工具进程，供 collab run 收到结束信号时一并停掉
+_active_tools: set = set()  # 同时在干活的全部工具进程（写测试和备交接资料会同时跑，第二轮 ㉚）
+
+
+_stopping = {"on": False}  # 收到停工后不再起新的工具进程（后台备资料的线程会重试，复查 C 第 1 条）
+import threading as _threading
+# “看停工标记 → 起进程 → 登记”和“停工”不能交错（第 2 轮 C1）；可重入：停工信号可能正好打在主线程起进程时（第 3 轮 C1）
+_tools_lock = _threading.RLock()
 
 
 def kill_current_tool_process_group() -> None:
-    """对当前正在运行的工具进程组先温和结束，再强制结束。"""
-    proc = _active_tool
-    if proc is None:
-        return
-    _stop(proc)
+    """对正在运行的工具进程组先温和结束，再强制结束；之后本进程不再起新的工具。"""
+    with _tools_lock:
+        _stopping["on"] = True
+    for _ in range(3):
+        procs = list(_active_tools) or ([_active_tool] if _active_tool is not None else [])
+        if not procs:
+            break
+        for proc in procs:
+            _stop(proc)
+            _active_tools.discard(proc)
+
+
+def allow_tools() -> None:
+    """停工收尾完了，本进程又可以起工具（同一个进程里接着跑下一张卡、跑测试时用）。"""
+    _stopping["on"] = False
 
 
 def cursor_command(prompt: str, model: str = DEFAULT_MODELS["cursor"]):
@@ -40,9 +58,10 @@ def cursor_command(prompt: str, model: str = DEFAULT_MODELS["cursor"]):
 
 
 def codex_command(prompt: str, model: str = DEFAULT_MODELS["codex"],
-                  effort: str = DEFAULT_MODELS["codex_effort"], last_path=None):
-    """last_path：让 Codex 把最后一条回复单独写进这个文件（完整过程照样从输出里看）。"""
-    cmd = ["codex", "exec", "--skip-git-repo-check", "-s", "workspace-write",
+                  effort: str = DEFAULT_MODELS["codex_effort"], last_path=None, sandbox: str = "workspace-write"):
+    """last_path：让 Codex 把最后一条回复单独写进这个文件（完整过程照样从输出里看）。
+    sandbox：调度员备交接资料时用 read-only，只读不改（流程修理第二轮 ㉚）。"""
+    cmd = ["codex", "exec", "--skip-git-repo-check", "-s", sandbox,
            "-m", model, "-c", f'model_reasoning_effort="{effort}"']
     if last_path:
         cmd += ["-o", str(last_path)]
@@ -54,11 +73,72 @@ def agy_command(prompt: str, model: str = DEFAULT_MODELS["agy"]):
     return ["agy", "-p", prompt, "--model", model, "--output-format", "stream-json"]
 
 
+_plugin_cache: list = []
+
+
+def _codex_plugin_names() -> list:
+    """用户给 Codex 配的插件名（每个进程只问一次）。问不到就当没有。"""
+    if _plugin_cache:
+        return _plugin_cache[0]
+    # 只能关用户设置文件里写的那些；Codex 应用自带的插件不在文件里，硬关会让 Codex 报错起不来（实测）
+    home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+    try:
+        text = (home / "config.toml").read_text(encoding="utf-8")
+    except OSError:
+        text = ""
+    # 只按设置文件里写的名字关（本来就关着的再关一次无妨）；不去跑 `codex mcp list`：多起一次 Codex，
+    # 测试里的假 Codex 还会把它当成一次派活（全量时发现）
+    names = _names_in_config(text)
+    _plugin_cache.append(names)
+    return names
+
+
+def _names_in_config(text: str) -> list:
+    """Codex 设置文件里写的插件名：[mcp_servers.名字]、["名字"]、['名字'] 三种写法。
+    写成一行 mcp_servers = {...} 的认不出（少见），这种照旧开着。"""
+    names = []
+    pat = r"""^\s*\[mcp_servers\.(?:"([^"]+)"|'([^']+)'|([A-Za-z0-9_-]+))\]\s*(?:#.*)?$"""
+    found = [m.group(1) or m.group(2) or m.group(3) for m in re.finditer(pat, text, re.MULTILINE)]
+    # 写成一行的：mcp_servers = { playwright = {...}, "a b" = {...} }，以及 mcp_servers.名字.command = ...（第 2 轮 C 第 4 条）
+    for m in re.finditer(r"^\s*mcp_servers\s*=\s*\{(.*)$", text, re.MULTILINE | re.DOTALL):
+        body, depth, top = m.group(1), 1, []
+        for ch in body:
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            top.append(ch if depth == 1 else (" " if ch not in "{}" else ch))
+        flat = "".join(top)
+        found += [a or b or c for a, b, c in
+                  re.findall(r"""(?:"([^"]+)"|'([^']+)'|([A-Za-z0-9_-]+))\s*=\s*\{""", flat)]
+    found += [a or b or c for a, b, c in re.findall(
+        r"""^\s*mcp_servers\.(?:"([^"]+)"|'([^']+)'|([A-Za-z0-9_-]+))\s*[.=]""", text, re.MULTILINE)]  # 第 3 轮 C3
+    for name in found:
+        if name not in names:
+            names.append(name)
+    return names
+
+
+def _no_plugin_flags(names: list) -> list:
+    """只对这一次关掉插件，不改用户自己的设置（第二轮 ㉘ ㊶）。名字带空格、点的要加引号。"""
+    if not names:
+        return []
+    # 用一整张表合并进去：点号写法认不了带空格的名字（实测会当成新插件报错）
+    table = ",".join(f"{json.dumps(n, ensure_ascii=False)}={{enabled=false}}" for n in names)
+    return ["-c", f"mcp_servers={{{table}}}"]
+
+
 def _build(adapter: str, prompt: str, models: dict, last_path=None):
+    if adapter == "codex" and models.get("no_plugins"):
+        cmd = _build(adapter, prompt, {k: v for k, v in models.items() if k != "no_plugins"}, last_path)
+        return cmd[:-1] + _no_plugin_flags(_codex_plugin_names()) + cmd[-1:]
     if adapter == "cursor":
         return cursor_command(prompt, model=models["cursor"])
     if adapter == "codex":
-        return codex_command(prompt, model=models["codex"], effort=models["codex_effort"], last_path=last_path)
+        return codex_command(prompt, model=models["codex"], effort=models["codex_effort"], last_path=last_path,
+                             sandbox=models.get("codex_sandbox") or "workspace-write")
     if adapter == "agy":
         return agy_command(prompt, model=models["agy"])
     raise KeyError(adapter)  # 未知适配器直接报错
@@ -215,8 +295,128 @@ def _output_mtime(out) -> float:
         return 0.0
 
 
+COMMAND_LIMIT = 120  # 干活的人自己跑的一条命令最多多久（第二轮 ㊹）
+TEST_COMMAND_LIMIT = 300  # 跑本卡测试那条给长一点
+HELPER_GRACE = 15  # 工具刚启动这几秒里拉起的子进程是它自己的帮手（插件、语言服务），不算命令
+# 插件、帮手（连同它们拉起的子进程）不算命令；不再按“启动头几秒”豁免（第 2 轮 C 第 2 条）
+# 只认明确是插件的字样；npx、npm exec 也会用来跑普通检查（npx tsc），不能一律当插件（第 3 轮 C2）
+_HELPER_WORDS = ("mcp", "modelcontextprotocol", "node_repl", "code-mode-host", "language_server", "language-server",
+                 "/plugins/", "/extensions/")
+_COMMAND_NAMES = {"bash", "sh", "zsh", "python", "python3", "node"}
+
+
+def _etime_seconds(text: str) -> int:
+    days, _, rest = text.strip().rpartition("-")
+    parts = [int(p) for p in rest.split(":")]
+    while len(parts) < 3:
+        parts.insert(0, 0)
+    return (int(days) if days else 0) * 86400 + parts[0] * 3600 + parts[1] * 60 + parts[2]
+
+
+def _process_table() -> dict:
+    try:
+        out = subprocess.run(["ps", "-axo", "pid=,ppid=,etime=,command="], capture_output=True,
+                             text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    table = {}
+    for line in out.splitlines():
+        parts = line.split(None, 3)
+        if len(parts) == 4:
+            try:
+                table[int(parts[0])] = (int(parts[1]), _etime_seconds(parts[2]), parts[3])
+            except ValueError:
+                continue
+    return table
+
+
+def _is_command(line: str) -> bool:
+    low = line.lower()
+    if any(w in low for w in _HELPER_WORDS):
+        return False
+    first = line.split()[0] if line.split() else ""
+    name = os.path.basename(first).lower()
+    return name in _COMMAND_NAMES or bool(re.fullmatch(r"python3?(\.\d+)?", name))
+
+
+def _kill_tree(table: dict, root: int) -> None:
+    family = [root]
+    for pid in family:
+        family.extend(p for p, (pp, _e, _c) in table.items() if pp == pid and p not in family)
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        for pid in reversed(family):
+            try:
+                os.kill(pid, sig)
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+        if sig == signal.SIGTERM:
+            time.sleep(0.5)
+
+
+def _strip_env(cmd: str) -> str:
+    """去掉打头的 KEY=值（值可以带引号和空格）：交给 shell 跑以后，进程参数里就看不到这些了（复查 C 第 4 条）。"""
+    import shlex
+    try:
+        words = shlex.split(cmd or "")
+    except ValueError:
+        return (cmd or "").strip()
+    while words and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", words[0], re.S):
+        words.pop(0)
+    return " ".join(words)
+
+
+def _stuck_commands(table: dict, tool_pid: int, tool_age: float, limits: tuple, test_command: str,
+                    grace: float) -> list:
+    """哪些命令跑超时了：[(进程号, 跑了几秒)]。只看干活的人拉起的最外面那层命令；
+    插件、帮手进程（连同它们拉起的子进程）一律不算；工具刚启动那几秒拉起的 node 当帮手。"""
+    command_limit, test_limit = limits
+    parent = {pid: row[0] for pid, row in table.items()}
+    mine = {tool_pid}
+    changed = True
+    while changed:
+        changed = False
+        for pid, ppid in parent.items():
+            if ppid in mine and pid not in mine:
+                mine.add(pid)
+                changed = True
+    test = _strip_env(test_command)
+
+    def chain(pid):  # 从它往上到工具为止（不含工具）
+        out = []
+        while pid in table and pid != tool_pid and len(out) < 50:
+            out.append(pid)
+            pid = parent.get(pid)
+        return out
+
+    found = []
+    for pid in sorted(mine - {tool_pid}):
+        ppid, age, line = table[pid]
+        up = chain(pid)
+        if any(any(w in table[p][2].lower() for w in _HELPER_WORDS) for p in up):
+            continue  # 插件、帮手，以及它们拉起的子进程
+        if not _is_command(line):
+            continue
+        if ppid != tool_pid and ppid in table and _is_command(table[ppid][2]):
+            continue  # 只看最外面那一层命令，里面的跟着它算
+        is_test = bool(test) and any(test in _strip_env(table[p][2]) or test in table[p][2] for p in up)
+        if age > (test_limit if is_test else command_limit):
+            found.append((pid, age))
+    return found
+
+
+def _stop_stuck_commands(tool_pid: int, tool_age: float, limits: tuple, test_command: str, grace: float,
+                         note) -> None:
+    """超过时限的命令只掐那一条（连同它的子进程），再在实时输出里记一笔（㊹）。"""
+    table = _process_table()
+    for pid, age in _stuck_commands(table, tool_pid, tool_age, limits, test_command, grace):
+        _kill_tree(table, pid)
+        note(f"\n[看门人] 这条命令跑了 {age // 60} 分 {age % 60} 秒还没结束，已停掉这一条（不是停掉你），"
+             f"请换个办法接着干。\n")
+
+
 def watched_runner(cmd, cwd, timeout, quiet_limit=QUIET_LIMIT, poll=POLL_SECONDS, live_path=None,
-                   on_quiet=None, remind_at=REMIND_AT):
+                   on_quiet=None, remind_at=REMIND_AT, test_command="", command_limit=0,
+                   test_limit=TEST_COMMAND_LIMIT, helper_grace=None):
     """边跑边看：总时长超过 timeout 抛 TimeoutExpired；连续 quiet_limit 秒没有动静抛 QuietTimeout。
     “动静”= 副本里有文件变化，或者它的输出还在涨（只看不改的复查员靠这个，68b 里被误杀过，㉓）。
     没动静到 remind_at 里的每个时刻调用一次 on_quiet(秒数)。输出写文件，避免管道写满卡住；
@@ -226,9 +426,13 @@ def watched_runner(cmd, cwd, timeout, quiet_limit=QUIET_LIMIT, poll=POLL_SECONDS
     last_activity = started
     reminded = set()
     with _output_file(live_path) as out:
-        proc = subprocess.Popen(cmd, cwd=cwd, stdout=out, stderr=subprocess.STDOUT,
-                                stdin=subprocess.DEVNULL, text=True, start_new_session=True)
-        _active_tool = proc
+        with _tools_lock:
+            if _stopping["on"]:
+                raise subprocess.TimeoutExpired(cmd, 0)  # 已经停工：不再起新的
+            proc = subprocess.Popen(cmd, cwd=cwd, stdout=out, stderr=subprocess.STDOUT,
+                                    stdin=subprocess.DEVNULL, text=True, start_new_session=True)
+            _active_tool = proc
+            _active_tools.add(proc)
         try:
             while proc.poll() is None:
                 try:
@@ -236,6 +440,10 @@ def watched_runner(cmd, cwd, timeout, quiet_limit=QUIET_LIMIT, poll=POLL_SECONDS
                 except subprocess.TimeoutExpired:
                     pass
                 now = time.time()
+                if command_limit:
+                    _stop_stuck_commands(proc.pid, now - started, (command_limit, test_limit), test_command,
+                                         HELPER_GRACE if helper_grace is None else helper_grace,
+                                         lambda words: os.write(out.fileno(), words.encode("utf-8")))
                 newest = max(last_activity, _newest_mtime(cwd), _output_mtime(out))
                 if newest > last_activity:
                     reminded.clear()  # 又有动静了，下次再安静从头算
@@ -254,6 +462,7 @@ def watched_runner(cmd, cwd, timeout, quiet_limit=QUIET_LIMIT, poll=POLL_SECONDS
                                 pass
         finally:
             _stop(proc)
+            _active_tools.discard(proc)
             if _active_tool is proc:
                 _active_tool = None
         out.seek(0)
@@ -296,7 +505,8 @@ def _read_last(path) -> str:
 
 
 def ask(adapter: str, prompt: str, cwd, expect_file=None, timeout=DEFAULT_TIMEOUT,
-        runner=watched_runner, models=None, live_path=None, on_quiet=None) -> AgentResult:
+        runner=watched_runner, models=None, live_path=None, on_quiet=None, test_command="",
+        watch_commands=False) -> AgentResult:
     """让某家工具执行一次任务。成功条件：退出码 0、有回复文字，且（若指定）期望文件真的存在。
     models 缺省时用包默认值；派发程序应传入 load_models(项目目录) 的结果。
     默认带看门人：长时间没动静会被停掉，并且不重试（卡住的再跑一遍多半还是卡住）。
@@ -305,11 +515,16 @@ def ask(adapter: str, prompt: str, cwd, expect_file=None, timeout=DEFAULT_TIMEOU
     extra = {"live_path": live_path} if live_path else {}  # 旧的 runner 不认这个参数，不给就不传
     if on_quiet:
         extra["on_quiet"] = on_quiet
+    if watch_commands:  # 派活时才看它自己跑的命令（㊹）；体检、能力运行不受影响
+        extra["command_limit"] = COMMAND_LIMIT
+        extra["test_command"] = test_command or ""
     output = ""
     with tempfile.TemporaryDirectory(prefix="collab-last-") as tmp:
         last_path = Path(tmp) / "最后回复.txt"
         cmd = _build(adapter, prompt, models or DEFAULT_MODELS, last_path=last_path)  # 未知适配器直接报错
         for attempt in range(1, MAX_ATTEMPTS + 1):
+            if _stopping["on"]:
+                return AgentResult(ok=False, output="已停工", attempts=attempt)
             if last_path.exists():
                 last_path.unlink()
             try:

@@ -174,7 +174,7 @@ def _stop_text(project, card_id: str, event: dict) -> str:
 def _blocked_detail(events: list) -> str:
     for e in reversed(events):
         if e.get("kind") == "转人工":
-            return str(e.get("summary") or "").strip()
+            return str(e.get("say") or e.get("summary") or "").strip()  # say：给人看的完整一句（第二轮 ㉞）
     return ""
 
 
@@ -328,7 +328,15 @@ def card_phase(project: str, card_id: str) -> dict:
         if stop and (stop.get("cause") == "复查不通过" or old_review_stop):
             # 只在复查不通过而停下时（看程序记的标记，不看文字）：用户可以带着剩下的问题进入待确认
             actions = ["resume", "revise", "accept_issues", "discard"]
-            out["issues"] = _stop_text(project, card_id, stop) or detail
+            from collab.flow import plain_issues
+            plain = stop.get("issues") if isinstance(stop.get("issues"), list) else []
+            plain = plain or plain_issues(_stop_text(project, card_id, stop))  # 老卡没存 issues：现算
+            # 确认框里只放大白话，原话去“交接”里看（第二轮 ㊲）；认不出编号就不塞原文
+            hidden = int(stop.get("hidden") or 0) if plain and stop.get("issues") else 0
+            out["issues"] = ("\n".join(f"{i + 1}. {t}" for i, t in enumerate(plain)) if plain
+                             else "复查员没按格式写剩下的问题") + \
+                (f"\n另有 {hidden} 件没写成大白话" if hidden else "") + "\n（复查员原话在右边“交接”里）"
+            out["issues_raw"] = _stop_text(project, card_id, stop) or detail  # 接受时留档用原话（第 3 轮 A 第 2 条）
         out["actions"] = actions
         return out
 

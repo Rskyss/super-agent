@@ -25,7 +25,7 @@ TOOL_NAMES = {"claude": "Claude", "codex": "Codex", "cursor": "Cursor", "agy": "
 TOOL_FACES = {"claude": "Cl", "codex": "Cx", "cursor": "Cu", "agy": "ag"}
 DEFAULT_TOOLS = {"测试员": "codex", "开发员": "cursor", "复查员": "agy"}
 ROLE_KEYS = {"测试员": "test", "开发员": "dev", "复查员": "rev"}
-_VERBS = {"写测试": "正在写测试", "开发": "正在写代码", "复查": "正在复查"}
+_VERBS = {"写测试": "正在写测试", "改测试": "正在改测试", "开发": "正在写代码", "复查": "正在复查"}
 _ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 
 _activity_cache: dict = {}  # 副本目录 -> (算的时间, 最近改动时间)；副本可能很大，10 秒内不重复扫
@@ -144,87 +144,119 @@ def _last_line(path: Path) -> str:
     return lines[-1] if lines else ""
 
 
-_AGY_VERBS = (
-    (("read_file", "view_file"), "正在看"),
-    (("edit_file", "write_file", "write_to_file", "replace_file_content", "multi_replace_file_content", "sed_file"),
-     "正在改"),
-)
-_AGY_PLAIN = {"grep_search": "正在查找", "find_by_name": "正在找文件", "list_dir": "正在找文件"}
+_AGY_READ = ("read_file", "view_file")
+_AGY_EDIT = ("edit_file", "write_file", "write_to_file", "replace_file_content", "multi_replace_file_content", "sed_file")
+_AGY_FIND = ("grep_search", "find_by_name", "list_dir")
+_CURSOR_KEYS = (("readToolCall", "read"), ("editToolCall", "edit"), ("writeToolCall", "edit"),
+                ("deleteToolCall", "edit"), ("grepToolCall", "find"), ("globToolCall", "find"))
 
 
-def _agy_hint(step: dict) -> str:
-    """agy 边干边吐的一步（㉙）：只翻“开始用工具”那一行；用完、回话碎片都不说。"""
-    if step.get("state") != "ACTIVE" or step.get("step_type") != "tool":
-        return ""
-    name = str(step.get("tool_name") or "")
-    params = (step.get("tool_info") or {}).get("parameters") or {}
-    params = params if isinstance(params, dict) else {}
-    for names, verb in _AGY_VERBS:
-        if name in names:  # 参数名各工具不一样（Path、AbsolutePath、TargetFile……），认带 path / file 的那个
-            target = next((str(v) for k, v in params.items()
-                           if isinstance(v, str) and v and ("path" in k.lower() or "file" in k.lower())), "")
-            return f"{verb} {Path(target).name or target}".strip()
-    if name in _AGY_PLAIN:
-        return _AGY_PLAIN[name]
-    if name == "run_command":
-        cmd = str(params.get("CommandLine") or params.get("command") or "").strip()
-        return f"正在跑：{cmd}" if cmd else "正在跑命令"
-    return f"正在用 {name}" if name else ""
+def _command_words(cmd: str, test_command: str = "") -> str:
+    """跑命令翻成大白话（㊷：不显示命令原文）。"""
+    cmd = (cmd or "").strip()
+    if test_command and (cmd == test_command.strip() or test_command.strip() in cmd):
+        return "在跑本卡测试"
+    low = cmd.lower()
+    if "unittest" in low or "pytest" in low:
+        return "在跑测试"
+    if re.search(r"\b(python3?|node)\s+-[ce]\b", low) or "<<" in cmd:
+        return "在跑一段自己写的验证小程序"
+    return "在跑命令"
 
 
-def _stream_hint(ev: dict) -> str:
-    """Cursor、agy 边干边吐的一行，翻成大白话：说的话，或正在读/改哪个文件、跑什么命令。"""
+def _stream_action(ev: dict):
+    """一行边干边吐的记录 → (动作, 目标, 说的话)。动作：read / edit / find / run；只认“开始做”的那一行。"""
     if not isinstance(ev, dict):
-        return ""
+        return None
     if ev.get("event") == "step_update" and isinstance(ev.get("step_update"), dict):
-        return _agy_hint(ev["step_update"])
+        step = ev["step_update"]
+        if step.get("state") != "ACTIVE" or step.get("step_type") != "tool":
+            return None
+        name = str(step.get("tool_name") or "")
+        params = (step.get("tool_info") or {}).get("parameters") or {}
+        params = params if isinstance(params, dict) else {}
+        target = next((str(v) for k, v in params.items()
+                       if isinstance(v, str) and v and ("path" in k.lower() or "file" in k.lower())), "")
+        if name in _AGY_READ:
+            return ("read", target or str(step.get("step_index")), "")
+        if name in _AGY_EDIT:
+            return ("edit", str(step.get("step_index")), "")
+        if name in _AGY_FIND:
+            return ("find", "", "")
+        if name == "run_command":
+            return ("run", str(params.get("CommandLine") or params.get("command") or ""), "")
+        return ("other", "", "")
     if ev.get("type") == "assistant":
         parts = (ev.get("message") or {}).get("content") or []
         text = "".join(c.get("text", "") for c in parts if isinstance(c, dict) and c.get("type") == "text").strip()
-        return text.splitlines()[-1].strip() if text else ""
+        return ("say", "", text.splitlines()[-1].strip()) if text else None
     if ev.get("type") == "tool_call" and ev.get("subtype") == "started":
         call = ev.get("tool_call") or {}
-        for key, verb in (("readToolCall", "正在看"), ("editToolCall", "正在改"), ("writeToolCall", "正在写"),
-                          ("deleteToolCall", "正在删"), ("grepToolCall", "正在查找"), ("globToolCall", "正在找文件")):
+        for key, act in _CURSOR_KEYS:
             if key in call:
                 args = (call[key] or {}).get("args") or {}
                 target = str(args.get("path") or args.get("pattern") or args.get("globPattern") or "")
-                return f"{verb} {Path(target).name or target}".strip()
+                return (act, target if act == "read" else str(ev.get("call_id") or ""), "")
         if "shellToolCall" in call:
-            cmd = str(((call["shellToolCall"] or {}).get("args") or {}).get("command") or "").strip()
-            return f"正在跑：{cmd}" if cmd else "正在跑命令"
-    return ""
+            return ("run", str(((call["shellToolCall"] or {}).get("args") or {}).get("command") or ""), "")
+    return None
 
 
-def live_hint(path: Path, limit: int = 60, tool: str = "") -> str:
-    """实时输出里干活的人最近说的一句话（Codex 每段话前面单独一行 codex）。没有就空。
-    往回看 1MB：agy 跑完测试那一行会带整段测试输出（几十 KB），只看最后一小截会找不到它此刻在干什么。
-    tool 是正在干活的工具：Codex 只认它自己说的话（它印出来的 agy、Cursor 日志不算，㉙ 复查第 1 轮），
-    Cursor、agy 只认一行一个的 JSON；不知道是谁就两种都试。"""
+def _cut(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[:limit - 1] + "…"
+
+
+def _stream_summary(lines: list, test_command: str = "") -> str:
+    """Cursor、agy 一行一个 JSON：最近在干什么 + 读了几个文件、改了几处（㊷：大白话，不放文件名和命令）。"""
+    read, edits, last = set(), set(), None
+    for ln in lines:
+        if not (ln.startswith("{") and ln.endswith("}")):
+            continue
+        try:
+            act = _stream_action(json.loads(ln))
+        except ValueError:
+            continue
+        if not act:
+            continue
+        if act[0] == "read":
+            read.add(act[1])
+        elif act[0] == "edit":
+            edits.add(act[1] or f"#{len(edits)}")  # 没有编号的每条算一处（复查 A 第 9 条）
+        last = act
+    if last is None:
+        return ""
+    if last[0] == "say":
+        return last[2]
+    head = {"read": "在读代码", "edit": "在改代码", "find": "在查找代码", "other": "在干活"}.get(last[0]) \
+        or _command_words(last[1], test_command)
+    counts = [f"已读 {len(read)} 个文件"] if read else []
+    if edits:
+        counts.append(f"改了 {len(edits)} 处")
+    return f"{head}（{'、'.join(counts)}）" if counts else head
+
+
+def live_hint(path: Path, limit: int = 60, tool: str = "", test_command: str = "") -> str:
+    """实时输出里干活的人此刻在干什么，大白话一句（流程修理 ⑪、第二轮 ㊷）。没有就空。
+    Codex 只认它自己说的话（每段话前面单独一行 codex；它印出来的 agy、Cursor 日志不算，㉙ 复查第 1 轮）；
+    Cursor、agy 只认一行一个的 JSON，并数一数读了几个文件、改了几处；不知道是谁就两种都试。"""
     try:
         with Path(path).open("rb") as fh:
             fh.seek(0, os.SEEK_END)
             size = fh.tell()
-            fh.seek(max(0, size - 1024 * 1024))
+            fh.seek(max(0, size - 16 * 1024 * 1024))
             tail = fh.read().decode("utf-8", errors="replace")
     except OSError:
         return ""
     lines = [_ANSI.sub("", ln).strip() for ln in tail.splitlines()]
-    for ln in reversed(lines if tool != "codex" else []):  # Cursor、agy 一行一个 JSON：最近一次说的话或动作
-        if not (ln.startswith("{") and ln.endswith("}")):
-            continue
-        try:
-            ev = json.loads(ln)
-        except ValueError:
-            continue
-        said = _stream_hint(ev)
+    if tool != "codex":
+        said = _stream_summary(lines, test_command)
         if said:
-            return said if len(said) <= limit else said[:limit - 1] + "…"
+            return _cut(said, limit)
     for i in range(len(lines) - 1 if tool in ("", "codex") else -1, -1, -1):
         if lines[i] == "codex":
             for ln in lines[i + 1:]:
                 if ln:
-                    return ln if len(ln) <= limit else ln[:limit - 1] + "…"
+                    return _cut(ln, limit)
             return ""
     return ""
 
@@ -324,6 +356,51 @@ def _stations(tools: dict, reviewer_on: bool, dispatcher=None) -> list:
          "face": _face(tools["复查员"]) if reviewer_on else "—"},
         {"key": "accept", "role": "确认", "who": "你", "face": "你"},
     ]
+
+
+_STATION_ROLE = {"test": "测试员", "dev": "开发员", "rev": "复查员"}
+
+
+def _team_disp_model(project) -> tuple:
+    """团队设置里调度员这一岗的（工具, 模型（强度））。"""
+    try:
+        from collab.config import load_role_models, model_label
+        mine = load_role_models(project).get("dispatcher") or {}
+    except Exception:  # noqa: BLE001 — 配置读不出就不显示模型
+        return "", ""
+    tool = str(mine.get("tool") or "")
+    return tool, model_label(tool, {tool: mine.get("model"), "codex_effort": mine.get("effort")}) if tool else ""
+
+
+def _add_models(stations, events, project=None) -> None:
+    """右上角“工具 · 模型（强度）”（㉗ ㊳）：开跑时记下的各岗模型、写方案时记下的调度员模型；老卡没有就只写工具。"""
+    models, disp_model, disp_tool = {}, "", ""
+    for e in events:
+        if e.get("kind") == "开跑" and isinstance(e.get("models"), dict):
+            models.update({k: v for k, v in e["models"].items() if v})
+        if e.get("kind") == "写方案" and e.get("model"):
+            disp_model, disp_tool = str(e["model"]), str(e.get("dst") or "")
+    for s in stations:
+        if s["key"] == "disp":
+            if s.get("who") == "调度员" and disp_tool:
+                s["who"] = disp_tool  # 窗口没告诉是谁时，用写方案记下的那家
+            # 写方案的是 Codex；调度员换成别家时不能把 Codex 的模型安到它头上（复查 A 第 7 条），用团队设置里它自己的
+            label = disp_model if disp_tool and s.get("who") == disp_tool else ""
+            if not label and project is not None:
+                tool, team_label = _team_disp_model(project)
+                label = team_label if tool and _name(tool) == s.get("who") else ""
+        else:
+            label = models.get(_STATION_ROLE.get(s["key"], ""), "")
+        # 模型单独放一项，“who”照旧是工具名：点步骤看交接按工具名找（复查 A 第 2 条）
+        s["model"] = label if label and s.get("who") not in ("", "不复查") else ""
+
+
+def _card_test_command(cdir: Path) -> str:
+    try:
+        raw = json.loads((cdir / "开工.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    return str(raw.get("test_command") or "") if isinstance(raw, dict) else ""
 
 
 def _set(stations, key, state, detail="", **extra):
@@ -435,6 +512,8 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
         if e.get("kind") == "派活" and e.get("dst") in tools and e.get("tool"):
             tools[e["dst"]] = e["tool"]
     stations = _stations(tools, reviewer_on, dispatcher)
+    _add_models(stations, events, project)
+    card_test_cmd = _card_test_command(cdir)
     phase = card_phase(str(project), card_id)
     view = dict(base, card={"id": card_id, "title": _title(cdir, card_id), "state": state,
                             "rework": card.rework, "round": rnd, "phase": phase},
@@ -468,6 +547,8 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
     disp_busy_after = bool(chat and (chat["busy"] or chat["asking"]) and state == "待验收")
 
     _set(stations, "you", "done", requirement["summary"] if requirement else view["card"]["title"])
+    plan_writes = [e for e in events if e.get("kind") == "写方案"]
+    plan_ev = plan_writes[-1] if plan_writes else None
 
     disp = {"待对齐": ("active", "在和你对齐需求、写方案"), "待派发": ("active", "方案已批准，准备开工"),
             "需Claude介入": ("fail", escalations[-1]["summary"] if escalations else "需要调度员介入"),
@@ -475,6 +556,11 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
     if chat and (chat["busy"] or chat["asking"]) and state in ("待对齐", "待派发", "待验收"):
         _set(stations, "disp", "wait" if chat["asking"] else "active", chat["step_text"],
              live=bool(chat["busy"]), elapsed=chat["elapsed"], quiet=chat["quiet"])
+    elif phase.get("code") == "planning" and plan_ev is not None:
+        started = _when(plan_ev)
+        _set(stations, "disp", "active", "在读施工单、写方案", live=True,
+             elapsed=int((now - started).total_seconds()) if started else None,
+             quiet=int(_quiet_seconds(project, card_id, cdir, dict(plan_ev, live="后台输出.log"), now) or 0))
     elif phase.get("code") == "plan_ready":
         _set(stations, "disp", "wait", "方案写好了，等你批准")
     else:
@@ -489,7 +575,8 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
             else:
                 started = _when(open_ev)
                 quiet = _quiet_seconds(project, card_id, cdir, open_ev, now)
-                live_line = _last_line(cdir / open_ev["live"]) if open_ev.get("live") else ""
+                live_line = live_hint(cdir / open_ev["live"], limit=150, tool=open_ev.get("tool", ""),
+                                      test_command=card_test_cmd) if open_ev.get("live") else ""
                 _set(stations, key, "active", live_line or open_ev.get("summary", ""), live=True,
                      elapsed=int((now - started).total_seconds()) if started else None,
                      quiet=int(quiet) if quiet is not None else None)
@@ -515,6 +602,18 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
         _set(stations, "check", "done" if passed else "fail", last_verdict.get("summary", ""))
     else:
         _set(stations, "check", "idle", "等代码写完")
+
+    # 新一轮开始（写代码、改测试的又派了活）：上一轮的跑测试、复查结果收进“交接”，不再挂在流程里；
+    # 写代码的交活后、复查还没出新结论时也一样（复查 A 第 3 条、第 2 轮 A 第 2 条、㉞）
+    redo = [e.get("seq", 0) for e in events if e.get("kind") == "派活" and e.get("dst") in ("开发员", "测试员")
+            and e.get("step") != "写测试"]
+    if redo:  # 停下（中断）时也一样，不让上一轮结果冒回来（第 3 轮 A 第 1 条）
+        round_start = redo[-1]
+        for key, ev, words in (("check", last_verdict, "等这一轮代码写完再跑"),
+                               ("rev", replies.get("复查员"), "等这一轮测试过了再复查")):
+            st = next(x for x in stations if x["key"] == key)
+            if ev and ev.get("seq", 0) < round_start and st.get("state") in ("done", "fail"):
+                _set(stations, key, "idle", f"{words}（上一轮结果在“交接”里）")
 
     if disp_busy_after:
         _set(stations, "accept", "idle", "等调度员最终核验完")
@@ -590,7 +689,8 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
         now_text = phase.get("label") or now_text
         tone = tone_map.get(phase.get("tone"), tone)
     working = bool(open_ev) and not interrupted_run and state not in TERMINAL_STATES
-    detail = live_hint(cdir / open_ev["live"], tool=open_ev.get("tool")) if working and open_ev.get("live") else ""
+    detail = live_hint(cdir / open_ev["live"], limit=150, tool=open_ev.get("tool", ""),
+                       test_command=card_test_cmd) if working and open_ev.get("live") else ""
     view["now"] = {"text": now_text, "tone": tone}
     if detail:
         view["now"]["detail"] = detail
@@ -599,6 +699,12 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
     view["quiet"] = int(quiet) if working and quiet is not None else None
     started_now = _when(open_ev) if working else None
     view["worker_elapsed"] = int((now - started_now).total_seconds()) if started_now else None  # 当前这个人干了多久
+    disp_st = next(s for s in stations if s["key"] == "disp")
+    if not working and disp_st.get("state") == "active" and disp_st.get("elapsed") is not None:
+        # 调度员在写方案：标题下那一行也带计时（复查 A 第 6 条）
+        view["live"] = True
+        view["quiet"] = disp_st.get("quiet")
+        view["worker_elapsed"] = disp_st.get("elapsed")
     if code in ("review", "merge_failed"):
         start = {}
         start_path = cdir / "开工.json"

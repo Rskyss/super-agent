@@ -14,7 +14,7 @@ import unittest
 from pathlib import Path
 
 from collab.agents import AgentResult, agy_command, ask, readable, watched_runner
-from desktop.view import _stream_hint, live_hint
+from desktop.view import live_hint
 
 HERE = Path(__file__).resolve().parent
 SAMPLE = (HERE / "agy_stream_sample.jsonl").read_text(encoding="utf-8")
@@ -93,54 +93,46 @@ class FinalReply(unittest.TestCase):
 
 
 class NowLine(unittest.TestCase):
-    def test_real_sample_steps(self):
-        hints = [_stream_hint(json.loads(ln)) for ln in SAMPLE_LINES]
-        said = [h for h in hints if h]
-        self.assertEqual(said, ["正在看 calc.py", "正在看 test_calc.py", "正在改 calc.py",
-                                "正在跑：python3 test_calc.py"])
+    """流程修理第二轮 ㊷ 改了规矩：标题行和右栏只说大白话（在读 / 在改 / 在跑……加读了几个文件、改了几处），
+    不再带文件名和命令原文。"""
+
+    def _hint(self, text, **kw):
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "live.log"
+            p.write_text(text, encoding="utf-8")
+            return live_hint(p, **kw)
+
+    def test_real_sample(self):
+        self.assertEqual(self._hint(SAMPLE), "在跑命令（已读 2 个文件、改了 1 处）")
+        self.assertEqual(self._hint("\n".join(SAMPLE_LINES[:8]) + "\n"), "在读代码（已读 2 个文件）")
 
     def test_tool_kinds(self):
         cases = [
-            (_step("view_file", {"AbsolutePath": "/w/a/b.py"}), "正在看 b.py"),
-            (_step("write_to_file", {"TargetFile": "/w/a/new.py"}), "正在改 new.py"),
-            (_step("replace_file_content", {"TargetFile": "/w/a/c.py"}), "正在改 c.py"),
-            (_step("multi_replace_file_content", {"TargetFile": "/w/a/c.py"}), "正在改 c.py"),
-            (_step("grep_search", {"Query": "def add"}), "正在查找"),
-            (_step("find_by_name", {"Pattern": "*.py"}), "正在找文件"),
-            (_step("list_dir", {"DirectoryPath": "/w/a"}), "正在找文件"),
-            (_step("run_command", {}), "正在跑命令"),
-            (_step("search_web", {"query": "x"}), "正在用 search_web"),
-            (_step("edit_file", {}), "正在改"),
+            (_step("view_file", {"AbsolutePath": "/w/a/b.py"}), "在读代码（已读 1 个文件）"),
+            (_step("write_to_file", {"TargetFile": "/w/a/new.py"}), "在改代码（改了 1 处）"),
+            (_step("grep_search", {"Query": "def add"}), "在查找代码"),
+            (_step("list_dir", {"DirectoryPath": "/w/a"}), "在查找代码"),
+            (_step("run_command", {}), "在跑命令"),
+            (_step("search_web", {"query": "x"}), "在干活"),
         ]
         for ev, want in cases:
-            self.assertEqual(_stream_hint(ev), want, ev["step_update"]["tool_name"])
+            self.assertEqual(self._hint(json.dumps(ev) + "\n"), want, ev["step_update"]["tool_name"])
 
     def test_done_steps_and_text_fragments_say_nothing(self):
         done = _step("read_file", {"Path": "/w/a.py"})
         done["step_update"]["state"] = "DONE"
-        self.assertEqual(_stream_hint(done), "")
         frag = {"event": "step_update", "step_update": {"state": "ACTIVE", "step_type": "agent_response",
                                                         "text_delta": "已在 [calc"}}
-        self.assertEqual(_stream_hint(frag), "")
-
-    def test_live_hint_from_agy_stream(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            p = Path(tmp) / "live.log"
-            p.write_text(SAMPLE, encoding="utf-8")
-            self.assertEqual(live_hint(p), "正在跑：python3 test_calc.py")
-            p.write_text("\n".join(SAMPLE_LINES[:8]) + "\n", encoding="utf-8")
-            self.assertEqual(live_hint(p), "正在看 test_calc.py")
+        self.assertEqual(self._hint(json.dumps(done) + "\n" + json.dumps(frag) + "\n"), "")
 
     def test_live_hint_survives_one_huge_tool_output(self):
         """跑测试的输出可能很长（一行几十 KB），标题行仍要能显示它此刻在干什么"""
         big = _step("run_command", {"CommandLine": "python3 -m unittest"})
         big["step_update"]["state"] = "DONE"
         big["step_update"]["tool_info"]["output"] = "x" * 40000
-        with tempfile.TemporaryDirectory() as tmp:
-            p = Path(tmp) / "live.log"
-            p.write_text("\n".join(SAMPLE_LINES[:8]) + "\n" + json.dumps(_step("run_command", {
-                "CommandLine": "python3 -m unittest"})) + "\n" + json.dumps(big) + "\n", encoding="utf-8")
-            self.assertEqual(live_hint(p), "正在跑：python3 -m unittest")
+        text = "\n".join(SAMPLE_LINES[:8]) + "\n" + json.dumps(_step("run_command", {
+            "CommandLine": "python3 -m unittest"})) + "\n" + json.dumps(big) + "\n"
+        self.assertEqual(self._hint(text), "在跑测试（已读 2 个文件）")
 
 
 class ReviewRound1(unittest.TestCase):
@@ -223,11 +215,11 @@ class ReviewRound1(unittest.TestCase):
             p.write_text(log + "exec\ncat more.log\n" + SAMPLE_LINES[7] + "\n", encoding="utf-8")
             self.assertEqual(live_hint(p, tool="codex"), "正在检查 agents.py")
             p.write_text(SAMPLE, encoding="utf-8")
-            self.assertEqual(live_hint(p, tool="agy"), "正在跑：python3 test_calc.py")
+            self.assertEqual(live_hint(p, tool="agy"), "在跑命令（已读 2 个文件、改了 1 处）")
 
     def test_card_now_line_passes_the_tool(self):
         src = (HERE.parent / "desktop" / "view.py").read_text(encoding="utf-8")
-        self.assertIn('live_hint(cdir / open_ev["live"], tool=open_ev.get("tool"))', src)
+        self.assertIn('live_hint(cdir / open_ev["live"], limit=150, tool=open_ev.get("tool", "")', src)
 
 
 REPLAY = r"""

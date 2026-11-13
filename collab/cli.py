@@ -21,7 +21,7 @@ from collab.agents import ask as default_ask
 from collab.agents import kill_current_tool_process_group
 from collab.archive import archive_card
 from collab.install import InstallError, find_old_package, install_into, migrate
-from collab.config import ConfigError, load_models, run_models, run_tools
+from collab.config import ConfigError, load_models, model_label, run_models, run_tools
 from collab.dispatch import run_card
 from collab.merge import merge_card
 from collab.planner import plan_card
@@ -146,6 +146,18 @@ def cmd_status(args, **_):
     return 0
 
 
+def _handover_worker(project):
+    """备交接资料的调度员（第二轮 ㉚）：用调度员这一岗的 Codex 模型和强度，只读；没装 Codex 就不备。"""
+    import shutil as _shutil
+    if os.environ.get("SUPERAGENT_NO_HANDOVER") == "1" or not _shutil.which("codex"):
+        return None  # 测试用假工具时关掉（假 Codex 分不出这是备资料的活）
+    try:
+        from collab.planner import plan_models
+        return ("codex", plan_models(project))
+    except Exception:  # noqa: BLE001 — 配置读不出就不备，不挡施工
+        return None
+
+
 def cmd_run(args, ask_fn=None, judge_fn=None, **_):
     # 开工必须用户亲手允许：调度员在 Codex 的受保护环境里直接开工时（没申请权限），一律拒绝，
     # 逼它申请提升权限，用户就会在聊天里看到“允许吗？”。用户点了允许后命令在受保护环境外运行，这个标记就不在了。
@@ -230,9 +242,13 @@ def cmd_run(args, ask_fn=None, judge_fn=None, **_):
         except (OSError, ValueError):
             pass
 
+    role_models = run_models(args.project, {"test": tools["test"], "dev": tools["dev"], "review": reviewer})
     flow_record(_collab(args.project) / "cards" / args.card_id, "开跑", src="调度员", dst="程序",
                 summary=run_summary,
                 tools={"测试员": tools["test"], "开发员": tools["dev"], "复查员": reviewer},
+                models={name: model_label(tool, role_models.get(name, {}))
+                        for name, tool in (("测试员", tools["test"]), ("开发员", tools["dev"]), ("复查员", reviewer))
+                        if tool},
                 pid=main_pid, started=started_at,
                 text=f"判定命令：{args.test_command}\n页面检查：{args.page_check or '无'}\n改好的版本在：{worktree}")
     card, verdict = run_card(
@@ -241,11 +257,12 @@ def cmd_run(args, ask_fn=None, judge_fn=None, **_):
         dev_adapter=tools["dev"], test_adapter=tools["test"],
         ask_fn=ask_fn or default_ask, judge_fn=judge_fn or default_judge,
         models=load_models(args.project),
-        role_models=run_models(args.project, {"test": tools["test"], "dev": tools["dev"], "review": reviewer}),
+        role_models=role_models,
         allowed=allowed,
         page_command=(["/bin/bash", "-o", "pipefail", "-c", args.page_check]
                       if args.page_check else None),
         reviewer_adapter=reviewer, require_tests=True,
+        handover=_handover_worker(args.project) if ask_fn is None else None,  # 测试替身不备资料
     )
     if session:
         record_card_usage(_collab(args.project), args.card_id, usage_since(session, offset))

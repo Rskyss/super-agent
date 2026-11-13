@@ -76,10 +76,10 @@ class CursorLive(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             p = Path(tmp) / "live.log"
             p.write_text(CURSOR_STREAM, encoding="utf-8")
-            self.assertEqual(live_hint(p), "正在看 calc.py")
+            self.assertEqual(live_hint(p), "在读代码（已读 1 个文件）")  # 第二轮 ㊷：不放文件名、命令
             p.write_text(CURSOR_STREAM + '{"type":"tool_call","subtype":"started","tool_call":{"shellToolCall":'
                          '{"args":{"command":"python3 -m unittest discover -s tests -q"}}}}\n', encoding="utf-8")
-            self.assertEqual(live_hint(p), "正在跑：python3 -m unittest discover -s tests -q")
+            self.assertEqual(live_hint(p), "在跑测试（已读 1 个文件）")
             p.write_text(CURSOR_STREAM + '{"type":"assistant","message":{"content":[{"type":"text","text":"测试全过了。"}]}}\n',
                          encoding="utf-8")
             self.assertEqual(live_hint(p), "测试全过了。")
