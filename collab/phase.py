@@ -331,6 +331,11 @@ def card_phase(project: str, card_id: str) -> dict:
     if state == "需Claude介入":
         detail = _blocked_detail(events)
         actions = ["resume", "revise", "discard"]
+        drafts = [e for e in _after_last(events, "转人工") if e.get("kind") == "起草"]
+        if drafts and drafts[-1].get("phase") == "开始":
+            detail = (detail.rstrip("。") + "。" if detail else "") + "正在替你起草“继续改”的话，约 3–5 分钟"
+        elif drafts and drafts[-1].get("phase") == "好了":
+            detail = (detail.rstrip("。") + "。" if detail else "") + "“继续改”的话已起草好，点“不满意，继续改”就能看到"
         out = {"code": "blocked", "label": "卡住了", "tone": "bad", "needs_you": True, "detail": detail}
         stop = _last_stop(events)
         old_review_stop = bool(stop) and not stop.get("cause") and str(stop.get("summary") or "").endswith(

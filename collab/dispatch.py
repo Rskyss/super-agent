@@ -453,6 +453,7 @@ _STEP_SUMMARY = {
     "返工修改": "测试没过，带着测试输出退回修改",
     "复查": "只读复查：对照需求检查改动",
     "改测试": "复查说测试本身写错了：只改测试",
+    "起草": "起草“继续改”：把几轮复查合起来找共同原因",
 }
 
 # 只认独立成行的结论：真实 Codex 的输出带着提示词，代码块和引用也不算。
@@ -984,6 +985,46 @@ def _plain_words(item: str) -> str:
     return re.sub(r"【[^】]*】", "", first).strip()
 
 
+def _draft_revise(ask_fn, cdir: Path, adapter: str, models, worktree, needs, changed_fn, round_no) -> None:
+    """复查退回用完停下后（第四轮 56 甲）：调度员用复查员那家工具、最高强度、只读，把这次开工以来的几轮复查
+    合起来找共同原因，写好“继续改”的话，预先填进继续改框；用户看一眼再发。起草不成只记一笔，不影响停下。"""
+    rounds = []
+    for e in _after_revise(read_flow(cdir)):
+        if e.get("kind") == "回复" and e.get("src") == "复查员" and e.get("ok") is True:
+            body = text_of(cdir, e) or ""
+            if review_verdict(body) == "reject":
+                rounds.append(body.strip())
+    try:
+        files = [p for p in changed_fn(worktree) if not is_cache(p)]
+    except Exception:  # noqa: BLE001
+        files = []
+    record(cdir, "起草", src="程序", dst="你", phase="开始",
+           summary="正在替你起草“继续改”的话",
+           say="我正在替你起草“继续改”的话（把这几轮复查合起来找共同原因），约 3–5 分钟，好了告诉你。")
+    body = "\n\n".join(f"### 第 {i + 1} 次复查\n{t}" for i, t in enumerate(rounds))
+    prompt = (f"{_READ_RULES}你是调度员，替用户起草一段“继续改”的交代。写代码的人被复查退回了好几次、每次都冒出新问题，"
+              f"卡片停下了。下面是这次开工以来每一次复查的结论，任务卡在 {needs}，"
+              f"改过的文件：{'、'.join(files) or '（看不出）'}。\n\n{body}\n\n"
+              f"请读相关代码，找出这几轮问题的共同原因，写给写代码的人一段交代：先写清这一块统一的规则（出错、找不到、"
+              f"连不上时各怎么办，能合成一处的合成一处），再列要补的测试（每条一句：什么情况、应该怎样），"
+              f"最后一句“只改这一块，别的不动；改完跑本卡测试，过了就交”。"
+              f"格式：第一段两句大白话，告诉用户为什么每轮都有新问题（不写文件名、代码名）；然后单独一行 ---；"
+              f"下面是给写代码的人的交代正文。只读，不要修改任何文件。")
+    effort = dict(models or {}, codex_effort="xhigh")
+    try:
+        result = _dispatch(ask_fn, cdir, "调度员", adapter, "起草", prompt, worktree, effort, round_no)
+        text = reply_text(result).strip()
+    except Exception:  # noqa: BLE001 — 起草失败不影响停下
+        result, text = None, ""
+    if result is not None and result.ok and text:
+        record(cdir, "起草", src="程序", dst="你", phase="好了", summary="“继续改”的话起草好了",
+               say="“继续改”的话起草好了：点“不满意，继续改”，框里已经填好，看一眼说得通就发；不对可以改了再发。",
+               text=text)
+    else:
+        record(cdir, "起草", src="程序", dst="你", phase="没成", summary="“继续改”的话没起草成",
+               say="“继续改”的话没起草成，只能请你自己写，或者等 Claude 来看。")
+
+
 class _FullSlot:
     """复查的同时跑全量（第四轮 59）：start() 在后台开跑，stop() 叫停，finish() 等它跑完给结论。
     没给 runner（测试替身、关掉了）就什么都不做；不是 Python 项目就记一笔跳过。"""
@@ -1097,7 +1138,8 @@ _VERDICT_SUMMARY = {PASS: "测试全部通过", FAIL: "测试没过", ENV_ERROR:
 def run_card(card: Card, collab_dir, worktree, test_command, dev_adapter, test_adapter,
              ask_fn=default_ask, judge_fn=default_judge, models=None,
              allowed=None, changed_fn=None, page_command=None, reviewer_adapter=None,
-             revert_fn=None, require_tests=False, role_models=None, handover=None, full_runner=None):
+             revert_fn=None, require_tests=False, role_models=None, handover=None, full_runner=None,
+             draft=False):
     """交接资料（第二轮 ㉚）：调度员在后台和写测试的同时备；不管施工怎么结束（交活、卡住、出错、被停），
     都在这里收尾——还没备完就停掉它，不留下后台的工具进程（复查 B 第 5 条、C 第 1 条）。"""
     import threading
@@ -1113,7 +1155,7 @@ def run_card(card: Card, collab_dir, worktree, test_command, dev_adapter, test_a
     try:
         return _run_card(card, collab_dir, worktree, test_command, dev_adapter, test_adapter, ask_fn, judge_fn,
                          models, allowed, changed_fn, page_command, reviewer_adapter, revert_fn, require_tests,
-                         role_models, notes_job, full)
+                         role_models, notes_job, full, draft)
     finally:
         full.stop()
         if notes_job is not None and notes_job.is_alive():
@@ -1124,7 +1166,7 @@ def run_card(card: Card, collab_dir, worktree, test_command, dev_adapter, test_a
 
 def _run_card(card, collab_dir, worktree, test_command, dev_adapter, test_adapter, ask_fn, judge_fn, models,
               allowed, changed_fn, page_command, reviewer_adapter, revert_fn, require_tests, role_models,
-              notes_job, full=None):
+              notes_job, full=None, draft=False):
     """role_models：{测试员|开发员|复查员: 模型设置}，每个岗位用自己的模型和强度（流程修理 ①）；没给的岗位用 models。"""
     by_role = role_models or {}
     collab = Path(collab_dir)
@@ -1435,6 +1477,9 @@ def _run_card(card, collab_dir, worktree, test_command, dev_adapter, test_adapte
                                    f"{_first_issues(review_text)}")
                     card.transition("需Claude介入")
                     _save(collab, card)
+                    if draft and not re.search(r"测试本身写错了|范围外|都是小问题", say):
+                        _draft_revise(ask_fn, cdir, reviewer_adapter, by_role.get("复查员", models), worktree,
+                                      needs, changed_fn, rnd)
                     return card, verdict
                 # 复查不通过自动退回写代码的（用户 11-12 定最多 2 次），只给复查员最后写的结论，不算返工
                 what = (f"复查挑出 {len(issues) + hidden} 件事：{_issues_words(issues)}{more}。" if issues

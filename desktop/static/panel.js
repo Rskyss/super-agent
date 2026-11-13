@@ -28,6 +28,10 @@ var PanelCore = {
     }
     return out;
   },
+  // 继续改框：用户还没写字时，填上调度员起草好的话（第四轮 56 甲）；写了就不动
+  reviseDraft: function (current, draft) {
+    return String(current || "").trim() ? current : String(draft || "");
+  },
   // 点“确认没问题，放进项目”前：复查记进“以后再修”的事列给用户看（第四轮 57）；没有就不问
   acceptConfirm: function (later) {
     if (!later || !later.length) return null;
@@ -147,7 +151,10 @@ if (typeof document !== "undefined") (function () {
       var box = $("reviseBox");
       if (box) box.hidden = false;
       var field = $("reviseText");
-      if (field) field.focus();
+      if (field) {
+        field.value = PanelCore.reviseDraft(field.value, view.draft);
+        field.focus();
+      }
       return;
     }
     if (act === "accept") {

@@ -280,6 +280,7 @@ def cmd_run(args, ask_fn=None, judge_fn=None, **_):
         reviewer_adapter=reviewer, require_tests=True,
         handover=_handover_worker(args.project) if ask_fn is None else None,  # 测试替身不备资料
         full_runner=_full_runner() if ask_fn is None else None,
+        draft=ask_fn is None and os.environ.get("SUPERAGENT_NO_DRAFT") != "1",   # 停下后起草继续改（第四轮 56 甲）
     )
     if session:
         record_card_usage(_collab(args.project), args.card_id, usage_since(session, offset))

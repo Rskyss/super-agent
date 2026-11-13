@@ -43,6 +43,11 @@ _PROFILE_LABELS = ("做什么", "怎么启动", "怎么测试", "禁区", "技�
 _lock = threading.Lock()
 
 
+# 行政在卡片对话里播报的记录（起草：第四轮 56 甲，停下后替你起草“继续改”）
+_NEWS_KINDS = {"方案", "方案失败", "开跑", "判定", "转人工", "结束", "停下", "合并失败", "合并", "提醒", "退回", "接着走",
+               "起草"}
+
+
 class ReviseNotStarted(RuntimeError):
     """要求已经写进卡片，只是没能开工。这时确认框算处理完了。"""
 
@@ -1424,7 +1429,7 @@ class TaskWatcher:
         # 同一个人的“没动静”提醒只留一条：记下上一条提醒是哪条消息、属于哪次派活（第二轮 ㉞）
         remind = played.get("remind") if isinstance(played, dict) and isinstance(played.get("remind"), dict) else {}
         # 提醒：干活的人几分钟没动静（流程修理 ⑲ 第一步）；退回：复查不通过自动退回写代码的（⑧）
-        news = {"方案", "方案失败", "开跑", "判定", "转人工", "结束", "停下", "合并失败", "合并", "提醒", "退回", "接着走"}
+        news = _NEWS_KINDS
         cid = card_conversation_id(card_id)
         newest = last
         work = 0  # 最近一次派活的编号：提醒属于哪一次派活

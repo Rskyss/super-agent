@@ -706,6 +706,11 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
     detail = live_hint(cdir / open_ev["live"], limit=150, tool=open_ev.get("tool", ""),
                        test_command=card_test_cmd) if working and open_ev.get("live") else ""
     view["now"] = {"text": now_text, "tone": tone}
+    # 停下后替你起草的“继续改”（第四轮 56 甲）：最新一条、之后还没用过（没有追加要求）才给
+    drafted = [e for e in events if e.get("kind") == "起草" and e.get("phase") == "好了"]
+    if drafted and state == "需Claude介入" and not any(
+            e.get("kind") == "追加要求" and e.get("seq", 0) > drafted[-1].get("seq", 0) for e in events):
+        view["draft"] = text_of(cdir, drafted[-1])
     if detail:
         view["now"]["detail"] = detail
     # 卡片标题下那一行“此刻在干什么”用（流程修理 ⑪）
