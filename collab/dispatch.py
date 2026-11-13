@@ -682,8 +682,9 @@ _NOTES_LIMIT = 8000  # 交给写代码的复查意见最长多少字
 def _review_rejects(cdir: Path) -> int:
     """这次开工（最后一条追加要求之后）复查不通过了几次，含刚才这次。"""
     count = 0
+    closed = _closed_replies(cdir)   # 收口算通过的那次不算退回（第四轮 57）
     for e in _after_revise(read_flow(cdir)):
-        if e.get("kind") == "回复" and e.get("src") == "复查员" and e.get("ok") is True:
+        if e.get("kind") == "回复" and e.get("src") == "复查员" and e.get("ok") is True and e.get("seq") not in closed:
             body = text_of(cdir, e) or str(e.get("summary") or "")
             if review_verdict(body) == "reject":
                 count += 1
@@ -917,6 +918,72 @@ def _broken_by_change(worktree, olds: list, judge_fn) -> list:
         subprocess.run(["git", "worktree", "prune"], cwd=str(worktree), capture_output=True)
 
 
+_NOW_TAG = "【这次改的】"
+_OLD_TAG = "【原来就有的】"
+_TRIAGE_NOTE = (f"这是改过以后的复查：每条在级别后面再标{_NOW_TAG}或{_OLD_TAG}。"
+                f"{_NOW_TAG}＝问题出在上次复查之后改动的地方，或者上次复查提的问题没改好；"
+                f"{_OLD_TAG}＝上次复查时就已经在那里、上次没提的。")
+
+
+def _level(item: str) -> str:
+    head = item[:80]
+    for word in ("严重", "轻微", "中等"):
+        if f"【{word}】" in head:
+            return word
+    return "中等"   # 没标级别的按中等算，宁可多修
+
+
+def _triage(items: list) -> tuple:
+    """复查收口（第四轮 57）：退回的 = 测试的问题 + 严重 + 没标“原来就有的”的中等；其余记进“以后再修”。"""
+    back, later = [], []
+    for item in items:
+        level = _level(item)
+        if TEST_PROBLEM in item or level == "严重" or (level == "中等" and _OLD_TAG not in item[:80]):
+            back.append(item)
+        else:
+            later.append(item)
+    return back, later
+
+
+def _prior_reviews(cdir: Path) -> int:
+    """这张卡之前有过几次复查结论（不管通过不通过）。"""
+    return sum(1 for e in read_flow(cdir) if e.get("kind") == "回复" and e.get("src") == "复查员" and e.get("ok") is True)
+
+
+def _closed_replies(cdir: Path) -> set:
+    return {e.get("reply") for e in read_flow(cdir) if e.get("kind") == "以后再修" and e.get("closed")}
+
+
+def _files_in(items: list) -> set:
+    return {m.rsplit("/", 1)[-1] for t in items for m in re.findall(r"([\w./-]+\.[A-Za-z]{1,5}):\d+", t)}
+
+
+def _same_place_new(cdir: Path, now_items: list) -> list:
+    """上一次退回和这一次在同一个文件里、但这次全是新问题：返回那些文件名（第四轮 57）。"""
+    import difflib
+    closed = _closed_replies(cdir)
+    replies = [e for e in _after_revise(read_flow(cdir)) if e.get("kind") == "回复" and e.get("src") == "复查员"
+               and e.get("ok") is True and e.get("seq") not in closed]
+    bodies = [text_of(cdir, e) or "" for e in replies]
+    bodies = [b for b in bodies if review_verdict(b) == "reject"]
+    if len(bodies) < 2:
+        return []
+    before = _numbered_items(bodies[-2], whole=True)
+    shared = _files_in(before) & _files_in(now_items)
+    if not shared:
+        return []
+    plain_now = [_plain_words(t) for t in now_items]
+    plain_before = [_plain_words(t) for t in before]
+    if any(difflib.SequenceMatcher(None, a, b).ratio() >= 0.6 for a in plain_now for b in plain_before):
+        return []
+    return sorted(shared)
+
+
+def _plain_words(item: str) -> str:
+    first = re.split(r"位置[:：]|原因[:：]|\[", item.split("\n")[0])[0]   # 只比现象那句，位置、原因不算
+    return re.sub(r"【[^】]*】", "", first).strip()
+
+
 class _FullSlot:
     """复查的同时跑全量（第四轮 59）：start() 在后台开跑，stop() 叫停，finish() 等它跑完给结论。
     没给 runner（测试替身、关掉了）就什么都不做；不是 Python 项目就记一笔跳过。"""
@@ -1001,7 +1068,7 @@ class _FullSlot:
                        f"{listing}\n\n{now.output[-6000:]}"), ""
 
 
-def _review_return_prompt(notes: str, needs, revise_bit: str, plan_hint: str) -> str:
+def _review_return_prompt(notes: str, needs, revise_bit: str, plan_hint: str, same_files=None) -> str:
     """复查退回（第三批 ㊾）：只交要改的这几条（连同复查员写的原因和位置），说清其他已经验过、不要重新核对；
     不带开工时的整卡交接资料（69 里 agy 因此把整张卡又核了一遍，30 分钟改不完一句提示）。"""
     items = _numbered_items(notes, whole=True)
@@ -1013,6 +1080,11 @@ def _review_return_prompt(notes: str, needs, revise_bit: str, plan_hint: str) ->
         head = "上一次复查不通过，只按下面的复查意见改（不算一次返工）"
     if len(body) > _NOTES_LIMIT:
         body = body[:_NOTES_LIMIT] + "\n……（后面省略）"
+    if same_files:
+        # 连着两轮在同一处冒新问题（第四轮 57）：一条条补只会在旁边再冒一条，先找共同原因
+        head += (f"。注意：这几轮复查的问题都出在同一处（{'、'.join(same_files)}），每轮都是新的——"
+                 f"先找它们的共同原因，把这一块统一改对（比如几处各管各的处理合成一处、出错的规矩说死），"
+                 f"再逐条核对下面这些都已解决")
     return (f"{_READ_RULES}{head}。其他部分已经测过、复查过，不要重新核对，也不要重读整张卡和交接资料；"
             f"改完跑一次本卡测试，过了就交。\n\n{body}\n\n"
             f"任务卡：{needs}（只在要查需求原文时看）。{revise_bit}{_DEV_TEST_NOTE}{plan_hint}{_REPORT_ASK}")
@@ -1294,6 +1366,7 @@ def _run_card(card, collab_dir, worktree, test_command, dev_adapter, test_adapte
 
         if verdict.result == PASS and reviewer_adapter:
             # 独立复查：由另一个 AI 只读检查改动是否符合需求，写“结论：通过/不通过”
+            triage_on = _prior_reviews(cdir) > 0   # 退回过以后的复查要标这次改的/原来就有的（第四轮 57）
             review = _dispatch(ask_fn, cdir, "复查员", reviewer_adapter, "复查",
                                f"{_READ_RULES}只读复查：对照任务卡 {needs} 检查本次改动是否符合需求和验收标准。"
                                f"{plan_hint}{run_hint}"
@@ -1303,6 +1376,7 @@ def _run_card(card, collab_dir, worktree, test_command, dev_adapter, test_adapte
                                f"每条开头标级别【严重】【中等】【轻微】，第一句用大白话写用户能看到的现象（不带文件名、代码名），"
                                f"后面再写原因和位置。"
                                f"问题出在测试本身写错了（测试和任务卡、施工单对不上）的，那一条开头写“{TEST_PROBLEM}”。"
+                               f"{_TRIAGE_NOTE if triage_on else ''}"
                                f"不要修改任何文件。",
                                worktree, by_role.get("复查员", models), card.rework + 1, test_command=test_command)
             review_text = reply_text(review)
@@ -1316,6 +1390,30 @@ def _run_card(card, collab_dir, worktree, test_command, dev_adapter, test_adapte
                 _escalate(collab, cdir, card,
                           problem or f"复查员（{reviewer_adapter}）没有给出结论，不能算通过")
                 return card, verdict
+            same_files = []
+            if verdict_kind == "reject" and triage_on:
+                items_all = _numbered_items(review_text, whole=True)
+                back, later = _triage(items_all)
+                reply_seq = max((e.get("seq", 0) for e in read_flow(cdir) if e.get("kind") == "回复"
+                                 and e.get("src") == "复查员"), default=0)
+                if later:
+                    _append(cdir / "以后再修.md",
+                            f"\n## {datetime.now():%Y-%m-%d %H:%M} 复查挑出、这次不改的\n"
+                            + "\n".join(f"- {t}" for t in later) + "\n")
+                if items_all and not back:
+                    record(cdir, "以后再修", src="程序", dst="你", reply=reply_seq, closed=True,
+                           items=plain_issues("\n".join(f"{i + 1}. {t}" for i, t in enumerate(later))) or None,
+                           summary=f"复查剩下的 {len(later)} 件都是原来就有的或轻微的，记进“以后再修”，不退回",
+                           text="\n\n".join(later))
+                    verdict_kind = "pass"
+                elif later:
+                    record(cdir, "以后再修", src="程序", dst="你", reply=reply_seq,
+                           items=plain_issues("\n".join(f"{i + 1}. {t}" for i, t in enumerate(later))) or None,
+                           summary=f"复查另挑出 {len(later)} 件原来就有的或轻微的，记进“以后再修”，这次只退回 {len(back)} 件",
+                           text="\n\n".join(later))
+                    review_text = "结论：不通过\n" + "\n".join(f"{i + 1}. {t}" for i, t in enumerate(back))
+                if verdict_kind == "reject":
+                    same_files = _same_place_new(cdir, back)
             if verdict_kind == "reject":
                 if full is not None:
                     full.stop()  # 复查不通过要改代码，这一轮全量不用跑完
@@ -1351,7 +1449,8 @@ def _run_card(card, collab_dir, worktree, test_command, dev_adapter, test_adapte
                 if test_items:
                     fixed = _tester_fix(ask_fn, cdir, test_adapter, test_items, needs, worktree,
                                         by_role.get("测试员", models), rnd, test_command, revert_fn)
-                dev_prompt = _review_return_prompt(review_text, needs, revise_bit, _plan_hint(cdir, False) + run_hint) \
+                dev_prompt = _review_return_prompt(review_text, needs, revise_bit, _plan_hint(cdir, False) + run_hint,
+                                                   same_files) \
                     + fixed + _conflict_note(worktree, cdir)
                 last_output = None
                 review_round = rejects

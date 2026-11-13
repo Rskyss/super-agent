@@ -240,6 +240,16 @@ def _plan_phase(project: str, card_id: str, cdir: Path, events: list) -> dict:
     }
 
 
+def _later_items(events: list) -> list:
+    """这次开工（最后一条追加要求之后）复查记进“以后再修”的事，大白话（第四轮 57）。"""
+    start = max((i for i, e in enumerate(events) if e.get("kind") == "追加要求"), default=-1)
+    out = []
+    for e in events[start + 1:]:
+        if e.get("kind") == "以后再修":
+            out += [str(t) for t in (e.get("items") or [])] or [str(e.get("summary") or "")]
+    return out
+
+
 def card_phase(project: str, card_id: str) -> dict:
     cdir = _card_dir(project, card_id)
     state_path = cdir / "状态.json"
@@ -392,9 +402,12 @@ def card_phase(project: str, card_id: str) -> dict:
                 "detail": "放进项目中途断了，可以再试一次", "actions": ["accept", "revise", "discard"],
                 "branch": branch,
             }
+        later = _later_items(events)
         return {
             "code": "review", "label": "等你确认", "tone": "ok", "needs_you": True,
-            "detail": "", "actions": ["accept", "revise", "discard"], "branch": branch,
+            "detail": (f"复查另挑出 {len(later)} 件不急的事，记进了“以后再修”，这次不改（点确认时会列给你看）"
+                       if later else ""),
+            "actions": ["accept", "revise", "discard"], "branch": branch, "later": later,
         }
 
     if state == "已合并":

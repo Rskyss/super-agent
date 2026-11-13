@@ -28,6 +28,13 @@ var PanelCore = {
     }
     return out;
   },
+  // 点“确认没问题，放进项目”前：复查记进“以后再修”的事列给用户看（第四轮 57）；没有就不问
+  acceptConfirm: function (later) {
+    if (!later || !later.length) return null;
+    return "复查另挑出这些不急的事，记进了“以后再修”，这次不改：\n" +
+      later.map(function (t, i) { return (i + 1) + ". " + t; }).join("\n") +
+      "\n\n要现在修就点“取消”，再点“不满意，继续改”。确认放进项目吗？";
+  },
   // 点“接受剩下的问题”前给用户看的话：剩下什么、接受后还要再点什么
   acceptIssuesConfirm: function (detail) {
     return "复查员还剩这些问题：\n" + String(detail || "（没有写明）") +
@@ -142,6 +149,10 @@ if (typeof document !== "undefined") (function () {
       var field = $("reviseText");
       if (field) field.focus();
       return;
+    }
+    if (act === "accept") {
+      var ask = PanelCore.acceptConfirm(view.card.phase && view.card.phase.later);
+      if (ask && !window.confirm(ask)) return;
     }
     if (act === "discard" && !window.confirm("这次的改动不会进入项目，你的项目不会变。改好的版本也会删除。")) return;
     if (act === "accept_issues" && !window.confirm(PanelCore.acceptIssuesConfirm(view.card.phase && (view.card.phase.issues || view.card.phase.detail)))) return;

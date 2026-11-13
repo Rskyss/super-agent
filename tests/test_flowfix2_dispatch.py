@@ -432,7 +432,7 @@ class ReviewRound3B(ReviewRound1B):
 
     def test_confirm_box_counts_hidden_and_record_keeps_original(self):
         from collab.phase import card_phase
-        self.run_with(["结论：不通过\n1. 【轻微】少一个标点。\n2. 【严重】validate_id() 没查。"] * 3)
+        self.run_with(["结论：不通过\n1. 【中等】少一个标点（第四轮起退回后的轻微记进以后再修，这里改成中等才留在剩下的里）。\n2. 【严重】validate_id() 没查。"] * 3)
         phase = card_phase(str(self.collab.parent), "CARD-001")
         self.assertIn("另有 1 件没写成大白话", phase["issues"])
         self.assertIn("validate_id", phase["issues_raw"])
