@@ -1,6 +1,8 @@
 """判定程序：执行测试命令，只看退出码。AI 的自述不参与判定。"""
 from __future__ import annotations
 
+import os
+import signal
 import subprocess
 from dataclasses import dataclass
 
@@ -20,17 +22,27 @@ class Verdict:
 
 
 def judge(command, cwd, timeout) -> Verdict:
+    """超时时连同它拉起的测试子进程一起停掉（流程修理第三批复查：只停外壳会留下还在跑的测试）。"""
     try:
-        proc = subprocess.run(
-            command, cwd=cwd, capture_output=True, text=True,
-            timeout=timeout, stdin=subprocess.DEVNULL,
-        )
+        proc = subprocess.Popen(command, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                stdin=subprocess.DEVNULL, start_new_session=True)
     except FileNotFoundError as exc:
         return Verdict(ENV_ERROR, None, f"找不到命令：{exc}")
-    except subprocess.TimeoutExpired as exc:
-        out = (exc.stdout or "") if isinstance(exc.stdout, str) else ""
-        return Verdict(TIMEOUT, None, out[-_OUTPUT_LIMIT:])
-    output = (proc.stdout or "") + (proc.stderr or "")
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            try:
+                os.killpg(proc.pid, sig)
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+            try:
+                stdout, stderr = proc.communicate(timeout=5)
+                break
+            except subprocess.TimeoutExpired:
+                stdout, stderr = "", ""
+        return Verdict(TIMEOUT, None, (stdout or "")[-_OUTPUT_LIMIT:])
+    output = (stdout or "") + (stderr or "")
     if proc.returncode == 0:
         result = PASS
     elif proc.returncode in (126, 127):

@@ -851,23 +851,28 @@ def _old_tests_command(olds: list) -> list:
     return ["/bin/bash", "-c", "; ".join(parts)]
 
 
-def _fails_on_base(worktree, olds: list, judge_fn) -> bool:
-    """这些老测试在改动之前（施工副本的提交上）是不是就不过：临时检出一份改之前的样子跑一遍（复查第 3 条）。
-    看不出来（不是 git、检出失败）就当改之前是过的，照旧算这次改坏的。"""
+def _broken_by_change(worktree, olds: list, judge_fn) -> list:
+    """一批老测试没过时，逐个看是谁被这次改坏了（第三批复查第 2 轮：整批比会把新改坏的一起放过）：
+    现在不过、而在改之前（施工副本提交上的样子）不是“没过”的 → 算这次改坏的（改之前超时、环境出错不算本来就不过）。
+    看不出来（不是 git、检出失败）就当改之前是过的。"""
     import tempfile
+    now_bad = [o for o in olds if judge_fn(_old_tests_command([o]), cwd=worktree, timeout=_TEST_TIMEOUT).result != PASS]
+    if not now_bad:
+        return []
     tmp = tempfile.mkdtemp(prefix="collab-base-")
     try:
         add = subprocess.run(["git", "worktree", "add", "-q", "--detach", tmp, "HEAD"], cwd=str(worktree),
                              capture_output=True, text=True)
         if add.returncode != 0:
-            return False
-        base_v = judge_fn(_old_tests_command(olds), cwd=tmp, timeout=_TEST_TIMEOUT)
-        return base_v.result != PASS
+            return now_bad
+        return [o for o in now_bad
+                if judge_fn(_old_tests_command([o]), cwd=tmp, timeout=_TEST_TIMEOUT).result != FAIL]
     except Exception:  # noqa: BLE001
-        return False
+        return now_bad
     finally:
         subprocess.run(["git", "worktree", "remove", "--force", tmp], cwd=str(worktree), capture_output=True)
         shutil.rmtree(tmp, ignore_errors=True)
+        subprocess.run(["git", "worktree", "prune"], cwd=str(worktree), capture_output=True)
 
 
 def _review_return_prompt(notes: str, needs, revise_bit: str, plan_hint: str) -> str:
@@ -1136,8 +1141,12 @@ def _run_card(card, collab_dir, worktree, test_command, dev_adapter, test_adapte
                 names = "、".join(Path(o).stem for o in olds)
                 old_v = judge_fn(_old_tests_command(olds), cwd=worktree, timeout=_TEST_TIMEOUT)
                 none_ran = old_v.result == PASS and "Ran 0 tests" in (old_v.output or "")
-                # 超时、环境出错一律不放过（转人工看）；只有“没过”才去比一比改之前是不是就不过
-                broke = old_v.result != PASS and (old_v.result != FAIL or not _fails_on_base(worktree, olds, judge_fn))
+                # 超时、环境出错一律不放过（转人工看）；“没过”时逐个比改之前，只把这次改坏的算上（第三批复查第 2 轮）
+                culprits = [] if old_v.result == PASS else (olds if old_v.result != FAIL
+                                                             else _broken_by_change(worktree, olds, judge_fn))
+                broke = bool(culprits)
+                if broke:
+                    names = "、".join(Path(o).stem for o in culprits)
                 said = ("都过了" if old_v.result == PASS and not none_ran else
                         "一项都没跑起来（不算过也不算没过，最后全量兜底）" if none_ran else
                         "没过" if broke else "没过，但改之前就不过，不算这次改坏的")

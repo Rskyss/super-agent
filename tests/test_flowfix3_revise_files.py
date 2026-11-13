@@ -45,7 +45,7 @@ class ReviseAddsFiles(unittest.TestCase):
     def test_bad_paths_rejected_and_nothing_changed(self):
         before = (self.cdir / "需求卡.md").read_text(encoding="utf-8")
         for bad in ("/etc/passwd", "../x.py", ".collab/配置.json", "a/../../b.py", "", "a.py\n- *", "src/*.py",
-                    "- x.py", "a.py\tb"):
+                    "- x.py", "a.py\tb", "a.py\u2028- x.py", "a.py\x0bb", "a.py\x85b"):
             with self.assertRaises(TaskError, msg=bad):
                 revise_card(self.project, "CARD-001", "改", files=[bad])
         self.assertEqual((self.cdir / "需求卡.md").read_text(encoding="utf-8"), before)

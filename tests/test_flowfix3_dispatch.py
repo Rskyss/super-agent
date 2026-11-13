@@ -280,3 +280,55 @@ class ReviewRound1Plain(Base):
         self.assertIn("位置：run.py:273", calls["dev"][1])
         self.assertNotIn("指定测试全部通过", calls["dev"][1])
 
+
+
+class ReviewRound2(RelatedOldTests):
+    """第三批 Codex 复查第 2 轮。"""
+
+    def test_new_break_not_hidden_by_old_failure(self):
+        """改之前 A 过、B 本来就不过；这次把 A 改坏 → 仍要退回（只怪 A）"""
+        import subprocess
+        (self.worktree / "tests" / "test_old_other.py").write_text(
+            "import unittest\nfrom pkg import money\n\nclass T(unittest.TestCase):\n"
+            "    def test_bad(self):\n        self.assertEqual(money.add(1, 1), 99)\n", encoding="utf-8")
+        subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qam", "B 本来就不过"],
+                       cwd=self.worktree, check=True, capture_output=True)
+        card, rounds = self._run(dev_breaks=True)
+        verdicts = [e["summary"] for e in self.events("判定")]
+        blamed = [v for v in verdicts if "老测试没过" in v]
+        self.assertTrue(blamed, verdicts)
+        self.assertIn("test_old_money", blamed[0])
+        self.assertNotIn("test_old_other", blamed[0], "本来就不过的不怪这次")
+        self.assertEqual(rounds, 2)
+
+    def test_base_check_leaves_no_checkout(self):
+        import subprocess
+        self._run(dev_breaks=True)
+        listed = subprocess.run(["git", "worktree", "list"], cwd=self.worktree, capture_output=True, text=True).stdout
+        self.assertEqual(len(listed.strip().splitlines()), 1, listed)
+
+
+class JudgeTimeout(unittest.TestCase):
+    def test_timeout_stops_child_processes(self):
+        import os
+        import time
+        from collab.judge import TIMEOUT, judge
+        with tempfile.TemporaryDirectory() as tmp:
+            pidfile = Path(tmp) / "child.pid"
+            script = f"python3 -c 'import os,time; open(\"{pidfile}\",\"w\").write(str(os.getpid())); time.sleep(60)'"
+            v = judge(["/bin/bash", "-c", script], cwd=tmp, timeout=2)
+            self.assertEqual(v.result, TIMEOUT)
+            time.sleep(0.5)
+            pid = int(pidfile.read_text())
+            with self.assertRaises(ProcessLookupError, msg="超时后测试子进程要一起停掉"):
+                os.kill(pid, 0)
+
+
+class ContinuationRules(unittest.TestCase):
+    def test_labels_and_summaries(self):
+        from collab.flow import _numbered_items as n
+        self.assertEqual(n("结论：不通过\n1. 提示丢了。\n\n原因：顶格。\n位置：run.py:273\n\n指定测试全部通过。", whole=True),
+                         ["提示丢了。\n原因：顶格。\n位置：run.py:273"])
+        self.assertEqual(n("结论：不通过\n1. 提示丢了。\n指定测试 466 项全部通过。", whole=True), ["提示丢了。"])
+        self.assertEqual(n("结论：不通过\n1. 提示丢了。\n   原因：x\n\n**复查总结**\n看完了。", whole=True),
+                         ["提示丢了。\n   原因：x"])

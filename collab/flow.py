@@ -150,22 +150,28 @@ TEST_PROBLEM = "【测试的问题】"
 def _numbered_items(text: str, whole: bool = False) -> list:
     """复查意见里编号的那几条。whole=True 时连同下面接着写的原因和位置（交给写测试的要用全文，复查 B 第 4 条）。"""
     items, state = [], ""  # state：open（这一条刚开始，还没空行）/ blank（空过一行）/ ""（已结束）
+    label = re.compile(r"^\s*(?:原因|位置|影响|建议|复现|修法|为什么|现象|依据|改法|出处)\s*[：:]")
+    summary = re.compile(r"指定测试|测试命令|共\s*\d+\s*项|全部通过|未修改|未跑全量|核对表|^\s*验证\s*[：:]|"
+                         r"^\s*\*\*[^*]+\*\*\s*$")
     for line in (text or "").splitlines():
         m = _ITEM.match(line)
         if m:
             items.append(m.group(2).strip())
             state = "open"
-        elif not line.strip():
+            continue
+        if not line.strip():
             state = "blank" if state else ""
-        elif items and whole and state and not _VERDICT_LINE.match(line):
-            indented = line[:1] in (" ", "\t", "-", "*", "　")
-            if state == "open" or indented:   # 没空行前的都算这一条；空行后只认缩进的（复查第 4 条）
-                items[-1] += "\n" + line.rstrip()
-                state = "open" if state == "open" else "blank"
-            else:
-                state = ""                    # 空行后顶格写的是复查员的总结
-        elif not (line[:1] in (" ", "\t")):
-            state = "" if state == "blank" else state
+            continue
+        if not (items and whole and state) or _VERDICT_LINE.match(line):
+            continue
+        if summary.search(line) and not label.match(line):
+            state = ""        # 复查员的总结（测了多少项、有没有改文件、粗体小标题）不算这一条（第 2 轮第 3 条）
+            continue
+        indented = line[:1] in (" ", "\t", "　") or line.startswith(("- ", "* ", "• "))
+        if label.match(line) or indented or state == "open":
+            items[-1] += "\n" + line.rstrip()   # 原因、位置这类标签行不管顶格还是隔了空行都算这一条
+        else:
+            state = ""        # 空行后顶格写的别的话：这一条结束
     return items
 
 
