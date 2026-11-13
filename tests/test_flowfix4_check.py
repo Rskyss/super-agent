@@ -93,6 +93,16 @@ class Versions(unittest.TestCase):
         self.assertIn("Codex", words[0])
         self.assertIn("重新检测", words[0])
 
+    def test_concurrent_saves_keep_both(self):
+        import threading
+        ts = [threading.Thread(target=check.remember_versions,
+                               args=(self.project, [{"tool": t, "ok": True, "version": f"{t} {i}"}]))
+              for i in range(20) for t in ("codex", "agy")]
+        [t.start() for t in ts]
+        [t.join() for t in ts]
+        saved = json.loads((self.project / ".collab" / check.VERSIONS_FILE).read_text(encoding="utf-8"))
+        self.assertEqual(set(saved), {"codex", "agy"})
+
     def test_qwen_shares_codex_version(self):
         check.remember_versions(self.project, [{"tool": "qwen", "ok": True, "version": "codex 1.0"}])
         team = {"developer": "qwen"}

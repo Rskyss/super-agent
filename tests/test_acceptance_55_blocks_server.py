@@ -97,7 +97,7 @@ class BlocksCase(ServerCase):
 
     def tool(self, name="mytool", body=None):
         """假的 CLI：按交代在当前文件夹建出算干完活的文件。"""
-        write_script(self.bin / name, body if body is not None else 'echo OK > "连通检测.txt"\n')
+        write_script(self.bin / name, body if body is not None else 'n=$(cat 题目.txt); printf "%s\\n%s\\n" $((n+1)) $(ls | wc -l) > "连通检测.txt"\n')
 
     def drafted(self, block_id="mytool", **over):
         card = {"id": block_id, "kind": "cli", "name": "我的工具", "command": "mytool", "run": ["{prompt}"],
@@ -321,7 +321,7 @@ class CheckTest(BlocksCase):
     def test_client_path_ignored(self):
         evil = Path(self.tmp) / "冒名"
         evil.mkdir()
-        write_script(evil / "mytool", f'touch "{Path(self.tmp) / "冒名跑了"}"; echo OK > "连通检测.txt"\n')
+        write_script(evil / "mytool", f'touch "{Path(self.tmp) / "冒名跑了"}"; n=$(cat 题目.txt); printf "%s\\n%s\\n" $((n+1)) $(ls | wc -l) > "连通检测.txt"\n')
         self.tool()
         blocks.save_card(self.drafted())
         preview = self.bget("/api/blocks/detail", id="mytool")[1]["preview"]

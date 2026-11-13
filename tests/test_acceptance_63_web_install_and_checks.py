@@ -242,10 +242,11 @@ class ToolCheck(Case):
         self.assertIn("超时", result["reason"])
 
     def test_agent_check_unchanged(self):
-        write_exe(self.bin, "codex", 'echo OK > 连通检测.txt\n')
+        write_exe(self.bin, "codex", 'n=$(cat 题目.txt); printf "%s\\n%s\\n" $((n+1)) $(ls | wc -l) > "连通检测.txt"\n')
         card = blocks.builtin_card("codex")
         result = blocks_check.check_cli(card, root=self.root, path=self.path,
-                                        runner=lambda a, f, t: ((Path(f) / "连通检测.txt").write_text("OK"), (0, ""))[1])
+                                        runner=lambda a, f, t: ((Path(f) / "连通检测.txt").write_text(
+                                            f"{int((Path(f) / '题目.txt').read_text()) + 1}\n1\n"), (0, ""))[1])
         self.assertTrue(result["ok"])
 
 

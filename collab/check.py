@@ -101,10 +101,10 @@ def check_tool(tool: str, models: dict, timeout: float = DEFAULT_TIMEOUT) -> dic
     finally:
         shutil.rmtree(folder, ignore_errors=True)
     seconds = round(time.time() - start)
-    version = tool_version(tool)
-    if not result.ok:
+    if not result.ok:   # 没通的不问版本（不记，也省得等一个卡住的工具）
         reason, how = explain(result.output, tool)
-        return {"ok": False, "status": "fail", "reason": reason, "how": how, "seconds": seconds, "version": version}
+        return {"ok": False, "status": "fail", "reason": reason, "how": how, "seconds": seconds}
+    version = tool_version(tool)
     lines = [ln.strip() for ln in answer.splitlines() if ln.strip()]
     if not lines or lines[0] != str(number + 1):
         return {"ok": False, "status": "fail", "reason": "能建文件，但读文件、算数没做对",
@@ -140,7 +140,7 @@ def tool_version(tool: str) -> str:
         return ""
     spare = tempfile.mkdtemp(prefix="超级助手版本-")   # 在空文件夹里问：工具万一把“问版本”当成干活，也不往项目里写东西
     try:
-        done = subprocess.run([cmd, "--version"], capture_output=True, text=True, timeout=10,
+        done = subprocess.run([cmd, "--version"], capture_output=True, text=True, timeout=5,
                               stdin=subprocess.DEVNULL, cwd=spare)
     except (OSError, subprocess.TimeoutExpired):
         return ""
@@ -156,17 +156,26 @@ def _versions_path(project_dir) -> Path:
 
 def remember_versions(project_dir, results) -> None:
     """检测通过的工具记下当时的版本（第四轮 55）；以后版本变了就提醒重新检测。"""
+    import fcntl
     path = _versions_path(project_dir)
     if not path.parent.is_dir():
         return
-    try:
-        saved = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
-    except (OSError, ValueError):
-        saved = {}
-    for item in results:
-        if item.get("ok") and item.get("version") and item.get("tool"):
-            saved[COMMANDS.get(item["tool"], item["tool"])] = item["version"]
-    path.write_text(json.dumps(saved, ensure_ascii=False, indent=1), encoding="utf-8")
+    # 几个岗位分开检测会同时存：读、改、写整段锁住，换文件一步到位（复查：并发时只留下一家）
+    with open(path.with_name(".工具版本.lock"), "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            try:
+                saved = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+            except (OSError, ValueError):
+                saved = {}
+            for item in results:
+                if item.get("ok") and item.get("version") and item.get("tool"):
+                    saved[COMMANDS.get(item["tool"], item["tool"])] = item["version"]
+            spare = path.with_suffix(".tmp")
+            spare.write_text(json.dumps(saved, ensure_ascii=False, indent=1), encoding="utf-8")
+            spare.replace(path)
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
 
 
 def version_changes(project_dir, team=None) -> list:
@@ -190,8 +199,11 @@ def version_changes(project_dir, team=None) -> list:
     names = {"codex": "Codex（千问也用它的壳）", "agent": "Cursor", "agy": "agy"}
     for cmd in commands:
         tool = next(t for t, c in COMMANDS.items() if c == cmd)
-        old, now = saved.get(cmd), tool_version(tool)
-        if old and now and old != now:
+        old = saved.get(cmd)
+        if not old:
+            continue   # 没检测通过过的不问（问版本要起一次工具）
+        now = tool_version(tool)
+        if now and old != now:
             out.append(f"{names.get(cmd, cmd)} 升级了（{old} → {now}），建议去团队设置重新检测一次，"
                        f"确认它和你选的模型还接得上")
     return out

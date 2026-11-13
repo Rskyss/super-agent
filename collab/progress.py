@@ -17,6 +17,7 @@ from datetime import datetime
 from pathlib import Path
 
 from collab.fullrun import copy_tree, run_command, safe_env
+from collab.judge import ENV_ERROR, TIMEOUT
 
 PROGRESS_FILE = "进度.json"
 MIN_GAP = 120        # 两次之间至少隔 2 分钟（用户 11-13 定）
@@ -48,22 +49,25 @@ def tally(output: str):
     return max(0, total - failed - (int(skipped.group(1)) if skipped else 0)), total
 
 
-def latest_change(worktree, ignore=()) -> float:
-    """工作副本里（本卡测试文件以外）最新改动的时间。"""
-    root = Path(worktree)
-    newest = 0.0
-    skip = {str(root / p) for p in ignore}
-    for path in root.rglob("*"):
-        parts = path.relative_to(root).parts
-        if any(part in _SKIP_DIRS or part.endswith(".app") for part in parts) or not path.is_file():
-            continue
-        if str(path) in skip:
-            continue
-        try:
-            newest = max(newest, path.stat().st_mtime)
-        except OSError:
-            continue
-    return newest
+def snapshot(worktree, ignore=()) -> frozenset:
+    """工作副本里（本卡测试文件以外）每个文件的（路径、修改时间、大小）。新增、改动、删除都会让它变（复查：只删文件时进度不动）。
+    边走边剪掉 .git、依赖、编译产物文件夹，不钻进去（复查：大项目每 5 秒扫一遍很慢）。"""
+    import os
+    root = str(worktree)
+    skip = {str(Path(root) / p) for p in ignore}
+    items = []
+    for here, dirs, files in os.walk(root):
+        dirs[:] = [d for d in dirs if d not in _SKIP_DIRS and not d.endswith(".app")]
+        for name in files:
+            path = os.path.join(here, name)
+            if path in skip:
+                continue
+            try:
+                st = os.stat(path)
+            except OSError:
+                continue
+            items.append((path, st.st_mtime_ns, st.st_size))
+    return frozenset(items)
 
 
 def write(cdir, data: dict) -> None:
@@ -95,6 +99,7 @@ class ProgressJob:
         self.thread = None
         self.started = time.time()
         self.last_run = None     # 上次开始算的时间
+        self.last_seen = None    # 上次算时的文件快照
         self.runs = 0
 
     # ---- 写测试：数 def test_ ----
@@ -111,11 +116,11 @@ class ProgressJob:
                 continue
         return out
 
-    def due(self, now: float, changed: float) -> bool:
-        """第一次马上算；之后要有新改动（本卡测试文件以外）、且离上次至少 gap 秒。"""
+    def due(self, now: float, changed: bool) -> bool:
+        """第一次马上算；之后要离上次至少 gap 秒、且有新改动（本卡测试文件以外）。"""
         if self.last_run is None:
             return True
-        return changed > self.last_run and now - self.last_run >= self.gap
+        return now - self.last_run >= self.gap and changed
 
     def compute(self) -> dict:
         tmp = Path(tempfile.mkdtemp(prefix="collab-progress-"))
@@ -132,14 +137,17 @@ class ProgressJob:
                                 copy, env, RUN_TIMEOUT, self.event)
                 if self.event.is_set():
                     return {}
+                if v.result in (TIMEOUT, ENV_ERROR):   # 超时、跑不起来不能装成正常进度（复查）
+                    return {"seq": self.seq, "step": self.step,
+                            "error": "测试跑超时了" if v.result == TIMEOUT else "测试跑不起来"}
                 got = tally(v.output)
                 if got is None or "unittest.loader._FailedTest" in (v.output or ""):
                     # 导入就报错（代码还没写出来）：总数照测试文件里写了几项算，通过 0
                     got = (0, count_written(copy, [rel]))
                 passed, total = passed + got[0], total + got[1]
             return {"seq": self.seq, "step": self.step, "passed": passed, "total": total}
-        except Exception:  # noqa: BLE001 — 算不出就不显示，不影响干活
-            return {}
+        except Exception:  # noqa: BLE001 — 算不出就说一声，不影响干活
+            return {"seq": self.seq, "step": self.step, "error": "准备副本没成"}
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
@@ -151,9 +159,12 @@ class ProgressJob:
         if not self.py:
             return
         now = time.time()
-        if not self.due(now, latest_change(self.worktree, ignore=self.files)):
+        if self.last_run is not None and now - self.last_run < self.gap:
+            return   # 不到时间连文件都不扫
+        seen = snapshot(self.worktree, ignore=self.files)
+        if not self.due(now, seen != self.last_seen):
             return
-        self.last_run = now
+        self.last_run, self.last_seen = now, seen
         data = self.compute()
         if data and not self.event.is_set():
             self.runs += 1
@@ -172,6 +183,7 @@ class ProgressJob:
         return self
 
     def stop(self):
+        """叫停并等它真的收完：复制有时限、测试会响应叫停（复查：只等 30 秒，线程可能还在）。"""
         self.event.set()
         if self.thread is not None:
-            self.thread.join(30)
+            self.thread.join()

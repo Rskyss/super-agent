@@ -85,8 +85,8 @@ class Explanations(Base):
 class Cleanup(Base):
     def test_locked_subfolder_still_removed(self):
         body = (f'pwd > "{self.ran}"; mkdir locked; chmod 000 locked; '
-                'f=$(for a in "$@"; do last="$a"; done; printf "%s" "$last" | sed -n "s/.*新建一个文件 \\([^，]*\\)，.*/\\1/p"); '
-                'echo OK > "$f"')
+                'f=$(for a in "$@"; do last="$a"; done; printf "%s" "$last" | sed -n "s/.*写进新文件 \\([^ ]*\\) 的第一行.*/\\1/p"); '
+                'n=$(cat 题目.txt); printf "%s\\n%s\\n" $((n+1)) $(ls | wc -l) > "$f"')
         script(self.bin, "codex", body)
         blocks_check.check_cli(blocks.builtin_card("codex"), root=self.root, path=str(self.bin), timeout=5)
         folder = Path(self.ran.read_text().strip())
@@ -165,7 +165,7 @@ class ReviewRoundFour(Base):
     def test_preview_shows_real_check_prompt(self):
         script(self.bin, "demo-cli", "exit 0")
         text = blocks_check.preview(CARD, path=str(self.bin))
-        self.assertIn("新建一个文件", text, "确认时看到的就是实际要交给工具的话")
+        self.assertIn("写进新文件", text, "确认时看到的就是实际要交给工具的话")
         self.assertNotIn("（交代）", text)
         other = dict(CARD, done_when={"file": "别的.txt"})
         self.assertNotEqual(text, blocks_check.preview(other, path=str(self.bin)))
@@ -213,8 +213,8 @@ class ReviewRoundFour(Base):
         outside.mkdir()
         os.chmod(outside, 0o755)
         body = (f'pwd > "{self.ran}"; mkdir ro; ln -s "{outside}" ro/link; chmod 555 ro; '
-                'f=$(for a in "$@"; do last="$a"; done; printf "%s" "$last" | sed -n "s/.*新建一个文件 \\([^，]*\\)，.*/\\1/p"); '
-                'echo OK > "$f"')
+                'f=$(for a in "$@"; do last="$a"; done; printf "%s" "$last" | sed -n "s/.*写进新文件 \\([^ ]*\\) 的第一行.*/\\1/p"); '
+                'n=$(cat 题目.txt); printf "%s\\n%s\\n" $((n+1)) $(ls | wc -l) > "$f"')
         script(self.bin, "codex", body)
         blocks_check.check_cli(blocks.builtin_card("codex"), root=self.root, path=str(self.bin), timeout=5)
         self.assertEqual(stat.S_IMODE(os.stat(outside).st_mode), 0o755, "不能顺着链接改外面文件夹的权限")
@@ -263,7 +263,7 @@ class ReviewRoundFive(Base):
         script(self.bin, "demo-cli", f'echo "$@" > "{self.ran}"; exit 0')
         seen = blocks_check.preview(CARD, path=str(self.bin))
         blocks_check.check_cli(CARD, root=self.root, approved=seen, path=str(self.bin), timeout=5)
-        self.assertIn("新建一个文件", self.ran.read_text(encoding="utf-8"))
+        self.assertIn("写进新文件", self.ran.read_text(encoding="utf-8"))
 
 
 class Api400(unittest.TestCase):

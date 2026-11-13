@@ -18,7 +18,7 @@ class PathTest(BlocksCase):
     def test_tool_only_in_terminal_path(self):
         terminal = Path(self.tmp) / "终端"
         terminal.mkdir()
-        write_script(terminal / "mytool", 'echo OK > "连通检测.txt"\n')
+        write_script(terminal / "mytool", 'n=$(cat 题目.txt); printf "%s\\n%s\\n" $((n+1)) $(ls | wc -l) > "连通检测.txt"\n')
         os.environ["PATH"] = f"{self.bin}:/usr/bin:/bin"
         self.server.terminal_path = lambda: str(terminal)
         cid, pid = self.proposal("propose_connect_cli", {"card": self.drafted()})
@@ -31,7 +31,7 @@ class PathTest(BlocksCase):
     def test_detail_preview_matches_check(self):
         terminal = Path(self.tmp) / "终端"
         terminal.mkdir()
-        write_script(terminal / "mytool", 'echo OK > "连通检测.txt"\n')
+        write_script(terminal / "mytool", 'n=$(cat 题目.txt); printf "%s\\n%s\\n" $((n+1)) $(ls | wc -l) > "连通检测.txt"\n')
         os.environ["PATH"] = f"{self.bin}:/usr/bin:/bin"
         self.server.terminal_path = lambda: str(terminal)
         blocks.save_card(self.drafted())

@@ -36,11 +36,11 @@ class Helpers(unittest.TestCase):
 
     def test_due(self):
         job = ProgressJob("/x", "/y", "开发", 1, [], gap=120)
-        self.assertTrue(job.due(1000, 0), "第一次马上算")
+        self.assertTrue(job.due(1000, False), "第一次马上算")
         job.last_run = 1000
-        self.assertFalse(job.due(1050, 1040), "不到 2 分钟不算")
-        self.assertFalse(job.due(1200, 900), "没有新改动不算")
-        self.assertTrue(job.due(1200, 1100))
+        self.assertFalse(job.due(1050, True), "不到 2 分钟不算")
+        self.assertFalse(job.due(1200, False), "没有新改动不算")
+        self.assertTrue(job.due(1200, True))
 
 
 class RealCompute(unittest.TestCase):
@@ -66,6 +66,28 @@ class RealCompute(unittest.TestCase):
                                           encoding="utf-8")
         job.tick()
         self.assertEqual(read(self.cdir)["passed"], 2)
+
+    def test_delete_only_counts_as_change(self):
+        from collab.progress import snapshot
+        (self.wt / "extra.py").write_text("x = 1\n", encoding="utf-8")
+        before = snapshot(self.wt, ["tests/test_money.py"])
+        (self.wt / "extra.py").unlink()
+        self.assertNotEqual(before, snapshot(self.wt, ["tests/test_money.py"]))
+
+    def test_skips_git_folder(self):
+        from collab.progress import snapshot
+        (self.wt / ".git").mkdir()
+        (self.wt / ".git" / "HEAD").write_text("x", encoding="utf-8")
+        self.assertFalse(any("/.git/" in p for p, _, _ in snapshot(self.wt)))
+
+    def test_timeout_reported_as_error(self):
+        from unittest.mock import patch
+        from collab import progress
+        from collab.judge import TIMEOUT
+        job = ProgressJob(self.cdir, self.wt, "开发", 4, ["tests/test_money.py"], gap=0)
+        with patch.object(progress, "run_command", lambda *a, **k: Verdict(TIMEOUT, None, "Ran 3 tests\n\nOK\n")):
+            job.tick()
+        self.assertIn("超时", read(self.cdir).get("error", ""))
 
     def test_stop_ends_thread(self):
         job = ProgressJob(self.cdir, self.wt, "开发", 1, ["tests/test_money.py"], gap=0, every=0.1).start()

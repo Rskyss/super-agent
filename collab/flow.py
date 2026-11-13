@@ -52,6 +52,17 @@ def record(card_dir, kind: str, src: str = "", dst: str = "", summary: str = "",
     """追加一条记录并返回它。text 给了就把全文另存；live=True 时预留一份实时输出文件。"""
     cdir = Path(card_dir)
     (cdir / TEXT_DIR).mkdir(parents=True, exist_ok=True)
+    # 取序号到写完一整条要锁住（跨进程）：施工进程起草时，本机服务同时记“接受”“结束”，不能撞同一个序号（第四轮复查）
+    import fcntl
+    with open(cdir / ".流转.lock", "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            return _record_locked(cdir, kind, src, dst, summary, text, live, extra)
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+def _record_locked(cdir: Path, kind, src, dst, summary, text, live, extra) -> dict:
     seq = _next_seq(cdir)
     event = {"seq": seq, "time": datetime.now().isoformat(timespec="seconds"), "kind": kind,
              "src": src, "dst": dst, "summary": summarize(summary)}

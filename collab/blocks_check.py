@@ -151,8 +151,34 @@ def preview(card, path=None) -> str:
     return _shown(args)
 
 
+QUESTION_FILE = "题目.txt"
+
+
 def probe_prompt(file_name: str) -> str:
-    return f"在当前文件夹里新建一个文件 {file_name}，内容只写 OK。只做这一件事，不要做别的。"
+    """一件小活（第四轮 55，和团队检测同一件）：读文件、算数、写文件、跑命令都要真做到。"""
+    return (f"当前文件夹里有一个文件 {QUESTION_FILE}，里面是一个数。读出这个数，加 1，写进新文件 {file_name} 的第一行；"
+            f"再在终端运行 ls 命令，把它列出的文件个数（一个数字）写在第二行。只做这件事，不要做别的。")
+
+
+def _seed(folder) -> int:
+    import random
+    number = random.randint(11, 88)
+    (Path(folder) / QUESTION_FILE).write_text(f"{number}\n", encoding="utf-8")
+    return number
+
+
+def _answer_problem(folder, file_name: str, number: int):
+    """检查小活做对没有：对了返回 None，不对返回 (原因, 怎么办)。"""
+    try:
+        text = (Path(folder) / file_name).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None   # 没建出文件的照原来的说法
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    if not lines or lines[0] != str(number + 1):
+        return ("能建文件，但读文件、算数没做对", "这个模型做不了要读资料的活；在名单里换一个模型再检测")
+    if len(lines) < 2 or not lines[1].isdigit():
+        return ("能读写文件，但没跑命令（或跑了没把结果写上）", "这家工具在自动模式下可能不让跑命令；看看它的权限设置")
+    return None
 
 
 def _save(card_id, result, root, record):
@@ -382,10 +408,13 @@ def check_cli(card, root=None, approved=None, runner=None, timeout=DEFAULT_TIMEO
             trial_args = blocks.build_args(card, probe_prompt(done_file), model=model)
             trial_args[0] = found
             started = time.time()
-            output, ok, code = "", False, None
+            output, ok, code, wrong = "", False, None, None
+            number = _seed(folder)
             try:
                 code, output = run(trial_args, folder, timeout)
                 ok = code == 0 and (folder / done_file).is_file()
+                wrong = _answer_problem(folder, done_file, number) if ok else None
+                ok = ok and wrong is None
             except subprocess.TimeoutExpired:
                 output = "超时"
             except QuietTimeout as exc:
@@ -398,8 +427,8 @@ def check_cli(card, root=None, approved=None, runner=None, timeout=DEFAULT_TIMEO
             if ok:
                 result = {"ok": True, "status": "ok", "reason": f"通了 · {seconds:g} 秒", "how": ""}
             else:
-                reason, how = (_explain("", card["command"], card["name"]) if code == 0
-                               else _explain(output, card["command"], card["name"]))
+                reason, how = (wrong or _explain("", card["command"], card["name"])) if code == 0 \
+                    else _explain(output, card["command"], card["name"])
                 status = "quota" if reason == QUOTA_REASON and code != 0 and is_quota(output) else "fail"
                 result = {"ok": False, "status": status, "reason": _mask(reason), "how": _mask(how)}
             result.update(model=model, seconds=seconds, verified=verified)
@@ -427,10 +456,13 @@ def check_cli(card, root=None, approved=None, runner=None, timeout=DEFAULT_TIMEO
         run = runner or functools.partial(watched_runner, poll=0.5, quiet_limit=timeout + 5)
         folder = Path(tempfile.mkdtemp(prefix="积木库检测-"))
         started = time.time()
-        output, ok, code = "", False, None
+        output, ok, code, wrong = "", False, None, None
+        number = _seed(folder)
         try:
             code, output = run(args, folder, timeout)
             ok = code == 0 and (folder / done_file).is_file()
+            wrong = _answer_problem(folder, done_file, number) if ok else None
+            ok = ok and wrong is None
         except subprocess.TimeoutExpired:
             output = "超时"
         except QuietTimeout as exc:
@@ -447,8 +479,8 @@ def check_cli(card, root=None, approved=None, runner=None, timeout=DEFAULT_TIMEO
                 reason = f"通了 · {seconds:g} 秒"
             result = {"ok": True, "status": "ok", "reason": reason, "how": ""}
         else:
-            reason, how = (_explain("", card["command"], card["name"]) if code == 0
-                           else _explain(output, card["command"], card["name"]))
+            reason, how = (wrong or _explain("", card["command"], card["name"])) if code == 0 \
+                else _explain(output, card["command"], card["name"])
             is_connected = False
             wording = ""
             if is_preset and code != 0 and reason == QUOTA_REASON and is_quota(output):

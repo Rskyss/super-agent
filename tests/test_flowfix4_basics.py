@@ -89,3 +89,20 @@ class ReworkCount(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RecordLock(unittest.TestCase):
+    """第四轮复查：起草和本机服务同时记流转，序号不能撞。"""
+
+    def test_parallel_processes_get_unique_seq(self):
+        import subprocess
+        import sys
+        with tempfile.TemporaryDirectory() as d:
+            code = ("import sys; sys.path.insert(0, %r)\nfrom collab.flow import record\n"
+                    "for i in range(40): record(%r, 'x', summary=str(i))\n") % (str(Path(__file__).resolve().parents[1]), d)
+            procs = [subprocess.Popen([sys.executable, "-c", code]) for _ in range(4)]
+            for p in procs:
+                p.wait()
+            seqs = [e["seq"] for e in read_flow(d)]
+            self.assertEqual(len(seqs), 160)
+            self.assertEqual(len(set(seqs)), 160)

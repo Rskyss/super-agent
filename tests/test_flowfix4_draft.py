@@ -153,3 +153,27 @@ class DraftReadOnly(Base):
             return AgentResult(ok=True, output="", attempts=1, final=DRAFT)
         _draft_revise(ask_fn, self.cdir, "codex", {"codex_effort": "ultra"}, self.worktree, "卡", lambda w: [], 1)
         self.assertEqual(got["codex_effort"], "ultra")
+
+
+class EndDrafting(unittest.TestCase):
+    def test_stops_run_and_notes(self):
+        from unittest.mock import patch
+        from desktop import server
+        with tempfile.TemporaryDirectory() as d:
+            cdir = Path(d) / "card"
+            cdir.mkdir()
+            record(cdir, "起草", src="程序", dst="你", phase="开始", summary="正在起草")
+            stopped = []
+            with patch.object(server, "running", lambda p, k: {"card": "CARD-001", "pid": 1}), \
+                    patch.object(server, "stop_construction", lambda p, c: stopped.append(c)):
+                self.assertTrue(server.end_drafting(d, "CARD-001", cdir))
+            self.assertEqual(stopped, ["CARD-001"])
+            self.assertEqual(read_flow(cdir)[-1].get("phase"), "没成")
+
+    def test_other_card_untouched(self):
+        from unittest.mock import patch
+        from desktop import server
+        with tempfile.TemporaryDirectory() as d:
+            with patch.object(server, "running", lambda p, k: {"card": "CARD-002", "pid": 1}), \
+                    patch.object(server, "stop_construction", lambda p, c: self.fail("不该停别的卡")):
+                self.assertFalse(server.end_drafting(d, "CARD-001", Path(d)))

@@ -27,7 +27,7 @@ def script(folder: Path, name: str, body: str):
 
 
 MAKES_FILE = 'pwd > "{marker}"; for a in "$@"; do last="$a"; done\n' \
-             'f=$(printf "%s" "$last" | sed -n "s/.*新建一个文件 \\([^，]*\\)，.*/\\1/p"); echo OK > "$f"; echo done'
+             'f=$(printf "%s" "$last" | sed -n "s/.*写进新文件 \\([^ ]*\\) 的第一行.*/\\1/p"); n=$(cat 题目.txt); printf "%s\\n%s\\n" $((n+1)) $(ls | wc -l) > "$f"; echo done'
 
 
 class CliCase(unittest.TestCase):

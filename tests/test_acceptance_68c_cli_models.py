@@ -67,7 +67,8 @@ for flag in ("--model", "-m"):
 probe = config.get("replies", {}).get(model, config["probe"])
 if probe == "ok":
     if not config["tool"]:
-        Path(config["done_file"]).write_text("OK")
+        done = Path(config["done_file"])
+        done.write_text(f"{int((done.parent / '题目.txt').read_text()) + 1}\\n1\\n")
     print("OK")
     sys.exit(0)
 if probe == "quota":

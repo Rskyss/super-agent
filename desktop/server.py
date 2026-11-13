@@ -97,6 +97,22 @@ _SAVED_ACCOUNT = re.compile(r"tencent|bailian|other:[a-z0-9.-]{1,253}|tavily|cli
 _TERMINAL_TTL = 60       # 终端路径一分钟内只读一次
 
 
+def end_drafting(project: str, card_id: str, cdir: Path) -> bool:
+    """卡停下后施工进程还在替你起草“继续改”（第四轮 56 甲）：你点放弃、接受、继续改、接着跑时先把它停掉，
+    不让它接着占额度、占施工位（第四轮复查）。停了返回 True。"""
+    rec = running(project, "run")
+    if rec is None or str(rec.get("card") or "") != str(card_id):
+        return False
+    try:
+        stop_construction(project, card_id)
+    except StopWrongCard:
+        return False
+    drafts = [e for e in read_flow(cdir) if e.get("kind") == "起草"]
+    if drafts and drafts[-1].get("phase") == "开始":
+        flow_record(cdir, "起草", src="程序", dst="你", phase="没成", summary="起草被你的操作打断了")
+    return True
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "SuperAgentPanel/0.2"
 
@@ -166,6 +182,8 @@ class Handler(BaseHTTPRequestHandler):
             self._card_action_error("找不到这张卡片。")
             return
         card = Card.load(state_path)
+        if card.state == "需Claude介入" and action in ("discard", "accept_issues", "revise", "resume"):
+            end_drafting(project, card_id, cdir)
 
         if action == "accept":
             if running(project, "merge") is not None:

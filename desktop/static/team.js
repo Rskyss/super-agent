@@ -408,7 +408,7 @@ if (typeof document !== "undefined") (function () {
   function apply(r) {
     results[r.role] = r;
     var shared = r.shared_with && team()[r.shared_with] === team()[r.role];
-    setState(r.role, r.ok ? "ok" : "bad", r.reason + (shared ? "（和" + ROLE[r.shared_with] + "同一家，一起测过）" : ""), r.ok ? "" : r.how);
+    setState(r.role, r.ok ? "ok" : "bad", r.reason + (shared ? "（和" + ROLE[r.shared_with] + "同一家，一起测过）" : ""), r.ok && !r.warn ? "" : r.how);   // 通了但带提醒（用量太大）也把说明显示出来（第四轮复查）
   }
 
   function waitingOn(id, roles) { return roles.filter(function (r) { return pending[r] === id; }); }

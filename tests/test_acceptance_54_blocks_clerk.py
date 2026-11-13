@@ -213,7 +213,7 @@ class ConnectCliTest(BlocksCase):
         prop = self.proposals(events)[0]
         self.assertFalse(prop["verified"])
         self.assertIn(str(self.bin / "demo-cli"), prop["preview"], "没核实的要亮出完整命令和完整路径")
-        self.assertIn("新建一个文件", prop["preview"])
+        self.assertIn("写进新文件", prop["preview"])  # 第四轮起检测是一件小活
         answer = clerk_tasks.decide(str(self.home), cid, prop["id"], "confirm")
         self.assertEqual(answer["block"]["source"], "clerk", "行政起草的卡不能自称内置")
         self.assertEqual(answer["approved"], prop["preview"], "确认的就是给用户看的那一串")
