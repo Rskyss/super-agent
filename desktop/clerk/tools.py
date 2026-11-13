@@ -7,7 +7,7 @@ import shutil
 from pathlib import Path
 
 from collab.config import ConfigError, load_team
-from collab.flow import read_flow
+from collab.flow import read_flow, rework_words
 from collab.phase import card_phase
 from collab.state import Card
 
@@ -234,7 +234,7 @@ def _list_cards(project: str) -> str:
             continue
         title = _card_title(state_file.parent, card.card_id)
         label = card_phase(project, card.card_id).get("label") or card.state
-        rows.append(f"{card.card_id}｜{title}｜{card.state}｜{label}｜返工 {card.rework} 次")
+        rows.append(f"{card.card_id}｜{title}｜{card.state}｜{label}｜{rework_words(card.rework, state_file.parent)}")
     return "\n".join(rows) if rows else "还没有任务卡片。"
 
 
@@ -254,7 +254,7 @@ def _read_card(project: str, args: dict) -> str:
     label = card_phase(project, card.card_id).get("label") or card.state
     lines = [
         f"编号：{card.card_id}", f"标题：{title}", f"状态：{card.state}",
-        f"阶段：{label}", f"返工次数：{card.rework}",
+        f"阶段：{label}", f"返工：{rework_words(card.rework, cdir)}",
     ]
     flow = read_flow(cdir)
     recent = flow[-12:]

@@ -11,7 +11,7 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 
-from collab.flow import record
+from collab.flow import record, rework_words
 from collab.ledger import ledger_add
 from collab.state import Card
 
@@ -57,7 +57,7 @@ def _acceptance_text(feature: str, card: Card, cdir: Path) -> str:
         f"# 验收记录：{feature}（{card.card_id}）",
         "",
         f"- 存入时间：{datetime.now():%Y-%m-%d %H:%M}",
-        f"- 最终状态：{card.state}，返工 {card.rework} 次",
+        f"- 最终状态：{card.state}，{rework_words(card.rework, cdir)}",
         f"- 测试：{test_text}（最后一轮）",
         f"- 独立复查：{review or '未复查'}",
         f"- 页面检查：{page or '未做自动页面检查'}",

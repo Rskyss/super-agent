@@ -208,3 +208,13 @@ def _plain_enough(text: str) -> bool:
 def plain_issues(text: str) -> list:
     """复查挑出的事，每条一句大白话：只取第一句，去掉文件链接、加粗、级别标记（流程修理第二轮 ㉞ ㊲）。"""
     return [p for p in (_plain(i) for i in _numbered_items(text)) if p and _plain_enough(p)]
+
+
+def rework_words(rework: int, card_dir) -> str:
+    """返工次数的说法（第四轮 58）：测试没过的返工、复查自动退回、用户继续改分开数。
+    69b 只写“返工 0 次”，其实复查退回了 3 次、继续改 1 次。"""
+    events = read_flow(card_dir)
+    returns = sum(1 for e in events if e.get("kind") == "退回")
+    revises = sum(1 for e in events if e.get("kind") == "追加要求")
+    words = f"测试没过返工 {rework} 次、复查退回 {returns} 次"
+    return words + (f"、继续改 {revises} 次" if revises else "")

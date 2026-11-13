@@ -18,7 +18,8 @@ from datetime import datetime
 from pathlib import Path
 
 from collab.agents import QUIET_LIMIT, agy_error, ask as default_ask, readable
-from collab.flow import TEST_PROBLEM, _numbered_items, plain_issues, read_flow, record, reply_summary, text_of
+from collab.flow import (TEST_PROBLEM, _numbered_items, plain_issues, read_flow, record, reply_summary, rework_words,
+                         text_of)
 from collab.judge import Verdict, ENV_ERROR, FAIL, PASS, TIMEOUT, judge as default_judge
 from collab.scope import is_cache, out_of_scope
 from collab.state import Card
@@ -28,7 +29,7 @@ from collab.workspace import render_board
 _TEST_TIMEOUT = 900  # 测试 15 分钟（D5）
 # 规则书随包一起走：无论包装在哪个项目里，这个路径都存在
 RULES = Path(__file__).resolve().parent / "规则.md"
-_READ_RULES = f"开工前先读规则：{RULES}。"
+_READ_RULES = f"开工前先读规则：{RULES}。汇报、过程说明一律用中文大白话（第四轮 54）。"
 
 
 def _card_dir(collab: Path, card: Card) -> Path:
@@ -811,13 +812,16 @@ def _related_old_tests(worktree, cdir: Path, changed_fn) -> list:
     if not tests_dir.is_dir():
         return []
     try:
-        changed = [p for p in changed_fn(worktree) if p.endswith(".py") and not is_test_path(p) and not is_cache(p)]
+        every = [p for p in changed_fn(worktree) if not is_test_path(p) and not is_cache(p)]
     except Exception:  # noqa: BLE001 — 看不出改了什么就不跑
         return []
-    if not changed:
+    changed = [p for p in every if p.endswith(".py")]
+    others = [p for p in every if not p.endswith(".py")]
+    if not changed and not others:
         return []
     mine = set(_load_test_files(cdir))
-    pats = []
+    pats = [_name_pattern(Path(p).name) for p in others]  # 页面这类文件按文件名认（第四轮 59）
+    helpers = []
     for rel in changed:
         mod = rel[:-3].replace("/", ".")
         if mod.endswith(".__init__"):
@@ -828,18 +832,33 @@ def _related_old_tests(worktree, cdir: Path, changed_fn) -> list:
             pats.append(re.compile(rf"from\s+{re.escape(pkg)}\s+import\s+[^\n]*(?<![\w]){re.escape(stem)}(?![\w])"))
         else:
             pats.append(re.compile(rf"^\s*(?:import|from)\s+{re.escape(stem)}(?![\w])", re.M))
-    found = []
-    for path in sorted(tests_dir.rglob("test_*.py")):
+    texts = {}
+    for path in sorted(tests_dir.rglob("*")):
         rel = path.relative_to(root).as_posix()
-        if rel in mine:
+        if not path.is_file() or is_cache(rel) or rel in mine or path.stat().st_size > 2_000_000:
             continue
         try:
-            text = path.read_text(encoding="utf-8", errors="replace")
+            texts[rel] = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        if any(p.search(text) for p in pats):
-            found.append(rel)
-    return found  # 不截断：挑出来多少跑多少（复查第 6 条）
+    found = [rel for rel, text in texts.items() if _is_test_file(rel) and any(p.search(text) for p in pats)]
+    if others:
+        # 辅助脚本（测试用的 .js、不是 test_ 开头的 .py）提到了改动的页面文件：再找用到这个辅助脚本的测试（68c 那层）
+        helpers = [rel for rel, text in texts.items() if not _is_test_file(rel)
+                   and any(p.search(text) for p in pats[:len(others)])]
+        hp = [_name_pattern(Path(h).name) for h in helpers]
+        found += [rel for rel, text in texts.items() if _is_test_file(rel) and rel not in found
+                  and any(p.search(text) for p in hp)]
+    return sorted(found)  # 不截断：挑出来多少跑多少（复查第 6 条）
+
+
+def _is_test_file(rel: str) -> bool:
+    return Path(rel).name.startswith("test_") and rel.endswith(".py")
+
+
+def _name_pattern(name: str):
+    """整个文件名才算提到：abilities_core.js 不算提到 abilities.js。"""
+    return re.compile(rf"(?<![\w-]){re.escape(name)}(?![\w-])")
 
 
 def _old_tests_command(olds: list) -> list:
@@ -1250,7 +1269,7 @@ def _run_card(card, collab_dir, worktree, test_command, dev_adapter, test_adapte
             card.transition("待验收")
             _save(collab, card)
             record(cdir, "结束", src="程序", dst="你", state="待验收",
-                   summary=f"做完了，等你确认（返工 {card.rework} 次）")
+                   summary=f"做完了，等你确认（{rework_words(card.rework, cdir)}）")
             return card, verdict
 
         if verdict.result in (ENV_ERROR, TIMEOUT):

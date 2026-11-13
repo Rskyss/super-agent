@@ -27,6 +27,7 @@ from collab.merge import merge_card
 from collab.planner import plan_card
 from collab.flow import read_flow as flow_read
 from collab.flow import record as flow_record
+from collab.flow import rework_words
 from collab.judge import judge as default_judge
 from collab.scope import read_allowed
 from collab.ledger import ledger_add
@@ -158,6 +159,13 @@ def _handover_worker(project):
         return None
 
 
+def _finish_run_line(project, card_id, card, cdir) -> None:
+    """台账和终端里的收尾一句：返工次数把复查退回、继续改也算上（第四轮 58）。"""
+    words = rework_words(card.rework, cdir)
+    ledger_add(project, f"{card_id}：运行结束，状态「{card.state}」，{words}")
+    print(f"{card_id} 最终状态：{card.state}（{words}）")
+
+
 def cmd_run(args, ask_fn=None, judge_fn=None, **_):
     # 开工必须用户亲手允许：调度员在 Codex 的受保护环境里直接开工时（没申请权限），一律拒绝，
     # 逼它申请提升权限，用户就会在聊天里看到“允许吗？”。用户点了允许后命令在受保护环境外运行，这个标记就不在了。
@@ -267,8 +275,7 @@ def cmd_run(args, ask_fn=None, judge_fn=None, **_):
     if session:
         record_card_usage(_collab(args.project), args.card_id, usage_since(session, offset))
 
-    ledger_add(args.project, f"{args.card_id}：运行结束，状态「{card.state}」，返工 {card.rework} 次")
-    print(f"{args.card_id} 最终状态：{card.state}（返工 {card.rework} 次）")
+    _finish_run_line(args.project, args.card_id, card, _collab(args.project) / "cards" / args.card_id)
     return 0 if card.state == "待验收" else 2
 
 
