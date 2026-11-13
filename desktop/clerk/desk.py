@@ -201,6 +201,25 @@ class ClerkDesk:
         self._focus = {}
         self._lock = threading.Lock()
         self._write_lock = clerk_tasks.CONV_FILE_LOCK  # 对话文件的追加和改写最后一条不能交错（复查 A 第 1 条），和提议共用
+        clerk_tasks.subscribe_proposal_updates(self._on_proposal_updated)
+
+    def _on_proposal_updated(self, project: str, data: dict) -> None:
+        cid = data.get("conversation")
+        pid = data.get("id")
+        if not cid or not pid:
+            return
+        key = (str(project), cid)
+        with self._lock:
+            conv = self._open.get(key)
+        if conv is None:
+            return
+        with conv.cond:
+            updated = clerk_tasks.event_from_proposal(data)
+            for ev in conv.events:
+                if ev.get("type") == "proposal" and ev.get("id") == pid:
+                    for k, v in updated.items():
+                        ev[k] = v
+            conv.cond.notify_all()
 
     # ---------- 存取 ----------
 
@@ -431,9 +450,18 @@ class ClerkDesk:
         with conv.cond:
             if len(conv.events) <= since and wait > 0:
                 conv.cond.wait(wait)
+            for ev in conv.events[since:]:
+                if ev.get("type") == "proposal":
+                    pid = ev.get("id")
+                    if pid:
+                        pdata = clerk_tasks.load_proposal(project, pid)
+                        if pdata:
+                            updated = clerk_tasks.event_from_proposal(pdata)
+                            for k, v in updated.items():
+                                ev[k] = v
             return {"events": list(conv.events[since:]), "open": True, "busy": conv.busy}
 
-    def send(self, project: str, cid: str, text: str) -> str:
+    def send(self, project: str, cid: str, text: str, block: str | None = None) -> str:
         use_blocks = self._blocks_client is not None and blocks_tools.is_blocks_home(project)
         client = self._blocks_client() if use_blocks else self._client()
         if client is None:
@@ -443,6 +471,16 @@ class ClerkDesk:
         if has_secret:
             text = blocks._SECRET_TEXT.sub("[密钥已隐藏]", text)
         first = not cid
+        if first and block:
+            if not blocks_tools.is_blocks_home(project):
+                raise RuntimeError("基础层里没有这个积木块")
+            if not isinstance(block, str) or not blocks._ID.fullmatch(block):
+                raise RuntimeError("基础层里没有这个积木块")
+            b_card = clerk_tasks._load_block(block, root=project)
+            if b_card is None:
+                raise RuntimeError("基础层里没有这个积木块")
+        else:
+            b_card = None
         if first:
             cid = uuid.uuid4().hex
         conv = self._conversation(project, cid, create=first)
@@ -460,7 +498,11 @@ class ClerkDesk:
             if has_secret:
                 self._record(conv, "notice", KEY_NOTICE)
             if first:
-                self._save_index(project, cid, title=self._short(text))
+                fields = {"title": self._short(text)}
+                if block and blocks_tools.is_blocks_home(project) and b_card:
+                    fields["block"] = block
+                    self._open_manual(conv, "ability")
+                self._save_index(project, cid, **fields)
         except OSError:
             with conv.cond:
                 conv.busy = False
@@ -551,6 +593,14 @@ class ClerkDesk:
             role = blocks_tools.role_text()
             for name in conv.manuals:  # 翻过的手册后面每句都带着
                 role += "\n\n" + blocks_tools.manual_block(name)
+            block_id = self._index_entry(conv.project, conv.id).get("block")
+            if block_id:
+                bcard = clerk_tasks._load_block(block_id, root=conv.project)
+                bname = bcard.get("name", block_id) if bcard else block_id
+                role += f"\n\n这段对话是用户在基础层点积木块「{bname}」（{block_id}）的‘提取能力卡片’开的，说的就是这个积木块。不用先体检，照《做能力》办。"
+            ability_hint = clerk_tasks.latest_ability_hint(conv.project, conv.id)
+            if ability_hint:
+                role += ability_hint
             # 管家看不见屏幕：每一句都告诉它屏幕上现在有没有待处理的提议，省得它以为自己出过（用户真实遇到，2026-11-10）
             open_cards = clerk_tasks.open_proposals(conv.project, conv.id)
             if open_cards:
@@ -755,6 +805,8 @@ class ClerkDesk:
                         result = clerk_tasks.propose_web_install(_ThisTurn(conv, turn), args)
                     elif name == "propose_connect_search":
                         result = clerk_tasks.propose_connect_search(_ThisTurn(conv, turn), args)
+                    elif name == "propose_ability":
+                        result = clerk_tasks.propose_ability(_ThisTurn(conv, turn), args)
                     elif blocks_tools.is_blocks_home(conv.project):
                         result = blocks_tools.run(conv.project, name, args)
                     else:
@@ -907,6 +959,8 @@ class ClerkDesk:
                 text = result.get("reply") or ("已交给开发，做完再告诉你。" if result["state"] == "confirmed" else "好的，先不改。")
             elif kind in clerk_tasks._BLOCK_KINDS:  # 积木库的提议种类只在 tasks.py 定义一次（走查发现这里漏了新种类）
                 text = result["reply"] if result["state"] == "confirmed" else "好的，先不做。"
+            elif kind == "ability":
+                text = "好的，开始试做。" if result["state"] == "confirmed" else "好的，先不做。"
             elif result["state"] == "confirmed":
                 text = f"已生成卡片 {result['card']}，接下来写方案。"
             else:

@@ -166,6 +166,7 @@ def _save_deliverables(ability_id: str, run_id: str, root, output_type: str, res
 
 
 def run(ability_id: str, inputs: dict, root=None, *,
+        card: dict | None = None,
         model: str | None = None,
         kind: str = "run",
         keys: dict | None = None,
@@ -178,7 +179,18 @@ def run(ability_id: str, inputs: dict, root=None, *,
     if kind not in ("run", "trial"):
         raise AbilityError("运行类型只能是 run 或 trial")
 
-    card = abilities.load_ability(ability_id, root)
+    # 调用方传入的草稿单独留着；后面 load_ability 会赋给 card，不能再用 card is not None 判断。
+    draft = card
+    if draft is not None:
+        if kind != "trial":
+            raise AbilityError("草稿卡片只能以 trial 模式运行")
+        abilities.validate_ability(draft)
+        if draft.get("id") != ability_id:
+            raise AbilityError(f"草稿卡片编号 {draft.get('id')} 与指定编号 {ability_id} 不一致")
+        card = draft
+    else:
+        card = abilities.load_ability(ability_id, root)
+
     backups = card.get("backup_models") or []
     if model is not None and model not in backups:
         raise AbilityError(f"模型 {model} 不在备用模型名单里")
@@ -261,10 +273,13 @@ def run(ability_id: str, inputs: dict, root=None, *,
         try:
             block_card = blocks.load_card(block_id, root)
         except BlockError:
+            reason = (f"基础层里没有积木块 {block_id}：先用 list_blocks 看编号。"
+                      if draft is not None
+                      else f"这张能力卡片用的积木块「{block_id}」已经移出基础层")
             return _finish(
                 ok=False,
                 status="block",
-                reason=f"这张能力卡片用的积木块「{block_id}」已经移出基础层",
+                reason=reason,
                 how="去基础层重新接上这个积木块",
                 output=None
             )

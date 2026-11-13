@@ -200,7 +200,10 @@ def _publish_block(conv, data: dict) -> str:
     if voided:  # 同一段对话一次只留一张没处理的卡：行政不知道的话会说“两张都能点”（第 9 项走查发现）
         reply += f"这段对话里上面没处理的{voided}已经失效、点不了了；用户还要它，就再出一次。"
     if data.get("replaces"):  # 行政看不到提议上的字：会替换哪个积木块要在这里告诉它
-        reply += f"这个提议会替换基础层里的「{data['replaces']}」，检测通过放进去后旧的那个积木块就没了。"
+        if data.get("kind") == "ability":
+            reply += f"放进能力层后会替换能力层里原来的能力卡片「{data['replaces']}」。"
+        else:
+            reply += f"这个提议会替换基础层里的「{data['replaces']}」，检测通过放进去后旧的那个积木块就没了。"
     return reply
 
 
@@ -482,6 +485,186 @@ def propose_connect_search(conv, args: dict) -> str:
     return _publish_block(conv, data)
 
 
+ABILITY_EXAMPLE = {
+    "id": "translate-en", "title": "翻译成英文",
+    "description": "把一段中文翻译成英文，适合翻译说明、邮件",
+    "block": "bailian", "model": "qwen3.7-plus",
+    "inputSchema": {"type": "object", "properties": {
+        "text": {"type": "string", "title": "要翻译的中文", "maxLength": 4000,
+                 "examples": ["今天天气很好，我们去公园散步吧。"]}}, "required": ["text"]},
+    "how": {"kind": "llm_api", "system": "你是翻译。只输出译文，不要解释，不要开场白。",
+            "prompt": "把下面这段中文翻译成英文：\n\n{text}"},
+    "output": {"type": "text", "check": {"min_chars": 1, "max_chars": 20000}},
+}
+
+
+def consecutive_trial_failures(project: str, conversation: str) -> int:
+    """计算这段对话里连续试做没成的次数。
+    这段对话里 kind == "ability"、state == "confirmed"、带 trial 的提议，
+    按 decided 从新到旧数，trial.ok 为假就加一，碰到一张 trial.ok 为真就停。
+    确认了还没试完（没有 trial）的不算。
+    """
+    folder = _folder(project)
+    if not folder.is_dir():
+        return 0
+    proposals = []
+    for path in folder.glob("*.json"):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if (isinstance(data, dict)
+                and data.get("conversation") == conversation
+                and data.get("kind") == "ability"
+                and data.get("state") == "confirmed"
+                and isinstance(data.get("trial"), dict)):
+            proposals.append(data)
+    proposals.sort(key=lambda d: d.get("decided") or d.get("time") or 0, reverse=True)
+    count = 0
+    for p in proposals:
+        trial = p.get("trial")
+        if not trial.get("ok"):
+            count += 1
+        else:
+            break
+    return count
+
+
+def latest_ability_hint(project: str, conversation: str) -> str:
+    """这段对话里最近一张 ability 提议的试做提示。"""
+    folder = _folder(project)
+    if not folder.is_dir():
+        return ""
+    abilities_list = []
+    for path in folder.glob("*.json"):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if (isinstance(data, dict)
+                and data.get("conversation") == conversation
+                and data.get("kind") == "ability"):
+            abilities_list.append(data)
+    if not abilities_list:
+        return ""
+    abilities_list.sort(key=lambda d: d.get("time") or 0, reverse=True)
+    latest = abilities_list[0]
+    if latest.get("saved"):
+        return ""
+    trial = latest.get("trial")
+    if not isinstance(trial, dict):
+        return ""
+    title = latest.get("name") or latest.get("ability", {}).get("title") or ""
+    if trial.get("ok"):
+        return f"\n\n上一张能力卡片（草稿）「{title}」试做成了，等用户看结果点‘放进能力层’。没点之前不能说已经放进去了。"
+    else:
+        count = consecutive_trial_failures(project, conversation)
+        reason = blocks_check._mask_cut(str(trial.get("reason") or ""), 300)
+        return f"\n\n上一张能力卡片（草稿）「{title}」试做没成：{reason}（第{count}次）。照原因改了再出草稿；连续 3 次没成就停下。"
+
+
+_proposal_subscribers: list = []
+
+
+def subscribe_proposal_updates(callback) -> None:
+    with _lock:
+        if callback not in _proposal_subscribers:
+            _proposal_subscribers.append(callback)
+
+
+def _notify_proposal_update(project: str, data: dict) -> None:
+    for cb in list(_proposal_subscribers):
+        try:
+            cb(project, data)
+        except Exception:
+            pass
+
+
+def _load_block(block_id: str, root=None) -> dict | None:
+    if not block_id or not blocks._ID.fullmatch(block_id):
+        return None
+    try:
+        return blocks.load_card(block_id, root)
+    except BlockError:
+        return None
+
+
+def propose_ability(conv, args: dict) -> str:
+    """模型调用 propose_ability 出示能力卡片（草稿）。"""
+    from collab import abilities
+    card = args.get("card") if isinstance(args, dict) else None
+    if not isinstance(card, dict):
+        return "没有出草稿：card 要写成一组字段。"
+    if blocks._has_secret(card):
+        return "没有出草稿：卡片里有像密钥的东西。密钥只存在钥匙串里，不能写进卡片。"
+    card = dict(card)
+    card["source"] = "clerk"
+    card["example_run"] = None
+    try:
+        abilities.validate_ability(card)
+    except abilities.AbilityError as exc:
+        example_str = json.dumps(ABILITY_EXAMPLE, ensure_ascii=False)
+        return f"没有出草稿：{exc}。照这个样子改了再出：\n{example_str}"
+    block_id = card.get("block")
+    block_card = _load_block(block_id, root=conv.project)
+    if block_card is None:
+        return f"没有出草稿：基础层里没有积木块 {block_id}：先用 list_blocks 看编号。"
+    last = blocks.last_record(block_id, root=conv.project, type="check")
+    models = (last or {}).get("models")
+    if not isinstance(models, list):
+        models = None
+        complete = True
+    else:
+        complete = len(models) < blocks_check.MODELS_LIMIT
+    try:
+        warns = abilities.fits_block(card, block_card, models=models, models_complete=complete)
+    except abilities.AbilityError as exc:
+        return f"没有出草稿：{exc}。模型只能从 read_block 给的名单里原样照抄。"
+    failures = consecutive_trial_failures(conv.project, conv.id)
+    if failures >= 3:
+        return "没有出草稿：这段对话里已经连续 3 次试做没成。先停下，把卡在哪告诉用户，不要再出草稿。"
+
+    data = {
+        "kind": "ability",
+        "ability": card,
+        "name": card["title"],
+        "block_name": block_card.get("name", block_id),
+        "warns": warns or [],
+    }
+    existing_file = Path(conv.project) / abilities.ABILITY_DIR / f"{card['id']}.json"
+    if existing_file.is_file():
+        try:
+            old = abilities.load_ability(card["id"], root=conv.project)
+            data["replaces"] = old.get("title", card["id"])
+        except Exception:
+            data["replaces"] = card["id"]
+
+    reply = _publish_block(conv, data)
+    return reply + "用户会在草稿上填例子点‘试做’；试做没成你下一轮会看到原因。"
+
+
+def record_trial(project: str, pid: str, result: dict) -> None:
+    with _lock:
+        data = load_proposal(project, pid)
+        if data is None or data.get("kind") != "ability":
+            return
+        fields = ("ok", "status", "reason", "run_id", "seconds", "model")
+        trial = {k: result[k] for k in fields if k in result}
+        data["trial"] = trial
+        _save(project, data)
+        _notify_proposal_update(project, data)
+
+
+def mark_saved(project: str, pid: str) -> None:
+    with _lock:
+        data = load_proposal(project, pid)
+        if data is None or data.get("kind") != "ability":
+            return
+        data["saved"] = True
+        _save(project, data)
+        _notify_proposal_update(project, data)
+
+
 def _block_result(data: dict, repeat: bool) -> dict:
     kind = data["kind"]
     result = {"ok": True, "state": "confirmed", "repeat": repeat, "kind": kind, "card": ""}
@@ -673,6 +856,8 @@ def decide(project: str, conversation: str, pid: str, decision: str) -> dict:
             raise LookupError("没有这个提议")
         if data.get("state") != "open":
             if decision == "confirm" and data.get("state") == "confirmed":
+                if data.get("kind") == "ability":
+                    return {"ok": True, "state": "confirmed", "repeat": True, "kind": "ability", "card": "", "ability": data.get("ability")}
                 if data.get("kind") in ("team", "profile"):
                     return {"ok": True, "card": "", "state": "confirmed", "repeat": True, "kind": data["kind"]}
                 if data.get("kind") in _BLOCK_KINDS:
@@ -733,6 +918,12 @@ def decide(project: str, conversation: str, pid: str, decision: str) -> dict:
             data["decided"] = time.time()
             _save(project, data)
             return _block_result(data, repeat=False)
+        if kind == "ability":
+            data["state"] = "confirmed"
+            data["decided"] = time.time()
+            _save(project, data)
+            _notify_proposal_update(project, data)
+            return {"ok": True, "state": "confirmed", "repeat": False, "kind": "ability", "card": "", "ability": data.get("ability")}
         try:
             card = new_card(project, data["title"], data["do"], data["not_do"], data["done_when"],
                             conversation=conversation)
@@ -764,6 +955,10 @@ def event_from_proposal(data: dict) -> dict:
         base["tool"] = data.get("tool") or ""
         if "before" in data:
             base["before"] = data["before"]
+    elif kind == "ability":
+        for key in ("ability", "name", "block_name", "warns", "replaces", "trial", "saved"):
+            if key in data:
+                base[key] = data[key]
     elif kind in _BLOCK_KINDS:
         for key in ("install", "tool", "label", "command", "source", "needs", "minutes", "block", "name",
                     "verified", "preview", "replaces", "provider", "model", "category", "secrets", "domain",

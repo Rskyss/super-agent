@@ -1082,6 +1082,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def _abilities_post_inner(self, path: str, body: dict) -> None:
         home = self._blocks_home()
+        if path == "/api/abilities/save":
+            self._abilities_save(home, str(body.get("proposal") or ""))
+            return
         abilities.ensure_builtin(home)
         if path == "/api/abilities/run":
             ability_id = body.get("id", "")
@@ -1234,12 +1237,105 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._json({"error": "没有这个地址"}, 404)
 
+    def _abilities_save(self, home: str, pid: str) -> None:
+        if not pid or not clerk_tasks._PID.fullmatch(pid):
+            self._json({"error": "没有这张能力卡片（草稿）"}, 404)
+            return
+        with self.server.blocks_lock:
+            proposal = clerk_tasks.load_proposal(home, pid)
+            if not proposal or proposal.get("kind") != "ability":
+                self._json({"error": "没有这张能力卡片（草稿）"}, 404)
+                return
+            card = proposal.get("ability") or {}
+            ability_id = card.get("id", "")
+            if proposal.get("saved"):
+                self._json({"ok": True, "id": ability_id, "repeat": True})
+                return
+            trial = proposal.get("trial")
+            if proposal.get("state") != "confirmed" or not isinstance(trial, dict) or not trial.get("ok"):
+                self._json({"error": "试做还没成，不能放进能力层"}, 409)
+                return
+            if abilities_run.is_running(ability_id):
+                self._json({"error": "这张能力卡片正在用，等这次跑完"}, 409)
+                return
+            card_file = Path(home) / abilities.ABILITY_DIR / f"{ability_id}.json"
+            if card_file.is_file() and not proposal.get("replaces"):
+                self._json({"error": "能力层里已经有同编号的能力卡片：跟管家说重新起草"}, 409)
+                return
+            to_save = dict(card, source="clerk", example_run=trial.get("run_id"))
+            abilities.save_ability(to_save, home)
+            clerk_tasks.mark_saved(home, pid)
+            self._json({"ok": True, "id": ability_id})
+
     def _blocks_proposal(self, project: str, conversation: str, body: dict) -> None:
         """积木库的提议：确认后真的去安装或检测。整段排队做，两次确认同时到也不会乱。"""
         server, desk = self.server, self.server.desk
         pid, decision = str(body.get("id") or ""), str(body.get("decision") or "")
         with server.blocks_confirm_lock:
             proposal = clerk_tasks.load_proposal(project, pid)
+            pkind = (proposal or {}).get("kind")
+            if pkind == "ability":
+                card = (proposal or {}).get("ability") or {}
+                ability_id = card.get("id", "")
+                inputs = body.get("inputs")
+                if inputs is None or not isinstance(inputs, dict):
+                    inputs = {}
+                if decision == "confirm" and proposal and proposal.get("state") == "open":
+                    try:
+                        abilities.prepare(card, inputs)
+                    except (abilities.AbilityError, BlockError) as exc:
+                        self._json({"error": str(exc)}, 400)
+                        return
+                    if abilities_run.is_running(ability_id):
+                        self._json({"error": "这张能力卡片正在用，等这次跑完"}, 409)
+                        return
+                try:
+                    answer = desk.decide_proposal(project, conversation, pid, decision)
+                except LookupError as exc:
+                    self._json({"error": str(exc)}, 404)
+                    return
+                except (RuntimeError, TaskError) as exc:
+                    self._json({"error": str(exc)}, 409)
+                    return
+                reply = {"ok": True, "card": answer.get("card") or "", "state": answer.get("state")}
+                if answer.get("state") != "confirmed":
+                    self._json(reply)
+                    return
+                if answer.get("repeat"):
+                    reply["job"] = server.blocks_proposal_jobs.get(pid, "")
+                    self._json(reply)
+                    return
+                home = str(blocks.home())
+                def work(job):
+                    self._blocks_path()
+                    try:
+                        res = abilities_run.run(
+                            ability_id, inputs, home,
+                            card=card,
+                            kind="trial",
+                            keys=dict(self.server.blocks_saved_keys),
+                            search_fn=self.server.abilities_search_fn,
+                            client_factory=self.server.blocks_client_factory,
+                            runner=self.server.abilities_runner,
+                            path=os.environ.get("PATH", ""),
+                            codex_images=self.server.abilities_codex_images,
+                        )
+                        clerk_tasks.record_trial(project, pid, res)
+                        return res
+                    except Exception as exc:
+                        clean_reason = blocks_check._mask(str(exc))
+                        for s in abilities_run._collect_secrets(dict(self.server.blocks_saved_keys)):
+                            if s:
+                                clean_reason = clean_reason.replace(s, "[已隐藏]")
+                        fail_res = {"ok": False, "status": "error", "reason": clean_reason}
+                        clerk_tasks.record_trial(project, pid, fail_res)
+                        raise
+                job = self._blocks_job("trial", work)
+                server.blocks_proposal_jobs[pid] = job
+                reply["job"] = job
+                self._json(reply)
+                return
+
             block = (proposal or {}).get("block") or {}
             pkind = (proposal or {}).get("kind")
             api_key = (self._blocks_key(body, str(block.get("key_account") or ""), str(block.get("provider") or ""),
@@ -1549,9 +1645,12 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/clerk/send":  # 积木库的行政有自己的连接，不受项目窗口“属于另一个项目”的限制
                 self._blocks_path()  # 行政查安装、出提议时看到的路径和之后检测用的一样
                 try:
-                    self._json({"ok": True, "conversation": desk.send(project, conversation, str(body.get("text") or ""))})
+                    self._json({"ok": True, "conversation": desk.send(project, conversation, str(body.get("text") or ""), block=body.get("block"))})
                 except RuntimeError as exc:
-                    self._json({"error": str(exc)}, 409)
+                    if str(exc) == "基础层里没有这个积木块":
+                        self._json({"error": str(exc)}, 400)
+                    else:
+                        self._json({"error": str(exc)}, 409)
                 return
             if path == "/api/clerk/proposal":
                 try:
