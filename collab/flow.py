@@ -149,17 +149,23 @@ TEST_PROBLEM = "【测试的问题】"
 
 def _numbered_items(text: str, whole: bool = False) -> list:
     """复查意见里编号的那几条。whole=True 时连同下面接着写的原因和位置（交给写测试的要用全文，复查 B 第 4 条）。"""
-    items, open_item = [], False
+    items, state = [], ""  # state：open（这一条刚开始，还没空行）/ blank（空过一行）/ ""（已结束）
     for line in (text or "").splitlines():
         m = _ITEM.match(line)
         if m:
             items.append(m.group(2).strip())
-            open_item = True
+            state = "open"
         elif not line.strip():
-            open_item = False  # 空行结束这一条
-        elif items and whole and open_item and line[:1] in (" ", "\t", "-", "*", "　") \
-                and not _VERDICT_LINE.match(line):
-            items[-1] += "\n" + line.rstrip()  # 只认缩进或列表符号开头的接续行；顶格的是复查员的总结，不算这一条
+            state = "blank" if state else ""
+        elif items and whole and state and not _VERDICT_LINE.match(line):
+            indented = line[:1] in (" ", "\t", "-", "*", "　")
+            if state == "open" or indented:   # 没空行前的都算这一条；空行后只认缩进的（复查第 4 条）
+                items[-1] += "\n" + line.rstrip()
+                state = "open" if state == "open" else "blank"
+            else:
+                state = ""                    # 空行后顶格写的是复查员的总结
+        elif not (line[:1] in (" ", "\t")):
+            state = "" if state == "blank" else state
     return items
 
 

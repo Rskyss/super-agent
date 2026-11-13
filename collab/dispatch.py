@@ -839,7 +839,35 @@ def _related_old_tests(worktree, cdir: Path, changed_fn) -> list:
             continue
         if any(p.search(text) for p in pats):
             found.append(rel)
-    return found[:40]
+    return found  # 不截断：挑出来多少跑多少（复查第 6 条）
+
+
+def _old_tests_command(olds: list) -> list:
+    """每个老测试按它自己所在的文件夹跑：子文件夹没有 __init__.py 也能跑到（复查第 7 条）。"""
+    parts = []
+    for rel in olds:
+        p = Path(rel)
+        parts.append(f"python3 -m unittest discover -s {shlex.quote(str(p.parent))} -p {shlex.quote(p.name)} || exit 1")
+    return ["/bin/bash", "-c", "; ".join(parts)]
+
+
+def _fails_on_base(worktree, olds: list, judge_fn) -> bool:
+    """这些老测试在改动之前（施工副本的提交上）是不是就不过：临时检出一份改之前的样子跑一遍（复查第 3 条）。
+    看不出来（不是 git、检出失败）就当改之前是过的，照旧算这次改坏的。"""
+    import tempfile
+    tmp = tempfile.mkdtemp(prefix="collab-base-")
+    try:
+        add = subprocess.run(["git", "worktree", "add", "-q", "--detach", tmp, "HEAD"], cwd=str(worktree),
+                             capture_output=True, text=True)
+        if add.returncode != 0:
+            return False
+        base_v = judge_fn(_old_tests_command(olds), cwd=tmp, timeout=_TEST_TIMEOUT)
+        return base_v.result != PASS
+    except Exception:  # noqa: BLE001
+        return False
+    finally:
+        subprocess.run(["git", "worktree", "remove", "--force", tmp], cwd=str(worktree), capture_output=True)
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def _review_return_prompt(notes: str, needs, revise_bit: str, plan_hint: str) -> str:
@@ -1033,7 +1061,8 @@ def _run_card(card, collab_dir, worktree, test_command, dev_adapter, test_adapte
             if not dev.ok:
                 # 被停下（超时、没动静）时先跑一次本卡测试：已经全过就直接交复查，不再派人重写（第三批 ㊾）
                 # 只认“被停下”（超时、看门人停的）；额度用完、报错这类它根本没干成，照旧停下说原因
-                stopped = str(dev.output or "").startswith(("超时", "看门人"))
+                # 没有复查员时不走这条：被停下的半成品没人兜底（复查第 2 条）
+                stopped = bool(reviewer_adapter) and str(dev.output or "").startswith(("超时", "看门人"))
                 quick = judge_fn(test_command, cwd=worktree, timeout=_TEST_TIMEOUT) if stopped else None
                 if quick is None or quick.result != PASS:
                     return _worker_failed(collab, cdir, card, "开发员", dev_adapter, dev)
@@ -1105,21 +1134,23 @@ def _run_card(card, collab_dir, worktree, test_command, dev_adapter, test_adapte
             olds = _related_old_tests(worktree, cdir, changed_fn)
             if olds:
                 names = "、".join(Path(o).stem for o in olds)
-                loop = " ".join(shlex.quote(Path(o).name) for o in olds)
-                old_cmd = ["/bin/bash", "-c",
-                           f'for p in {loop}; do python3 -m unittest discover -s tests -p "$p" || exit 1; done']
-                old_v = judge_fn(old_cmd, cwd=worktree, timeout=_TEST_TIMEOUT)
+                old_v = judge_fn(_old_tests_command(olds), cwd=worktree, timeout=_TEST_TIMEOUT)
+                none_ran = old_v.result == PASS and "Ran 0 tests" in (old_v.output or "")
+                # 超时、环境出错一律不放过（转人工看）；只有“没过”才去比一比改之前是不是就不过
+                broke = old_v.result != PASS and (old_v.result != FAIL or not _fails_on_base(worktree, olds, judge_fn))
+                said = ("都过了" if old_v.result == PASS and not none_ran else
+                        "一项都没跑起来（不算过也不算没过，最后全量兜底）" if none_ran else
+                        "没过" if broke else "没过，但改之前就不过，不算这次改坏的")
                 record(cdir, "老测试", src="程序", result=old_v.result, returncode=old_v.returncode,
-                       summary=f"跑了和这次改动有关的老测试（{names}）：{'都过了' if old_v.result == PASS else '没过'}",
-                       text=old_v.output)
-                if old_v.result == FAIL:
-                    record(cdir, "判定", src="程序", dst="开发员", result=FAIL, round=card.rework + 1,
+                       summary=f"跑了和这次改动有关的老测试（{names}）：{said}", text=old_v.output)
+                if broke:  # 超时、环境出错也不能放过去（复查第 1 条）；改之前就不过的不算到这次头上（第 3 条）
+                    record(cdir, "判定", src="程序", dst="开发员", result=old_v.result, round=card.rework + 1,
                            returncode=old_v.returncode,
-                           summary=f"第 {card.rework + 1} 轮：本卡测试过了，但老测试没过（{names}），这次改动把原来的功能改坏了",
+                           summary=f"第 {card.rework + 1} 轮：本卡测试过了，但老测试没过（{names}），改之前它们是过的",
                            text=old_v.output)
-                    verdict = Verdict(FAIL, old_v.returncode,
-                                      f"本卡测试过了，但这些老测试没过（这次改动把原来的功能改坏了，要改代码让它们也过，"
-                                      f"不要改老测试）：{names}\n\n{old_v.output}")
+                    verdict = Verdict(old_v.result, old_v.returncode,
+                                      f"本卡测试过了，但这些老测试没过，改之前它们是过的（这次改动把原来的功能改坏了，"
+                                      f"要改代码让它们也过，不要改老测试）：{names}\n\n{old_v.output}")
 
         if verdict.result == PASS and reviewer_adapter:
             # 独立复查：由另一个 AI 只读检查改动是否符合需求，写“结论：通过/不通过”

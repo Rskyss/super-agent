@@ -63,7 +63,7 @@ class NarrowReturn(Base):
     """㊾：退回时只交要改的这几条，不要重新核对，不附整卡交接资料。"""
 
     def test_return_prompt_is_narrow(self):
-        review = ("结论：不通过\n1. 【轻微】已有卡片的积木块被移走时提示丢了。\n   原因：run 里 card 恒不为空。\n"
+        review = ("结论：不通过\n1. 【轻微】已有卡片的积木块被移走时提示丢了。\n\n   原因：run 里 card 恒不为空。\n\n"
                   "指定测试 466 项全部通过。")
         _, calls = self.go([review, "结论：通过"])
         back = calls["dev"][1]
@@ -209,3 +209,74 @@ class RelatedOldTests(Base):
         self.assertTrue(olds)
         self.assertIn("test_old_money", olds[-1]["summary"])
         self.assertNotIn("test_old_other", olds[-1]["summary"], "没用到改动文件的老测试不跑")
+
+
+class ReviewRound1(RelatedOldTests):
+    """第三批 Codex 复查第 1 轮。"""
+
+    def test_old_test_timeout_is_not_a_pass(self):
+        from collab.judge import TIMEOUT
+        calls = {"n": 0}
+
+        def judge(cmd, cwd=None, timeout=None):
+            calls["n"] += 1
+            text = " ".join(cmd) if isinstance(cmd, list) else str(cmd)
+            if "test_old_money" in text:
+                return Verdict(TIMEOUT, None, "超时")
+            return Verdict(PASS, 0, "ok")
+
+        wt = self.worktree
+
+        def ask_fn(adapter, prompt, cwd, **kw):
+            if "只读复查" in prompt:
+                return AgentResult(ok=True, output="", attempts=1, final="结论：通过")
+            if "编写自动化测试" in prompt:
+                (wt / "tests" / "test_new.py").write_text("import unittest\n", encoding="utf-8")
+                return AgentResult(ok=True, output="", attempts=1, final="写了测试")
+            (wt / "pkg" / "money.py").write_text("def add(a, b):\n    return a + b  # 改\n", encoding="utf-8")
+            return AgentResult(ok=True, output="", attempts=1, final="汇报：改了")
+
+        card, _ = run_card(Card("CARD-001", state="待派发"), self.collab, wt, ["/bin/bash", "-c", "true"],
+                           "agy", "codex", ask_fn=ask_fn, judge_fn=judge, reviewer_adapter="codex")
+        self.assertNotEqual(card.state, "待验收", "老测试超时不能放过去")
+
+    def test_failing_before_change_is_not_blamed(self):
+        (self.worktree / "tests" / "test_old_money.py").write_text(
+            "import unittest\nfrom pkg import money\n\nclass T(unittest.TestCase):\n"
+            "    def test_add(self):\n        self.assertEqual(money.add(1, 2), 99)\n", encoding="utf-8")
+        import subprocess
+        subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qam", "老测试本来就不过"],
+                       cwd=self.worktree, check=True, capture_output=True)
+        card, rounds = self._run(dev_breaks=False)
+        self.assertEqual(card.state, "待验收")
+        self.assertEqual(rounds, 1)
+        old = [e for e in read_flow(self.cdir) if e.get("kind") == "老测试"][-1]
+        self.assertIn("改之前就不过", old["summary"])
+
+    def test_nested_old_tests_run(self):
+        from collab.dispatch import _old_tests_command
+        cmd = _old_tests_command(["tests/nested/test_related.py"])
+        self.assertIn("-s tests/nested -p test_related.py", cmd[-1])
+
+
+class ReviewRound1Plain(Base):
+    def test_stopped_without_reviewer_still_stops(self):
+        seen = []
+
+        def ask_fn(adapter, prompt, cwd, **kw):
+            if "编写自动化测试" in prompt:
+                (self.worktree / "tests" / "test_a.py").write_text("# 测试\n", encoding="utf-8")
+                return AgentResult(ok=True, output="", attempts=1, final="写了测试")
+            seen.append(prompt)
+            return AgentResult(ok=False, output="超时", attempts=1)
+
+        card, _ = run_card(Card("CARD-001", state="待派发"), self.collab, self.worktree, "true", "agy", "codex",
+                           ask_fn=ask_fn, judge_fn=lambda *a, **k: Verdict(PASS, 0, "ok"), reviewer_adapter=None)
+        self.assertEqual(card.state, "需Claude介入", "没有复查员兜底时不能把被停下的半成品当做完")
+
+    def test_reason_after_blank_line_reaches_worker(self):
+        review = "结论：不通过\n1. 【中等】提示丢了。\n\n   原因：card 恒不为空。\n   位置：run.py:273\n\n指定测试全部通过。"
+        _, calls = self.go([review, "结论：通过"])
+        self.assertIn("位置：run.py:273", calls["dev"][1])
+        self.assertNotIn("指定测试全部通过", calls["dev"][1])
+

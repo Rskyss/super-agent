@@ -58,7 +58,8 @@ def _clean_scope_files(files) -> list:
     for raw in files or []:
         rel = str(raw or "").strip().replace("\\", "/")
         parts = [p for p in rel.split("/") if p not in ("", ".")]
-        if not rel or rel.startswith("/") or ".." in parts or not parts or parts[0] == ".collab":
+        bad_char = any(c in rel for c in "\n\r\t*?[]") or rel.startswith(("-", "#")) or len(rel) > 200
+        if not rel or bad_char or rel.startswith("/") or ".." in parts or not parts or parts[0] == ".collab":
             raise TaskError(f"“{raw}”不是项目里的文件路径：写成相对项目的路径，比如 collab/abilities_run.py")
         rel = "/".join(parts)
         if rel not in out:
