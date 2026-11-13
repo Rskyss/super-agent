@@ -26,7 +26,9 @@ EXPECTED_TOOLS = {"scan_environment", "check_installed", "read_help", "list_bloc
                   # 积木库管家方案（2026-11-10，用户授权）：规矩拆成手册，按需翻开
                   "read_manual",
                   # 2026-11-10 用户真实接腾讯云混元时管家猜错模型名：加“查这家真有哪些模型”
-                  "list_models"}
+                  "list_models",
+                  # 69 号单（能力层方案技术设计“管家”，用户 2026-11-10 批准）：看积木块、看能力层、出能力卡片（草稿）
+                  "read_block", "list_abilities", "propose_ability"}
 
 
 class BlocksCase(ProjectCase):

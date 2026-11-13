@@ -25,8 +25,11 @@
 | 62–65 | 沙盒接入 2–5 | 没写单，Claude 直接做；验收测试 `test_acceptance_62_*` 到 `65_*`、`tests/sandbox_page_check.js` | ✅ |
 | 66 | 能力层 1 | [66-能力卡片格式.md](66-能力卡片格式.md) | ✅ Gemini 3.8 Flash 施工，Codex 复查 3 轮通过，Claude 验收 |
 | 67 | 能力层 2 | [67-能力卡片运行.md](67-能力卡片运行.md) | ✅ Gemini 3.8 Flash 施工，Codex 复查 3 轮，第 3 轮剩 1 条由 Claude 小改，Claude 验收 |
-| 68 | 能力层 3 上 | [68-能力层页面.md](68-能力层页面.md) | ⏳ Gemini 3.8 Flash 施工，Codex 复查 2 轮通过，Claude 验收小改 4 处，等用户在真实窗口里测 |
-| 68b | 能力层 3 下 | 统一叫法（还没写） | 等 68 做完 |
+| 68 | 能力层 3 上 | [68-能力层页面.md](68-能力层页面.md) | ✅ Gemini 3.8 Flash 施工，Codex 复查 2 轮通过，Claude 验收，用户真实窗口测过 |
+| 68b | 能力层 3 下 | [68b-统一叫法.md](68b-统一叫法.md) | ✅ 超级助手自己跑（Cursor 写代码），Claude 接手收尾 |
+| 68c | 插单（试跑记录 ⑤） | [68c-命令行工具按整家接.md](68c-命令行工具按整家接.md) | ✅ 超级助手自己跑（agy 写代码），Claude 收尾 |
+| 69 | 能力层 4 上（后台） | [69-管家起草能力卡片.md](69-管家起草能力卡片.md) | 待施工（超级助手自己跑） |
+| 69b | 能力层 4 下（页面） | 还没写 | 等 69 做完 |
 
 后面的单写好后会加到这里。**一次只做表里“待施工”的单，做完就停。**
 
@@ -221,3 +224,7 @@ Cursor 施工 → Codex 复查 → Cursor 按复查修（最多 3 轮，过不�
 > 2. `## 执行细节` 写：开发员只改上面文件里的文字，唯一的逻辑改动是施工单第 3 节；不准改已有测试，不准为了躲搜索把字拆开、换同音字、乱加“旧叫法”注释。测试员：验收测试已经写好，只需补施工单没覆盖到的情况，新测试一律写进 tests/test_acceptance_68b_extra.py，不改别的测试文件。复查员对照施工单逐条查，重点见施工单 README 里“68b 号单，交给 Codex 复查的话”那段。
 > 3. 方案写好给我批准。批准后开工用这条测试命令（几分钟出结果，全量留到最后验收）：
 > `for p in 'test_acceptance_68b_*.py' test_clerk_claim_guard.py test_blocks_butler.py test_blocks_card_quiet.py 'test_acceptance_64_*.py' 'test_acceptance_58_*.py' 'test_acceptance_50_*.py' test_blocks_detail_fixes.py test_blocks_whole_provider.py; do python3 -m unittest discover -s tests -p "$p" || exit 1; done`
+
+69，发给行政的话（68c 起只发这一句；调度员会自己读施工单摘范围和测试命令。按 ㉖，直接让行政按路径建，不用它读施工单）：
+
+> 帮我建一个任务卡片，就按路径建，不用你读文件：标题“69 管家起草能力卡片”。要做什么：按施工单 docs/积木库/施工单/69-管家起草能力卡片.md 执行，需求以施工单为准，不重新调研。不做什么：不改页面文件（desktop/static/ 下的都不动），不改已有测试（tests/test_acceptance_54_blocks_clerk.py 已由 Claude 改好，也不要动），不动项目窗口的行政。怎么算做完：施工单“验收”一节列的情况都覆盖，施工单里的测试命令全过，复查通过。
