@@ -61,18 +61,18 @@ def explain(output: str, tool: str):
 def check_tool(tool: str, models: dict, timeout: float = DEFAULT_TIMEOUT) -> dict:
     """检测一家工具。返回 {ok, status(ok/missing/fail), reason, how, seconds}。"""
     cmd = _command_of(tool)
+    if tool == "qwen":  # 先看密钥：没密钥时不管装没装 Codex 都用不了
+        from collab.config import QWEN_KEY_FILE, qwen_key
+        if not qwen_key():
+            return {"ok": False, "status": "missing", "reason": "千问还没配密钥",
+                    "how": f"把千问 Token Plan 的密钥放进本机文件 {QWEN_KEY_FILE}（只有自己能读），或让 Claude 帮你放",
+                    "seconds": 0}
     if shutil.which(cmd) is None:
         return {"ok": False, "status": "missing", "reason": f"没装：电脑上找不到 {cmd} 这个命令",
                 "how": f"先安装 {_name_of(tool)}，并在终端里运行一次 {cmd} 登录", "seconds": 0}
     if tool.startswith("custom:"):
         return {"ok": True, "status": "ok", "reason": "已找到这个命令（自定义调度员只能检查装没装）", "how": "",
                 "seconds": 0}
-    if tool == "qwen":
-        from collab.config import QWEN_KEY_FILE, qwen_key
-        if not qwen_key():
-            return {"ok": False, "status": "missing", "reason": "千问还没配密钥",
-                    "how": f"把千问 Token Plan 的密钥放进本机文件 {QWEN_KEY_FILE}（只有自己能读），或让 Claude 帮你放",
-                    "seconds": 0}
     folder = Path(tempfile.mkdtemp(prefix="超级助手检测-"))
     start = time.time()
     try:

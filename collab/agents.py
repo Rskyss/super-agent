@@ -138,14 +138,16 @@ def _is_codex_shell(adapter: str) -> bool:
 def qwen_command(prompt: str, model: str, effort: str = DEFAULT_MODELS["codex_effort"], last_path=None) -> list:
     """千问：Codex 的壳，模型来源换成千问 Token Plan（responses 接法；chat 接法 Codex 已不支持，11-13 实测）。
     密钥放进环境变量交给 Codex，命令行里不出现。"""
-    from collab.config import QWEN_BASE_URL, QWEN_KEY_ENV, qwen_key
-    os.environ[QWEN_KEY_ENV] = qwen_key()
+    from collab.config import QWEN_BASE_URL, QWEN_KEY_ENV
+    # 密钥不放进本程序的环境（否则之后起的每个工具、每次测试都会继承，复查发现可能被印进测试结果和交接），
+    # 只在起千问这一个进程时单独交给它（ask → runner 的 env）；Codex 默认不把名字带 KEY 的变量传给它跑的命令，这里再明说一次
     cmd = codex_command(prompt, model=model, effort=effort, last_path=last_path)
     provider = ["-c", 'model_providers.qwtp.name="千问 Token Plan"',
                 "-c", f'model_providers.qwtp.base_url="{QWEN_BASE_URL}"',
                 "-c", f'model_providers.qwtp.env_key="{QWEN_KEY_ENV}"',
                 "-c", 'model_providers.qwtp.wire_api="responses"',
-                "-c", 'model_provider="qwtp"']
+                "-c", 'model_provider="qwtp"',
+                "-c", f'shell_environment_policy.exclude=["{QWEN_KEY_ENV}"]']
     return cmd[:-1] + provider + cmd[-1:]
 
 
@@ -479,7 +481,7 @@ def _stop_stuck_commands(tool_pid: int, tool_age: float, limits: tuple, test_com
 
 
 def watched_runner(cmd, cwd, timeout, quiet_limit=QUIET_LIMIT, poll=POLL_SECONDS, live_path=None,
-                   on_quiet=None, remind_at=REMIND_AT, test_command="", command_limit=0,
+                   on_quiet=None, remind_at=REMIND_AT, test_command="", command_limit=0, env=None,
                    test_limit=TEST_COMMAND_LIMIT, helper_grace=None):
     """边跑边看：总时长超过 timeout 抛 TimeoutExpired；连续 quiet_limit 秒没有动静抛 QuietTimeout。
     “动静”= 副本里有文件变化，或者它的输出还在涨（只看不改的复查员靠这个，68b 里被误杀过，㉓）。
@@ -493,7 +495,7 @@ def watched_runner(cmd, cwd, timeout, quiet_limit=QUIET_LIMIT, poll=POLL_SECONDS
         with _tools_lock:
             if _stopping["on"]:
                 raise subprocess.TimeoutExpired(cmd, 0)  # 已经停工：不再起新的
-            proc = subprocess.Popen(cmd, cwd=cwd, stdout=out, stderr=subprocess.STDOUT,
+            proc = subprocess.Popen(cmd, cwd=cwd, stdout=out, stderr=subprocess.STDOUT, env=env,
                                     stdin=subprocess.DEVNULL, text=True, start_new_session=True)
             _active_tool = proc
             _active_tools.add(proc)
@@ -580,6 +582,9 @@ def ask(adapter: str, prompt: str, cwd, expect_file=None, timeout=DEFAULT_TIMEOU
     extra = {"live_path": live_path} if live_path else {}  # 旧的 runner 不认这个参数，不给就不传
     if on_quiet:
         extra["on_quiet"] = on_quiet
+    if adapter == "qwen":  # 千问的密钥只交给这一个进程（不进本程序的环境）
+        from collab.config import QWEN_KEY_ENV, qwen_key
+        extra["env"] = dict(os.environ, **{QWEN_KEY_ENV: qwen_key()})
     if watch_commands:  # 派活时才看它自己跑的命令（㊹）；体检、能力运行不受影响
         extra["command_limit"] = COMMAND_LIMIT
         extra["test_command"] = test_command or ""

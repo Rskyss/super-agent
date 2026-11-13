@@ -64,7 +64,22 @@ class Command(unittest.TestCase):
     def test_key_never_in_command_line(self):
         cmd = agents._build("qwen", "干活", {"qwen": "deepseek-v4.1-flash"})
         self.assertNotIn("sk-fake-123", " ".join(cmd), "密钥不能出现在命令行（别人用进程列表能看到）")
-        self.assertEqual(os.environ.get(config.QWEN_KEY_ENV), "sk-fake-123")
+        self.assertIn('shell_environment_policy.exclude=["SUPERAGENT_QWEN_KEY"]', cmd, "千问跑的命令拿不到密钥")
+
+    def test_key_only_goes_to_that_one_process(self):
+        """复查：密钥放进本程序环境会被之后的每个工具、每次测试继承，可能印进测试结果和交接"""
+        seen = {}
+
+        def runner(cmd, cwd, timeout, env=None, **_):
+            seen["env"] = env
+            return 0, "codex\n好了\ntokens used\n1\n好了\n"
+
+        res = agents.ask("qwen", "干活", self.tmp.name, runner=runner, models={"qwen": "deepseek-v4.1-flash"})
+        self.assertTrue(res.ok)
+        self.assertEqual(seen["env"][config.QWEN_KEY_ENV], "sk-fake-123")
+        self.assertNotIn(config.QWEN_KEY_ENV, os.environ, "本程序自己的环境里不能有")
+        agents.ask("codex", "干活", self.tmp.name, runner=runner, models={"codex": "x", "codex_effort": "low"})
+        self.assertIsNone(seen["env"], "别的工具拿不到")
 
     def test_plugins_off_like_codex(self):
         old = agents._codex_plugin_names
