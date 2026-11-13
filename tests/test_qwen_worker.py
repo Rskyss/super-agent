@@ -81,6 +81,21 @@ class Command(unittest.TestCase):
         agents.ask("codex", "干活", self.tmp.name, runner=runner, models={"codex": "x", "codex_effort": "low"})
         self.assertIsNone(seen["env"], "别的工具拿不到")
 
+    def test_codex_extras_off_for_qwen(self):
+        """Qwen4 Max Preview 不认 Codex 打包附加功能的工具格式，整条请求被拒（11-13 抓包）：接千问时关掉"""
+        cmd = agents._build("qwen", "干活", {"qwen": "qwen4-max-preview"})
+        for f in ("multi_agent", "apps", "computer_use", "plugins", "browser_use", "in_app_browser"):
+            self.assertIn(f"features.{f}=false", cmd)
+        self.assertFalse([c for c in agents._build("codex", "干活", {"codex": "x", "codex_effort": "low"})
+                          if c.startswith("features.")], "Codex 自己干活时不动")
+
+    def test_rejected_request_is_not_called_not_logged_in(self):
+        from collab.check import explain
+        out = ("ERROR rmcp: AuthRequired(AuthRequiredError { www_authenticate_header: ... })\n"
+               "ERROR: stream disconnected: <400> InternalError.Algo: [Invalid request parameters.]")
+        reason, _ = explain(out, "qwen")
+        self.assertEqual(reason, "这个模型不接受这样的请求")
+
     def test_plugins_off_like_codex(self):
         old = agents._codex_plugin_names
         agents._codex_plugin_names = lambda: ["playwright"]

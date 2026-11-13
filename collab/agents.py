@@ -148,6 +148,10 @@ def qwen_command(prompt: str, model: str, effort: str = DEFAULT_MODELS["codex_ef
                 "-c", 'model_providers.qwtp.wire_api="responses"',
                 "-c", 'model_provider="qwtp"',
                 "-c", f'shell_environment_policy.exclude=["{QWEN_KEY_ENV}"]']
+    # Codex 给自家模型的附加功能（多智能体、ChatGPT 应用连接、操作电脑、插件、内置浏览器）会打包成千问部分模型
+    # 不认的工具格式，Qwen4 Max Preview 因此整条请求被拒（11-13 抓包逐项比出来）；干活也用不到，接千问时一律关掉
+    for feature in ("multi_agent", "apps", "computer_use", "plugins", "browser_use", "in_app_browser"):
+        provider += ["-c", f"features.{feature}=false"]
     return cmd[:-1] + provider + cmd[-1:]
 
 

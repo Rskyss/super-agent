@@ -47,6 +47,9 @@ def explain(output: str, tool: str):
         return "超时：规定时间内没做完", "网络或工具可能卡住了，稍后再检测一次"
     if raw.startswith("看门人"):
         return "长时间没有任何动静，被停下了", "稍后再检测一次"
+    if "invalid request parameters" in text or "invalidparameter" in text:
+        # 模型不认 Codex 发的请求（千问接的模型常见）；排在“没登录”前面：输出里常混着别的插件的登录提示（11-13 误报过）
+        return "这个模型不接受这样的请求", "换这一家的另一个模型再检测；仍不行就换一家"
     if any(k in text for k in ("not logged", "log in", "login", "unauthorized", "authenticat", "sign in", "401")):
         return "没登录", f"在终端里运行一次 {cmd}，按提示登录后再检测一次"
     if any(k in text for k in ("quota", "rate limit", "usage limit", "429", "insufficient", "out of credit")):
