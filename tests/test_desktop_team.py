@@ -17,7 +17,7 @@ from collab.config import save_team
 from collab.workspace import init_collab
 from desktop.view import card_view
 
-OK_TOOL = "#!/bin/sh\nprintf OK > 连通检测.txt\n"
+OK_TOOL = "#!/bin/sh\nn=$(cat 题目.txt); printf '%s\\n%s\\n' $((n+1)) $(ls | wc -l) > 连通检测.txt\n"
 
 
 class TeamServerTest(unittest.TestCase):
@@ -124,7 +124,7 @@ class TeamServerTest(unittest.TestCase):
 
     def test_two_checks_at_once_keep_their_own_results(self):
         slow = self.bin / "agy"
-        slow.write_text("#!/bin/sh\nsleep 1\nprintf OK > 连通检测.txt\n", encoding="utf-8")
+        slow.write_text("#!/bin/sh\nsleep 1\nn=$(cat 题目.txt); printf '%s\\n%s\\n' $((n+1)) $(ls | wc -l) > 连通检测.txt\n", encoding="utf-8")
         team = {"dispatcher": "codex", "tester": "cursor", "developer": "agy", "reviewer": "none"}
         first = self._post("/api/team/check", {"project": str(self.project), "team": team, "roles": ["developer"]})["run"]
         second = self._post("/api/team/check", {"project": str(self.project), "team": team, "roles": ["tester"]})["run"]

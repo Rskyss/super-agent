@@ -159,6 +159,18 @@ def _handover_worker(project):
         return None
 
 
+def _remind_upgrades(project, card_id) -> None:
+    """开跑前：团队用的工具升级过、还没重新检测，就在卡片里提醒一句（行政会播报）；不拦着开跑（第四轮 55）。"""
+    try:
+        from collab.check import version_changes
+        words = version_changes(project)
+    except Exception:  # noqa: BLE001 — 查不到版本不耽误开跑
+        return
+    for line in words:
+        flow_record(_collab(project) / "cards" / card_id, "提醒", src="程序", dst="你", summary=line)
+        print(line, file=sys.stderr)
+
+
 def _full_runner():
     """复查的同时跑全量（第四轮 59）；集成测试里用 SUPERAGENT_NO_FULL=1 关掉（不然会在项目副本里再跑一遍全量）。"""
     if os.environ.get("SUPERAGENT_NO_FULL") == "1":
@@ -213,6 +225,7 @@ def cmd_run(args, ask_fn=None, judge_fn=None, **_):
         print(f"团队配置有问题：{exc}", file=sys.stderr)
         return 1
 
+    _remind_upgrades(args.project, args.card_id)
     tag = vcs.snapshot(project, f"pre-{args.card_id}-{datetime.now():%Y%m%d-%H%M%S}")
     _backup_row(args.project, args.card_id, tag)
 

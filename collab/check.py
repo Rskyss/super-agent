@@ -7,6 +7,8 @@
 from __future__ import annotations
 
 import functools
+import json
+import random
 import shutil
 import tempfile
 import threading
@@ -22,8 +24,13 @@ TOOL_NAMES = {"codex": "Codex", "cursor": "Cursor", "agy": "agy", "qwen": "千�
 ROLE_ORDER = ("dispatcher", "tester", "developer", "reviewer")
 ROLE_NAMES = {"dispatcher": "调度员", "tester": "写测试", "developer": "写代码", "reviewer": "复查"}
 PROBE_FILE = "连通检测.txt"
-PROBE_PROMPT = f"在当前文件夹里新建一个文件 {PROBE_FILE}，内容只写 OK。只做这一件事，不要做别的。"
+QUESTION_FILE = "题目.txt"
+# 一件小活（第四轮 55）：读文件、写文件、跑命令三样都要真做到——旧检测只建一个文件，千问 4 被拒、DeepSeek 反复压缩都测不出
+PROBE_PROMPT = (f"当前文件夹里有一个文件 {QUESTION_FILE}，里面是一个数。读出这个数，加 1，写进新文件 {PROBE_FILE} 的第一行；"
+                f"再在终端运行 ls 命令，把它列出的文件个数（一个数字）写在第二行。只做这件事，不要做别的。")
 DEFAULT_TIMEOUT = 120
+USAGE_WARN = 200_000   # 这件小活正常几万 token；DeepSeek 带一大包说明那次 45 万
+VERSIONS_FILE = "工具版本.json"
 
 
 def _command_of(tool: str) -> str:
@@ -79,18 +86,112 @@ def check_tool(tool: str, models: dict, timeout: float = DEFAULT_TIMEOUT) -> dic
         return {"ok": True, "status": "ok", "reason": "已找到这个命令（自定义调度员只能检查装没装）", "how": "",
                 "seconds": 0}
     folder = Path(tempfile.mkdtemp(prefix="超级助手检测-"))
+    number = random.randint(11, 88)
+    (folder / QUESTION_FILE).write_text(f"{number}\n", encoding="utf-8")
     start = time.time()
+    answer = ""
     try:
         runner = functools.partial(watched_runner, poll=0.5, quiet_limit=timeout + 5)
         result = ask(tool, PROBE_PROMPT, folder, expect_file=PROBE_FILE, timeout=timeout, runner=runner,
                      models=models)
+        try:
+            answer = (folder / PROBE_FILE).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            answer = ""
     finally:
         shutil.rmtree(folder, ignore_errors=True)
     seconds = round(time.time() - start)
-    if result.ok:
-        return {"ok": True, "status": "ok", "reason": f"通了 · {seconds} 秒", "how": "", "seconds": seconds}
-    reason, how = explain(result.output, tool)
-    return {"ok": False, "status": "fail", "reason": reason, "how": how, "seconds": seconds}
+    version = tool_version(tool)
+    if not result.ok:
+        reason, how = explain(result.output, tool)
+        return {"ok": False, "status": "fail", "reason": reason, "how": how, "seconds": seconds, "version": version}
+    lines = [ln.strip() for ln in answer.splitlines() if ln.strip()]
+    if not lines or lines[0] != str(number + 1):
+        return {"ok": False, "status": "fail", "reason": "能建文件，但读文件、算数没做对",
+                "how": "这个组合干不了要读代码的活；换这一家的另一个模型再检测，仍不行就换一家", "seconds": seconds,
+                "version": version}
+    if len(lines) < 2 or not lines[1].isdigit():
+        return {"ok": False, "status": "fail", "reason": "能读写文件，但没跑命令（或跑了没把结果写上）",
+                "how": "这家工具在自动模式下可能不让跑命令；它跑不了本卡测试。换一家或看看它的权限设置",
+                "seconds": seconds, "version": version}
+    out = {"ok": True, "status": "ok", "reason": f"通了 · {seconds} 秒", "how": "", "seconds": seconds,
+           "version": version}
+    used = tokens_used(result.output)
+    if used and used > USAGE_WARN:
+        out.update(warn="usage", reason=f"通了 · {seconds} 秒；但这件小活用了约 {used // 10000} 万 token",
+                   how="这个组合每次都要带一大包说明，干大活会反复压缩记忆、很慢；写代码建议换一个组合")
+    return out
+
+
+def tokens_used(output: str):
+    """Codex 壳（codex、千问）最后会打“tokens used”和总数；别的工具没有就返回 None。"""
+    import re
+    m = re.findall(r"tokens used\s*\n\s*([\d,]+)", output or "")
+    return int(m[-1].replace(",", "")) if m else None
+
+
+def tool_version(tool: str) -> str:
+    """工具的版本（第一行）；问不到返回空。千问用 Codex 的壳，问的是 codex。"""
+    import subprocess
+    if not tool or tool.startswith("custom:") or tool == "none":
+        return ""
+    cmd = COMMANDS.get(tool)
+    if not cmd or shutil.which(cmd) is None:
+        return ""
+    try:
+        done = subprocess.run([cmd, "--version"], capture_output=True, text=True, timeout=10,
+                              stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    lines = [ln.strip() for ln in (done.stdout or done.stderr or "").splitlines() if ln.strip()]
+    return lines[0][:80] if done.returncode == 0 and lines else ""
+
+
+def _versions_path(project_dir) -> Path:
+    return Path(project_dir) / ".collab" / VERSIONS_FILE
+
+
+def remember_versions(project_dir, results) -> None:
+    """检测通过的工具记下当时的版本（第四轮 55）；以后版本变了就提醒重新检测。"""
+    path = _versions_path(project_dir)
+    if not path.parent.is_dir():
+        return
+    try:
+        saved = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+    except (OSError, ValueError):
+        saved = {}
+    for item in results:
+        if item.get("ok") and item.get("version") and item.get("tool"):
+            saved[COMMANDS.get(item["tool"], item["tool"])] = item["version"]
+    path.write_text(json.dumps(saved, ensure_ascii=False, indent=1), encoding="utf-8")
+
+
+def version_changes(project_dir, team=None) -> list:
+    """团队里用到的工具，版本和上次检测通过时不一样的，每家一句提醒。从没检测过、问不到版本的不提醒。"""
+    try:
+        saved = json.loads(_versions_path(project_dir).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if team is None:
+        try:
+            team = load_team(project_dir)
+        except Exception:  # noqa: BLE001
+            return []
+    commands = []
+    for role in ROLE_ORDER:
+        tool = (team or {}).get(role)
+        cmd = COMMANDS.get(tool) if isinstance(tool, str) else None
+        if cmd and cmd not in commands:
+            commands.append(cmd)
+    out = []
+    names = {"codex": "Codex（千问也用它的壳）", "agent": "Cursor", "agy": "agy"}
+    for cmd in commands:
+        tool = next(t for t, c in COMMANDS.items() if c == cmd)
+        old, now = saved.get(cmd), tool_version(tool)
+        if old and now and old != now:
+            out.append(f"{names.get(cmd, cmd)} 升级了（{old} → {now}），建议去团队设置重新检测一次，"
+                       f"确认它和你选的模型还接得上")
+    return out
 
 
 def check_team(project_dir, team=None, timeout: float = DEFAULT_TIMEOUT, on_result=None,
@@ -162,4 +263,9 @@ def check_team(project_dir, team=None, timeout: float = DEFAULT_TIMEOUT, on_resu
     if owners:
         with ThreadPoolExecutor(max_workers=len(owners)) as pool:
             list(pool.map(run, owners))
-    return [results[r] for r in ROLE_ORDER if r in results]
+    out = [results[r] for r in ROLE_ORDER if r in results]
+    try:
+        remember_versions(project_dir, out)   # 检测通过时的版本，以后升级了提醒重测（第四轮 55）
+    except OSError:
+        pass
+    return out

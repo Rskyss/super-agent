@@ -18,7 +18,7 @@ from collab.workspace import init_collab
 FAKE = """#!/bin/sh
 mode=$(printenv FAKE_{name})
 case "$mode" in
-  ok) printf OK > 连通检测.txt; echo done ;;
+  ok) n=$(cat 题目.txt); printf "%s\n%s\n" $((n+1)) $(ls | wc -l) > 连通检测.txt; echo done ;;
   login) echo "Error: Not logged in. Please run login first." ; exit 1 ;;
   quota) echo "Error: usage limit reached (429)" ; exit 1 ;;
   model) echo "Error: model 'gpt-9' not found" ; exit 1 ;;

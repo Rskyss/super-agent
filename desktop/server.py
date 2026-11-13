@@ -31,7 +31,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:  # 直接用 python3 desktop/server.py 启动时也能找到 collab
     sys.path.insert(0, str(ROOT))
 
-from collab.check import DEFAULT_TIMEOUT as CHECK_TIMEOUT, check_team  # noqa: E402
+from collab.check import DEFAULT_TIMEOUT as CHECK_TIMEOUT, check_team, version_changes  # noqa: E402
 from collab.cli import cmd_approve, cmd_confirm_profile  # noqa: E402
 from collab.dispatch import uncommitted_count  # noqa: E402
 from collab.config import (  # noqa: E402
@@ -1508,7 +1508,12 @@ class Handler(BaseHTTPRequestHandler):
                 role_models = {}
             else:
                 problem = ""
+            try:
+                upgraded = version_changes(project, team)   # 工具升级后提醒重新检测（第四轮 55）
+            except Exception:  # noqa: BLE001
+                upgraded = []
             self._json({"team": team, "models": models, "role_models": role_models, "problem": problem,
+                        "upgraded": upgraded,
                         "git": (Path(project) / ".git").exists(),
                         "installed": (Path(project) / ".collab" / "cards").is_dir(), "options": _TEAM_OPTIONS,
                         "model_options": load_model_options(), "check_timeout": CHECK_TIMEOUT})

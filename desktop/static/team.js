@@ -631,6 +631,10 @@ if (typeof document !== "undefined") (function () {
       $("workers").hidden = !installed;
       $("noGit").hidden = installed;
       if (d.problem) { $("problem").hidden = false; $("problem").textContent = "原来的配置有问题，已换成默认值：" + d.problem; }
+      else if (d.upgraded && d.upgraded.length) {   // 工具升级了：提醒重新检测（第四轮 55）
+        $("problem").hidden = false;
+        $("problem").textContent = d.upgraded.join("；");
+      }
       fill("dispatcher", d.options.dispatcher, installed ? d.team.dispatcher : savedDispatcher);
       fill("tester", d.options.worker, d.team.tester);
       fill("developer", d.options.worker, d.team.developer);
