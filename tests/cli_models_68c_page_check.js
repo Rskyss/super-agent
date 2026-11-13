@@ -126,7 +126,9 @@ function page(file, respond) {
   context.window = context;
   context.globalThis = context;
   vm.createContext(context);
-  vm.runInContext(fs.readFileSync(path.join(staticDir, file), "utf8"), context, { filename: file });
+  // 照 blocks.html：能力层页面先引入公共文件 abilities_core.js 再引入 abilities.js（69b 拆出来的）
+  const scripts = file === "abilities.js" ? ["abilities_core.js", file] : [file];
+  for (const name of scripts) vm.runInContext(fs.readFileSync(path.join(staticDir, name), "utf8"), context, { filename: name });
   return { el, context, posts, alerts };
 }
 
