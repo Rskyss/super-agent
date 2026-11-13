@@ -138,11 +138,14 @@ def tool_version(tool: str) -> str:
     cmd = COMMANDS.get(tool)
     if not cmd or shutil.which(cmd) is None:
         return ""
+    spare = tempfile.mkdtemp(prefix="超级助手版本-")   # 在空文件夹里问：工具万一把“问版本”当成干活，也不往项目里写东西
     try:
         done = subprocess.run([cmd, "--version"], capture_output=True, text=True, timeout=10,
-                              stdin=subprocess.DEVNULL)
+                              stdin=subprocess.DEVNULL, cwd=spare)
     except (OSError, subprocess.TimeoutExpired):
         return ""
+    finally:
+        shutil.rmtree(spare, ignore_errors=True)
     lines = [ln.strip() for ln in (done.stdout or done.stderr or "").splitlines() if ln.strip()]
     return lines[0][:80] if done.returncode == 0 and lines else ""
 
