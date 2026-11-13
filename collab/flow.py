@@ -164,11 +164,14 @@ def _numbered_items(text: str, whole: bool = False) -> list:
             continue
         if not (items and whole and state) or _VERDICT_LINE.match(line):
             continue
-        if summary.search(line) and not label.match(line):
-            state = ""        # 复查员的总结（测了多少项、有没有改文件、粗体小标题）不算这一条（第 2 轮第 3 条）
-            continue
         indented = line[:1] in (" ", "\t", "　") or line.startswith(("- ", "* ", "• "))
-        if label.match(line) or indented or state == "open":
+        if label.match(line) or indented:
+            items[-1] += "\n" + line.rstrip()   # 缩进的、原因位置这类标签行一律算这一条（第 3 轮第 3 条：不按关键词误删）
+            continue
+        if summary.search(line):
+            state = ""        # 顶格的总结（测了多少项、有没有改文件、粗体小标题）不算这一条（第 2 轮第 3 条）
+            continue
+        if state == "open":
             items[-1] += "\n" + line.rstrip()   # 原因、位置这类标签行不管顶格还是隔了空行都算这一条
         else:
             state = ""        # 空行后顶格写的别的话：这一条结束

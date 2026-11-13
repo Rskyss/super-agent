@@ -332,3 +332,36 @@ class ContinuationRules(unittest.TestCase):
         self.assertEqual(n("结论：不通过\n1. 提示丢了。\n指定测试 466 项全部通过。", whole=True), ["提示丢了。"])
         self.assertEqual(n("结论：不通过\n1. 提示丢了。\n   原因：x\n\n**复查总结**\n看完了。", whole=True),
                          ["提示丢了。\n   原因：x"])
+
+
+class ReviewRound3(unittest.TestCase):
+    """第三批 Codex 复查第 3 轮。"""
+
+    def test_more_failures_in_same_file(self):
+        from collab.dispatch import _more_failures
+        base = "FAIL: test_a (t.T)\n----\nFAILED (failures=1)"
+        now = "FAIL: test_a (t.T)\nFAIL: test_b (t.T)\n----\nFAILED (failures=2)"
+        self.assertTrue(_more_failures(now, base))
+        self.assertFalse(_more_failures(base, base))
+        self.assertTrue(_more_failures("FAILED (failures=1, errors=1)", "FAILED (failures=1)"))
+
+    def test_judge_waits_for_slow_child(self):
+        import os
+        import time
+        from collab.judge import TIMEOUT, judge
+        with tempfile.TemporaryDirectory() as tmp:
+            pidfile = Path(tmp) / "child.pid"
+            child = (f"import os,signal,time; open('{pidfile}','w').write(str(os.getpid()));"
+                     "signal.signal(signal.SIGTERM, lambda *a: (time.sleep(2), os._exit(0))); time.sleep(60)")
+            v = judge(["/bin/bash", "-c", f"python3 -c \"{child}\" > /dev/null 2>&1"], cwd=tmp, timeout=1)
+            self.assertEqual(v.result, TIMEOUT)
+            pid = int(pidfile.read_text())
+            with self.assertRaises(ProcessLookupError, msg="判定返回时慢慢收尾的子进程也要已经没了"):
+                os.kill(pid, 0)
+
+    def test_reason_with_summary_words_is_kept(self):
+        from collab.flow import _numbered_items as n
+        text = ("结论：不通过\n1. 新改坏的被放过。\n  - 原因：本卡测试全部通过后，仍只比较整份老测试文件。\n"
+                "  - 位置：dispatch.py:868\n\n指定测试 13 项全部通过。")
+        self.assertEqual(n(text, whole=True),
+                         ["新改坏的被放过。\n  - 原因：本卡测试全部通过后，仍只比较整份老测试文件。\n  - 位置：dispatch.py:868"])

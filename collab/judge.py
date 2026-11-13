@@ -21,6 +21,39 @@ class Verdict:
     output: str
 
 
+def _group_alive(pgid: int) -> bool:
+    try:
+        os.killpg(pgid, 0)
+        return True
+    except (ProcessLookupError, PermissionError, OSError):
+        return False
+
+
+def _stop_group(proc) -> str:
+    """先温和停整组，等到整组真的没了（管道关了不代表子进程退了，第三批复查第 3 轮），5 秒还在就强停。"""
+    import time
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+    deadline = time.time() + 5
+    while _group_alive(proc.pid) and time.time() < deadline:
+        time.sleep(0.1)
+    if _group_alive(proc.pid):
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+        deadline = time.time() + 3
+        while _group_alive(proc.pid) and time.time() < deadline:
+            time.sleep(0.1)
+    try:
+        stdout, _ = proc.communicate(timeout=3)
+    except (subprocess.TimeoutExpired, ValueError, OSError):
+        stdout = ""
+    return stdout or ""
+
+
 def judge(command, cwd, timeout) -> Verdict:
     """超时时连同它拉起的测试子进程一起停掉（流程修理第三批复查：只停外壳会留下还在跑的测试）。"""
     try:
@@ -31,16 +64,7 @@ def judge(command, cwd, timeout) -> Verdict:
     try:
         stdout, stderr = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
-        for sig in (signal.SIGTERM, signal.SIGKILL):
-            try:
-                os.killpg(proc.pid, sig)
-            except (ProcessLookupError, PermissionError, OSError):
-                pass
-            try:
-                stdout, stderr = proc.communicate(timeout=5)
-                break
-            except subprocess.TimeoutExpired:
-                stdout, stderr = "", ""
+        stdout = _stop_group(proc)
         return Verdict(TIMEOUT, None, (stdout or "")[-_OUTPUT_LIMIT:])
     output = (stdout or "") + (stderr or "")
     if proc.returncode == 0:

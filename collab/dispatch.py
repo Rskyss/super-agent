@@ -851,12 +851,30 @@ def _old_tests_command(olds: list) -> list:
     return ["/bin/bash", "-c", "; ".join(parts)]
 
 
+def _failing(output: str):
+    """unittest 输出里没过的那几项（FAIL:/ERROR: 行）和总数（FAILED (failures=N, errors=M)）。认不出返回 (None, None)。"""
+    names = set(re.findall(r"^(?:FAIL|ERROR): (\S+ \([^)]*\))", output or "", re.M))
+    m = re.search(r"FAILED \(([^)]*)\)", output or "")
+    total = sum(int(n) for n in re.findall(r"(?:failures|errors)=(\d+)", m.group(1))) if m else None
+    return (names or None), total
+
+
+def _more_failures(now_out: str, base_out: str) -> bool:
+    """这次比改之前多坏了：多出没过的项，或没过的总数变多。两边都认不出时不怪这次（照旧算改之前就不过）。"""
+    now_names, now_total = _failing(now_out)
+    base_names, base_total = _failing(base_out)
+    if now_names is not None and base_names is not None and now_names - base_names:
+        return True
+    return now_total is not None and base_total is not None and now_total > base_total
+
+
 def _broken_by_change(worktree, olds: list, judge_fn) -> list:
     """一批老测试没过时，逐个看是谁被这次改坏了（第三批复查第 2 轮：整批比会把新改坏的一起放过）：
     现在不过、而在改之前（施工副本提交上的样子）不是“没过”的 → 算这次改坏的（改之前超时、环境出错不算本来就不过）。
     看不出来（不是 git、检出失败）就当改之前是过的。"""
     import tempfile
-    now_bad = [o for o in olds if judge_fn(_old_tests_command([o]), cwd=worktree, timeout=_TEST_TIMEOUT).result != PASS]
+    now = {o: judge_fn(_old_tests_command([o]), cwd=worktree, timeout=_TEST_TIMEOUT) for o in olds}
+    now_bad = [o for o, v in now.items() if v.result != PASS]
     if not now_bad:
         return []
     tmp = tempfile.mkdtemp(prefix="collab-base-")
@@ -865,8 +883,13 @@ def _broken_by_change(worktree, olds: list, judge_fn) -> list:
                              capture_output=True, text=True)
         if add.returncode != 0:
             return now_bad
-        return [o for o in now_bad
-                if judge_fn(_old_tests_command([o]), cwd=tmp, timeout=_TEST_TIMEOUT).result != FAIL]
+        culprits = []
+        for o in now_bad:
+            base = judge_fn(_old_tests_command([o]), cwd=tmp, timeout=_TEST_TIMEOUT)
+            # 改之前过、超时、环境出错 → 算这次改坏的；改之前也没过 → 看这次是不是多坏了几项（同一文件里新改坏的，第 3 轮第 1 条）
+            if base.result != FAIL or _more_failures(now[o].output, base.output):
+                culprits.append(o)
+        return culprits
     except Exception:  # noqa: BLE001
         return now_bad
     finally:
