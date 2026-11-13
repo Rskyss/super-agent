@@ -51,11 +51,14 @@ body { background: var(--bg-side); }
 .steps li:not(:last-child)::before { content: ""; position: absolute; left: 18.5px; top: 30px; bottom: -8px; width: 1px; background: var(--hair-2); }
 .steps li:has(.done):not(:last-child)::before { background: rgba(98, 204, 147, .35); }
 .steps li:has(.active):not(:last-child)::before, .steps li:has(.wait):not(:last-child)::before { top: 100%; }
-.step { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; column-gap: 10px; align-items: center; width: 100%; padding: 9px 10px; text-align: left; background: none; border: 0; border-radius: var(--r-lg); cursor: default; transition: background var(--t-fast) var(--ease); position: relative; }
+.step { display: grid; grid-template-columns: 18px max-content minmax(0, 1fr); column-gap: 10px; align-items: center; width: 100%; padding: 9px 10px; text-align: left; background: none; border: 0; border-radius: var(--r-lg); cursor: default; transition: background var(--t-fast) var(--ease); position: relative; }
 .step:hover { background: rgba(255, 255, 255, .035); }
 .g { width: 18px; height: 18px; display: grid; place-items: center; }
 .t { font-size: var(--fs-base); font-weight: 500; color: var(--text); }
-.w { font-size: var(--fs-sm); color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 62%; justify-self: end; }
+/* 右上角“工具 · 模型（强度）”写全，放不下就折行，不用省略号（第二轮走查） */
+.w { font-size: var(--fs-sm); color: var(--faint); white-space: normal; text-align: right; justify-self: end; overflow-wrap: anywhere; }
+.k { grid-column: 2 / -1; font-size: var(--fs-sm); line-height: 1.55; color: var(--faint); margin-top: 2px; }
+.k:empty { display: none; }
 .d { grid-column: 2 / -1; font-size: var(--fs-sm); line-height: 1.55; color: var(--dim); white-space: normal; overflow: hidden; overflow-wrap: anywhere; }
 /* 每步说明最多 3 行，多出来的鼠标停上去看全文（流程修理第二轮 ㊷） */
 .step .d { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }

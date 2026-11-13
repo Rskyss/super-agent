@@ -257,6 +257,23 @@ class ReviewRound3A(ReviewRound1A):
         self.assertNotEqual(_station(view, "check")["state"], "done")
 
 
+class WalkFixes(unittest.TestCase):
+    """第二轮真实窗口走查（用户截图）：计时另起一行；右上角工具和模型写全，不用省略号。"""
+
+    def test_clock_on_its_own_line(self):
+        js = (ROOT / "desktop" / "static" / "panel.js").read_text(encoding="utf-8")
+        self.assertIn('<span class="k"></span>', js)
+        part = js.split("function stepText(s)")[1].split("}")[0]
+        self.assertNotIn("已干", part, "说明那行不带计时")
+        self.assertIn('querySelector(".k").textContent = clockText(s)', js)
+
+    def test_who_is_not_cut(self):
+        css = (ROOT / "desktop" / "static" / "panel.css").read_text(encoding="utf-8")
+        rule = css.split("\n.w {")[1].split("}")[0]
+        self.assertNotIn("ellipsis", rule)
+        self.assertNotIn("nowrap", rule)
+
+
 class ThreeLines(unittest.TestCase):
     def test_step_detail_and_now_line_clamped_to_three_lines(self):
         panel = (ROOT / "desktop" / "static" / "panel.css").read_text(encoding="utf-8")

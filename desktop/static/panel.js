@@ -281,7 +281,7 @@ if (typeof document !== "undefined") (function () {
   for (var i = 0; i < 7; i++) {
     var li = document.createElement("li");
     li.innerHTML = '<button class="step idle" type="button"><span class="g"></span><span class="t"></span>' +
-      '<span class="w"></span><span class="d"></span></button>';
+      '<span class="w"></span><span class="d"></span><span class="k"></span></button>';
     (function (idx) {
       li.querySelector("button").addEventListener("click", function () {
         var s = view && view.stations[idx];
@@ -293,10 +293,15 @@ if (typeof document !== "undefined") (function () {
   }
 
   function stepText(s) {
-    var parts = [PanelCore.cleanDetail(s.detail)];
+    return PanelCore.cleanDetail(s.detail);
+  }
+
+  // 计时单独一行，不跟说明挤在一起（第二轮走查：用户截图“已干 4:57 · 58 秒前有动静”被折成两半）
+  function clockText(s) {
+    var parts = [];
     if (s.state === "active" && s.elapsed != null) parts.push("已干 " + mmss(s.elapsed + since()));
     if (s.state === "active" && s.quiet != null) parts.push(ago(s.quiet + since()) + "前有动静");
-    return parts.filter(Boolean).join(" · ");
+    return parts.join(" · ");
   }
 
   function renderFlow(v) {
@@ -308,6 +313,7 @@ if (typeof document !== "undefined") (function () {
       // 工具 · 模型（强度）（第二轮 ㉗ ㊳）；点步骤看交接仍按工具名 s.who 找
       b.querySelector(".w").textContent = s.who + (s.model ? " · " + s.model : "") + (v.back && s.key === "dev" ? " · 退回返工" : "");
       b.querySelector(".d").textContent = kind === "idle" ? "" : stepText(s);
+      b.querySelector(".k").textContent = kind === "idle" ? "" : clockText(s);
       b.title = PanelCore.cleanDetail(s.detail);
       b.setAttribute("aria-label", s.role + " " + s.who + "，看交接");
     });
@@ -324,7 +330,7 @@ if (typeof document !== "undefined") (function () {
   function tick() {
     if (!view) return;
     view.stations.forEach(function (s, idx) {
-      if (s.state === "active") steps[idx].querySelector(".d").textContent = stepText(s);
+      if (s.state === "active") steps[idx].querySelector(".k").textContent = clockText(s);
     });
   }
 
