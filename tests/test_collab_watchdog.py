@@ -79,9 +79,11 @@ class DispatchRecordsWhyTest(unittest.TestCase):
                 return AgentResult(ok=False, output="看门人：超过 15 分钟没有任何文件变化，已停止", attempts=1)
             return AgentResult(ok=True, output="", attempts=1)
 
+        # 流程修理第三批 ㊾：被停下但本卡测试已过会直接交复查；这里测“卡住且测试没过”时照旧停下说原因
+        from collab.judge import FAIL
         card = run_card(Card("CARD-001", state="待派发"), collab_dir=collab, worktree=tmp.name,
                         test_command=["t"], dev_adapter="cursor", test_adapter="codex", ask_fn=ask,
-                        judge_fn=lambda c, cwd, timeout: Verdict(PASS, 0, "ok"))[0]
+                        judge_fn=lambda c, cwd, timeout: Verdict(FAIL, 1, "没过"))[0]
         return card, (card_dir / "返工记录.md").read_text(encoding="utf-8")
 
     def test_stuck_developer_is_escalated_with_reason(self):

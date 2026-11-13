@@ -23,7 +23,7 @@ body { background: var(--bg-side); }
 .action-btns button.danger { color: var(--bad); box-shadow: inset 0 0 0 1px rgba(255, 120, 120, .35); }
 #reviseBox { display: flex; flex-direction: column; gap: 8px; }
 #reviseBox[hidden] { display: none !important; }
-#reviseText { width: 100%; box-sizing: border-box; font: inherit; color: var(--text); background: var(--surface); border: 0; box-shadow: inset 0 0 0 1px var(--hair-2); border-radius: var(--r-sm); padding: 8px; resize: vertical; }
+#reviseText, #reviseFiles { width: 100%; box-sizing: border-box; font: inherit; color: var(--text); background: var(--surface); border: 0; box-shadow: inset 0 0 0 1px var(--hair-2); border-radius: var(--r-sm); padding: 8px; resize: vertical; }
 #reviseSend { align-self: flex-start; font-size: var(--fs-sm); background: var(--surface); color: var(--text); border: 0; box-shadow: inset 0 0 0 1px var(--hair-2); border-radius: var(--r-sm); padding: 5px 12px; cursor: default; }
 
 .plan-preview { padding: 8px 12px 4px; max-height: 42vh; overflow-y: auto; border-bottom: 1px solid var(--hair); font-size: var(--fs-sm); }

@@ -154,7 +154,7 @@ class Handler(BaseHTTPRequestHandler):
     def _card_action_error(self, text: str) -> None:
         self._json({"error": text}, 409)
 
-    def _do_card_action(self, project: str, card_id: str, action: str, text: str = "") -> None:
+    def _do_card_action(self, project: str, card_id: str, action: str, text: str = "", files=None) -> None:
         preview = getattr(self.server, "preview", None)
         if preview is not None:
             preview.stop()
@@ -184,7 +184,7 @@ class Handler(BaseHTTPRequestHandler):
 
         if action == "revise":
             try:
-                apply_revise(project, card_id, text)
+                apply_revise(project, card_id, text, files=files)
             except RuntimeError as exc:
                 self._card_action_error(str(exc))
                 return
@@ -1766,7 +1766,8 @@ class Handler(BaseHTTPRequestHandler):
             if action == "revise" and not extra.strip():
                 self._json({"error": "请写上要改什么"}, 400)
                 return
-            self._do_card_action(project, card_id, action, extra)
+            files = body.get("files") if isinstance(body.get("files"), list) else []  # “继续改”加的文件（第三批 ㉟）
+            self._do_card_action(project, card_id, action, extra, [str(f) for f in files][:20])
             return
         if path == "/api/clerk/setting":
             if not project or not Path(project).is_dir():

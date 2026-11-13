@@ -153,9 +153,11 @@ def propose(conv, arguments: dict) -> str:
         _append_proposal_line(conv, pid)
         event = {k: data[k] for k in ("id", "kind", "title", "do", "not_do", "done_when", "state", "card")}
         conv.emit(dict(event, type="proposal"))
-    return "已向用户出示确认框，等用户点确认或先不做。还没建卡。"
+    return _TASK_SHOWN
 
 
+_TASK_SHOWN = ("已向用户出示确认框，等用户点确认或先不做。还没建卡。"
+               "跟用户只说一句“点确认就建卡，之后调度员写方案给你批”，不要再问开工、复查这类事（调度员按流程安排，第三批 ㊵）。")
 _BLOCK_KINDS = ("install", "connect", "connect_api", "web_install", "connect_search")
 _STRIKES = 3  # 一段对话里行政起草的接法说明连续检测不通过几次就停
 _HTTPS_URL = re.compile(r"https://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[^\s]*)?")
@@ -1087,16 +1089,21 @@ def running(project: str, kind: str) -> Optional[Dict[str, Any]]:
     return data
 
 
-def apply_revise(project: str, card_id: str, text: str) -> None:
+def apply_revise(project: str, card_id: str, text: str, files=None) -> None:
     """确认框和按钮都走这里：能改才改，施工中先确认没有别的卡在跑。"""
     words = (text or "").strip()
     if not words:
         raise RuntimeError("请写上要改什么")
+    try:  # 文件路径不合规矩时先退回，什么都不动（第三批 ㉟）
+        from collab.tasks import _clean_scope_files
+        files = _clean_scope_files(files)
+    except TaskError as exc:
+        raise RuntimeError(str(exc)) from exc
     phase = card_phase(project, card_id)
     if "revise" not in (phase.get("actions") or []):
         raise RuntimeError("现在不能修改")
     if phase.get("code") in ("plan_ready", "plan_waiting", "plan_failed", "planning"):
-        revise_card(project, card_id, words)
+        revise_card(project, card_id, words, files=files)
         try:
             launch(project, "plan", card_id, ["plan", project, card_id])
         except TaskBusy:
@@ -1116,7 +1123,7 @@ def apply_revise(project: str, card_id: str, text: str) -> None:
     if not command:
         raise RuntimeError("这张卡没有测试命令，没法接着改。可以点“放弃这个需求”，再提一张新卡。")
     sync_copy(project, card_id)  # 同步不成会抛错，这时什么都没改
-    revise_card(project, card_id, words)
+    revise_card(project, card_id, words, files=files)
     cdir = Path(project) / ".collab" / "cards" / card_id
     try:
         launch(project, "run", card_id, ["run", project, card_id, "--test-command", command])
@@ -1417,7 +1424,7 @@ class TaskWatcher:
         # 同一个人的“没动静”提醒只留一条：记下上一条提醒是哪条消息、属于哪次派活（第二轮 ㉞）
         remind = played.get("remind") if isinstance(played, dict) and isinstance(played.get("remind"), dict) else {}
         # 提醒：干活的人几分钟没动静（流程修理 ⑲ 第一步）；退回：复查不通过自动退回写代码的（⑧）
-        news = {"方案", "方案失败", "开跑", "判定", "转人工", "结束", "停下", "合并失败", "合并", "提醒", "退回"}
+        news = {"方案", "方案失败", "开跑", "判定", "转人工", "结束", "停下", "合并失败", "合并", "提醒", "退回", "接着走"}
         cid = card_conversation_id(card_id)
         newest = last
         work = 0  # 最近一次派活的编号：提醒属于哪一次派活

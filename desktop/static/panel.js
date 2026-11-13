@@ -69,10 +69,11 @@ if (typeof document !== "undefined") (function () {
     return h;
   }
 
-  function postCard(action, text, cardId) {
+  function postCard(action, text, cardId, files) {
     var card = cardId || view.card.id;
     var body = { project: project, card: card, action: action };
     if (text) body = { project: project, card: card, action: action, text: text };
+    if (files && files.length) body.files = files;   // “继续改”加的文件（第三批 ㉟）
     return fetch("/api/clerk/card", { method: "POST", headers: cardHeaders(),
       body: JSON.stringify(body) })
       .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, status: r.status, d: d }; }); });
@@ -103,11 +104,13 @@ if (typeof document !== "undefined") (function () {
     if (!view || !view.card || actionBusy) return;
     var words = ($("reviseText").value || "").trim();
     if (!words) return;
+    var files = ($("reviseFiles").value || "").split(/[,，、\n]/).map(function (x) { return x.trim(); })
+      .filter(Boolean);
     actionBusy = true;
     renderActions();
-    postCard("revise", words).then(function (res) {
+    postCard("revise", words, undefined, files).then(function (res) {
       if (!res.ok && res.d && res.d.error) alert(res.d.error);
-      else { $("reviseText").value = ""; $("reviseBox").hidden = true; }
+      else { $("reviseText").value = ""; $("reviseFiles").value = ""; $("reviseBox").hidden = true; }
       actionBusy = false;
       poll();
     }).catch(function () {
@@ -428,6 +431,7 @@ if (typeof document !== "undefined") (function () {
       selected = id || null;
       $("reviseBox").hidden = true;   // 没提交的修改不能发到另一张卡
       $("reviseText").value = "";
+      $("reviseFiles").value = "";
       $("previewErr").hidden = true;
       previewRunning = false;
       filterWho = null;
