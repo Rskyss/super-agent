@@ -95,6 +95,9 @@ class Command(unittest.TestCase):
                "ERROR: stream disconnected: <400> InternalError.Algo: [Invalid request parameters.]")
         reason, _ = explain(out, "qwen")
         self.assertEqual(reason, "这个模型不接受这样的请求")
+        # 复查：插件启动日志里有参数错误、最后真正的失败是没登录 → 照旧说没登录
+        reason2, _ = explain("mcp: Invalid request parameters\nERROR: 401 Unauthorized: not logged in", "codex")
+        self.assertEqual(reason2, "没登录")
 
     def test_plugins_off_like_codex(self):
         old = agents._codex_plugin_names
