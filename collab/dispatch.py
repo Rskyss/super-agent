@@ -17,7 +17,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from collab.agents import QUIET_LIMIT, ask as default_ask, readable
+from collab.agents import QUIET_LIMIT, agy_error, ask as default_ask, readable
 from collab.flow import read_flow, record, reply_summary, text_of
 from collab.judge import Verdict, ENV_ERROR, FAIL, PASS, TIMEOUT, judge as default_judge
 from collab.scope import is_cache, out_of_scope
@@ -102,8 +102,12 @@ def _changed_list(worktree) -> list:
 
 
 def reply_text(result) -> str:
-    """干活的人最后那条回复；旧的假实现没有 final 时从完整输出里取。"""
-    return (getattr(result, "final", "") or readable(result.output)).strip()
+    """干活的人最后那条回复；旧的假实现没有 final 时从完整输出里取。
+    没做成又没回话时，补上 agy 自己报的原因（㉙ 复查第 2 轮：模型名不对、额度不够不能只说“没有返回任何内容”）。"""
+    text = getattr(result, "final", "") or readable(result.output)
+    if not text.strip() and not getattr(result, "ok", True):
+        text = agy_error(result.output)
+    return text.strip()
 
 
 def _command_text(test_command) -> str:
@@ -606,7 +610,8 @@ def _escalate(collab: Path, cdir: Path, card: Card, reason: str, cause: str = ""
 
 def _worker_failed(collab: Path, cdir: Path, card: Card, role: str, adapter: str, result):
     """干活的人没完成（报错、超时、被看门人停掉）：把原因写进返工记录，再转人工。"""
-    reason = (readable(result.output) or "没有返回任何内容").strip().splitlines()
+    # agy 报错时结果是空的，原因在它自己报的 error 里（㉙ 复查第 1 轮）
+    reason = (readable(result.output, adapter) or agy_error(result.output) or "没有返回任何内容").strip().splitlines()
     tail = reason[-1][:300] if reason else "没有返回任何内容"
     _append(cdir / "返工记录.md",
             f"- {datetime.now():%Y-%m-%d %H:%M} {role}（{adapter}）没有完成：{tail}\n")
@@ -736,7 +741,7 @@ def run_card(card: Card, collab_dir, worktree, test_command, dev_adapter, test_a
             return _worker_failed(collab, cdir, card, "测试员", test_adapter, prep)
         _log_step(cdir, "写测试", test_adapter, worktree)
         if require_tests and not _load_test_files(cdir):
-            _escalate(collab, cdir, card, f"测试员（{test_adapter}）没有写出任何测试：{reply_summary('写测试', readable(prep.output), True)}")
+            _escalate(collab, cdir, card, f"测试员（{test_adapter}）没有写出任何测试：{reply_summary('写测试', readable(prep.output, test_adapter), True)}")
             return card, None
 
     tester_files = _load_test_files(cdir)
@@ -857,6 +862,8 @@ def run_card(card: Card, collab_dir, worktree, test_command, dev_adapter, test_a
             verdict_kind = review_verdict(review_text)
             if not review.ok or verdict_kind == "unclear":
                 problem = "" if review.ok else _credit_problem("复查员", reviewer_adapter, review.output)
+                error = "" if review.ok or problem else agy_error(review.output)
+                problem = problem or (f"复查员（{reviewer_adapter}）没有完成：{error}" if error else "")
                 _escalate(collab, cdir, card,
                           problem or f"复查员（{reviewer_adapter}）没有给出结论，不能算通过")
                 return card, verdict

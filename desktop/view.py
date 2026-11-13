@@ -144,10 +144,40 @@ def _last_line(path: Path) -> str:
     return lines[-1] if lines else ""
 
 
+_AGY_VERBS = (
+    (("read_file", "view_file"), "正在看"),
+    (("edit_file", "write_file", "write_to_file", "replace_file_content", "multi_replace_file_content", "sed_file"),
+     "正在改"),
+)
+_AGY_PLAIN = {"grep_search": "正在查找", "find_by_name": "正在找文件", "list_dir": "正在找文件"}
+
+
+def _agy_hint(step: dict) -> str:
+    """agy 边干边吐的一步（㉙）：只翻“开始用工具”那一行；用完、回话碎片都不说。"""
+    if step.get("state") != "ACTIVE" or step.get("step_type") != "tool":
+        return ""
+    name = str(step.get("tool_name") or "")
+    params = (step.get("tool_info") or {}).get("parameters") or {}
+    params = params if isinstance(params, dict) else {}
+    for names, verb in _AGY_VERBS:
+        if name in names:  # 参数名各工具不一样（Path、AbsolutePath、TargetFile……），认带 path / file 的那个
+            target = next((str(v) for k, v in params.items()
+                           if isinstance(v, str) and v and ("path" in k.lower() or "file" in k.lower())), "")
+            return f"{verb} {Path(target).name or target}".strip()
+    if name in _AGY_PLAIN:
+        return _AGY_PLAIN[name]
+    if name == "run_command":
+        cmd = str(params.get("CommandLine") or params.get("command") or "").strip()
+        return f"正在跑：{cmd}" if cmd else "正在跑命令"
+    return f"正在用 {name}" if name else ""
+
+
 def _stream_hint(ev: dict) -> str:
-    """Cursor 边干边吐的一行，翻成大白话：说的话，或正在读/改哪个文件、跑什么命令。"""
+    """Cursor、agy 边干边吐的一行，翻成大白话：说的话，或正在读/改哪个文件、跑什么命令。"""
     if not isinstance(ev, dict):
         return ""
+    if ev.get("event") == "step_update" and isinstance(ev.get("step_update"), dict):
+        return _agy_hint(ev["step_update"])
     if ev.get("type") == "assistant":
         parts = (ev.get("message") or {}).get("content") or []
         text = "".join(c.get("text", "") for c in parts if isinstance(c, dict) and c.get("type") == "text").strip()
@@ -166,18 +196,21 @@ def _stream_hint(ev: dict) -> str:
     return ""
 
 
-def live_hint(path: Path, limit: int = 60) -> str:
-    """实时输出里干活的人最近说的一句话（Codex 每段话前面单独一行 codex）。没有就空。"""
+def live_hint(path: Path, limit: int = 60, tool: str = "") -> str:
+    """实时输出里干活的人最近说的一句话（Codex 每段话前面单独一行 codex）。没有就空。
+    往回看 1MB：agy 跑完测试那一行会带整段测试输出（几十 KB），只看最后一小截会找不到它此刻在干什么。
+    tool 是正在干活的工具：Codex 只认它自己说的话（它印出来的 agy、Cursor 日志不算，㉙ 复查第 1 轮），
+    Cursor、agy 只认一行一个的 JSON；不知道是谁就两种都试。"""
     try:
         with Path(path).open("rb") as fh:
             fh.seek(0, os.SEEK_END)
             size = fh.tell()
-            fh.seek(max(0, size - 16384))
+            fh.seek(max(0, size - 1024 * 1024))
             tail = fh.read().decode("utf-8", errors="replace")
     except OSError:
         return ""
     lines = [_ANSI.sub("", ln).strip() for ln in tail.splitlines()]
-    for ln in reversed(lines):  # Cursor 一行一个 JSON：最近一次说的话或动作
+    for ln in reversed(lines if tool != "codex" else []):  # Cursor、agy 一行一个 JSON：最近一次说的话或动作
         if not (ln.startswith("{") and ln.endswith("}")):
             continue
         try:
@@ -187,7 +220,7 @@ def live_hint(path: Path, limit: int = 60) -> str:
         said = _stream_hint(ev)
         if said:
             return said if len(said) <= limit else said[:limit - 1] + "…"
-    for i in range(len(lines) - 1, -1, -1):
+    for i in range(len(lines) - 1 if tool in ("", "codex") else -1, -1, -1):
         if lines[i] == "codex":
             for ln in lines[i + 1:]:
                 if ln:
@@ -557,7 +590,7 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
         now_text = phase.get("label") or now_text
         tone = tone_map.get(phase.get("tone"), tone)
     working = bool(open_ev) and not interrupted_run and state not in TERMINAL_STATES
-    detail = live_hint(cdir / open_ev["live"]) if working and open_ev.get("live") else ""
+    detail = live_hint(cdir / open_ev["live"], tool=open_ev.get("tool")) if working and open_ev.get("live") else ""
     view["now"] = {"text": now_text, "tone": tone}
     if detail:
         view["now"]["detail"] = detail

@@ -50,7 +50,8 @@ def codex_command(prompt: str, model: str = DEFAULT_MODELS["codex"],
 
 
 def agy_command(prompt: str, model: str = DEFAULT_MODELS["agy"]):
-    return ["agy", "-p", prompt, "--model", model, "--output-format", "json"]
+    # stream-json：每走一步吐一行（㉙：读代码十几分钟不改文件时，看门人和标题行靠它知道 agy 在干活），最后一行是结果
+    return ["agy", "-p", prompt, "--model", model, "--output-format", "stream-json"]
 
 
 def _build(adapter: str, prompt: str, models: dict, last_path=None):
@@ -71,9 +72,61 @@ class AgentResult:
     final: str = ""  # 最后一条回复（交给下一个人、认复查结论只看它）；完整过程在 output
 
 
-def readable(output: str) -> str:
-    """各家工具的回复可能是 JSON 包装（agy 用 response，Cursor 用 result），只取里面的文字。"""
+def _agy_events(text: str) -> list:
+    """agy 边干边吐的每一步（一行一个 {"event": ...}），按先后顺序。"""
+    events = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not (line.startswith("{") and line.endswith("}")):
+            continue
+        try:
+            data = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(data, dict) and isinstance(data.get("event"), str):
+            events.append(data)
+    return events
+
+
+def _agy_result(text: str, is_agy: bool):
+    """agy 最后吐的结果（dict）；不是 agy 边干边吐的输出返回 None。
+    知道是 agy（is_agy）：只要有它的步骤，就看它的最后一步——是结果才算，后面混进的报错字、被截断的半行都不算数。
+    不知道是谁：只有最后一行是 agy 的一步才当 agy（别家工具印出来的 agy 日志，后面跟着它自己的话）。"""
+    events = _agy_events(text)
+    if not events:
+        return None
+    if not is_agy:
+        lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        try:
+            last = json.loads(lines[-1])
+        except ValueError:
+            return None
+        if not (isinstance(last, dict) and isinstance(last.get("event"), str)):
+            return None
+    last = events[-1]
+    result = last.get("result") if last.get("event") == "result" else None
+    return result if isinstance(result, dict) else {}
+
+
+def agy_error(output: str) -> str:
+    """agy 没做成时它自己报的原因（第一行），比如模型名不对、额度不够；没有就空。"""
+    result = _agy_result((output or "").strip(), True)
+    if not result or result.get("status") == "SUCCESS":
+        return ""
+    error = result.get("error")
+    lines = [ln.strip() for ln in error.splitlines() if ln.strip()] if isinstance(error, str) else []
+    return lines[0] if lines else ""
+
+
+def readable(output: str, adapter: str = "") -> str:
+    """各家工具的回复可能是 JSON 包装（agy 用 response，Cursor 用 result），只取里面的文字。
+    agy 边干边吐（㉙）：只认它最后吐的结果，SUCCESS 取 response；不是 SUCCESS、没吐出结果（被停掉、被截断）
+    就当没回话——宁可算没完成，不能把报错或过程当结论。adapter 给了 agy 就按 agy 的规矩认（复查第 1 轮）。"""
     text = (output or "").strip()
+    result = _agy_result(text, adapter == "agy")
+    if result is not None:
+        reply = result.get("response") if result.get("status") == "SUCCESS" else None
+        return reply.strip() if isinstance(reply, str) else ""
     candidates = [text] + [line.strip() for line in reversed(text.splitlines())
                            if line.strip().startswith("{") and line.strip().endswith("}")]
     for candidate in candidates:
@@ -271,7 +324,7 @@ def ask(adapter: str, prompt: str, cwd, expect_file=None, timeout=DEFAULT_TIMEOU
             if last_path.exists():
                 final = _read_last(last_path)
             else:
-                final = _codex_last(output) if adapter == "codex" else readable(output)
+                final = _codex_last(output) if adapter == "codex" else readable(output, adapter)
             if expect_file is None and not final.strip():  # 检测连通看的是建没建出文件，不看回话
                 output = (output or "") + f"\n{EMPTY_REPLY}"
                 continue
