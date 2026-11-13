@@ -21,8 +21,8 @@ from collab.state import Card
 QUIET_WARN_SECONDS = 10 * 60  # 超过 10 分钟没有任何动静，提示可能卡住
 TERMINAL_STATES = {"待验收", "已合并", "需Claude介入", "已放弃"}
 
-TOOL_NAMES = {"claude": "Claude", "codex": "Codex", "cursor": "Cursor", "agy": "agy"}
-TOOL_FACES = {"claude": "Cl", "codex": "Cx", "cursor": "Cu", "agy": "ag"}
+TOOL_NAMES = {"claude": "Claude", "codex": "Codex", "cursor": "Cursor", "agy": "agy", "qwen": "千问"}
+TOOL_FACES = {"claude": "Cl", "codex": "Cx", "cursor": "Cu", "agy": "ag", "qwen": "千"}
 DEFAULT_TOOLS = {"测试员": "codex", "开发员": "cursor", "复查员": "agy"}
 ROLE_KEYS = {"测试员": "test", "开发员": "dev", "复查员": "rev"}
 _VERBS = {"写测试": "正在写测试", "改测试": "正在改测试", "开发": "正在写代码", "复查": "正在复查"}
@@ -248,11 +248,11 @@ def live_hint(path: Path, limit: int = 60, tool: str = "", test_command: str = "
     except OSError:
         return ""
     lines = [_ANSI.sub("", ln).strip() for ln in tail.splitlines()]
-    if tool != "codex":
+    if tool not in ("codex", "qwen"):  # 千问用 Codex 的壳，输出和 Codex 一样
         said = _stream_summary(lines, test_command)
         if said:
             return _cut(said, limit)
-    for i in range(len(lines) - 1 if tool in ("", "codex") else -1, -1, -1):
+    for i in range(len(lines) - 1 if tool in ("", "codex", "qwen") else -1, -1, -1):
         if lines[i] == "codex":
             for ln in lines[i + 1:]:
                 if ln:

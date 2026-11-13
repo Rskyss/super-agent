@@ -390,11 +390,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--test-command", required=True, help="判定用的测试命令，只看退出码")
     p.add_argument("--session-jsonl", help="Claude 会话记录路径，用于记录额度；填 auto 自动找最新的一份")
     p.add_argument("--page-check", help="真实页面检查命令（由项目定义），通过才算做完")
-    p.add_argument("--dev-tool", default=None, choices=["cursor", "codex", "agy"],
+    p.add_argument("--dev-tool", default=None, choices=["cursor", "codex", "agy", "qwen"],
                    help="开发员（写代码）；不写就用团队配置（默认 Cursor）")
-    p.add_argument("--test-tool", default=None, choices=["cursor", "codex", "agy"],
+    p.add_argument("--test-tool", default=None, choices=["cursor", "codex", "agy", "qwen"],
                    help="测试员（写测试）；不写就用团队配置（默认 Codex）")
-    p.add_argument("--review-tool", default=None, choices=["cursor", "codex", "agy", "none"],
+    p.add_argument("--review-tool", default=None, choices=["cursor", "codex", "agy", "qwen", "none"],
                    help="独立复查（只读）；none 表示不复查；不写就用团队配置（默认 agy）")
     p.add_argument("--resume-blocked", action="store_true",
                    help="从「需Claude介入」转入「开发中」后继续（须与断点续跑一起用）")

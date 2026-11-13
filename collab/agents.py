@@ -130,8 +130,27 @@ def _no_plugin_flags(names: list) -> list:
     return ["-c", f"mcp_servers={{{table}}}"]
 
 
+def _is_codex_shell(adapter: str) -> bool:
+    """用 Codex 的壳干活的：Codex 本身，和接千问 Token Plan 的“千问”。输出格式、最后回复都按 Codex 认。"""
+    return adapter in ("codex", "qwen")
+
+
+def qwen_command(prompt: str, model: str, effort: str = DEFAULT_MODELS["codex_effort"], last_path=None) -> list:
+    """千问：Codex 的壳，模型来源换成千问 Token Plan（responses 接法；chat 接法 Codex 已不支持，11-13 实测）。
+    密钥放进环境变量交给 Codex，命令行里不出现。"""
+    from collab.config import QWEN_BASE_URL, QWEN_KEY_ENV, qwen_key
+    os.environ[QWEN_KEY_ENV] = qwen_key()
+    cmd = codex_command(prompt, model=model, effort=effort, last_path=last_path)
+    provider = ["-c", 'model_providers.qwtp.name="千问 Token Plan"',
+                "-c", f'model_providers.qwtp.base_url="{QWEN_BASE_URL}"',
+                "-c", f'model_providers.qwtp.env_key="{QWEN_KEY_ENV}"',
+                "-c", 'model_providers.qwtp.wire_api="responses"',
+                "-c", 'model_provider="qwtp"']
+    return cmd[:-1] + provider + cmd[-1:]
+
+
 def _build(adapter: str, prompt: str, models: dict, last_path=None):
-    if adapter == "codex" and models.get("no_plugins"):
+    if _is_codex_shell(adapter) and models.get("no_plugins"):
         cmd = _build(adapter, prompt, {k: v for k, v in models.items() if k != "no_plugins"}, last_path)
         return cmd[:-1] + _no_plugin_flags(_codex_plugin_names()) + cmd[-1:]
     if adapter == "cursor":
@@ -141,6 +160,9 @@ def _build(adapter: str, prompt: str, models: dict, last_path=None):
                              sandbox=models.get("codex_sandbox") or "workspace-write")
     if adapter == "agy":
         return agy_command(prompt, model=models["agy"])
+    if adapter == "qwen":
+        return qwen_command(prompt, model=models.get("qwen") or DEFAULT_MODELS["qwen"],
+                            effort=models.get("codex_effort") or DEFAULT_MODELS["codex_effort"], last_path=last_path)
     raise KeyError(adapter)  # 未知适配器直接报错
 
 
@@ -582,7 +604,7 @@ def ask(adapter: str, prompt: str, cwd, expect_file=None, timeout=DEFAULT_TIMEOU
             if last_path.exists():
                 final = _read_last(last_path)
             else:
-                final = _codex_last(output) if adapter == "codex" else readable(output, adapter)
+                final = _codex_last(output) if _is_codex_shell(adapter) else readable(output, adapter)
             if expect_file is None and not final.strip():  # 检测连通看的是建没建出文件，不看回话
                 output = (output or "") + f"\n{EMPTY_REPLY}"
                 continue

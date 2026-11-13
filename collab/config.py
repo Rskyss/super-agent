@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -14,7 +15,7 @@ from urllib.parse import urlparse
 
 from collab.providers import find
 
-WORKERS = ("codex", "cursor", "agy")          # 能被协作包自动派活的工具
+WORKERS = ("codex", "cursor", "agy", "qwen")  # 能被协作包自动派活的工具；qwen = Codex 的壳接千问 Token Plan（用户 11-13 临时加）
 DISPATCHERS = ("codex", "cursor", "agy")      # 可当调度员的（另可“custom:命令”）；Claude 暂不进入
 DEFAULT_TEAM = {"tester": "codex", "developer": "cursor", "reviewer": "agy"}
 _ROLES = {"tester": "写测试", "developer": "写代码", "reviewer": "复查", "dispatcher": "调度员"}
@@ -24,7 +25,22 @@ DEFAULT_MODELS = {
     "codex": "gpt-6.1-sol",        # Codex 测试员
     "codex_effort": "xhigh",       # Codex 推理强度
     "agy": "gemini-4-argon-high",  # agy 备选开发
+    "qwen": "deepseek-v4.1-flash",  # 千问 Token Plan 上的模型
 }
+
+# 千问（临时，用户 11-13）：Codex 的壳 + 千问 Token Plan 地址。密钥放本机文件，不进项目、不进代码记录
+QWEN_BASE_URL = "https://token-plan.maas.qianwenaiapi.com/compatible-mode/v1"
+QWEN_KEY_ENV = "SUPERAGENT_QWEN_KEY"   # 派活时放进这个环境变量交给 Codex，命令行里不出现密钥
+QWEN_KEY_FILE = Path.home() / ".config" / "super-agent" / "qwen-token-plan.key"
+
+
+def qwen_key() -> str:
+    """本机文件里的千问密钥；没有返回空。测试可用 SUPERAGENT_QWEN_KEY_FILE 换文件位置。"""
+    path = Path(os.environ.get("SUPERAGENT_QWEN_KEY_FILE") or QWEN_KEY_FILE)
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
 CODEX_EFFORTS = ("low", "medium", "high", "xhigh", "max", "ultra")
 
 _EFFORT_LABELS = {
@@ -48,6 +64,14 @@ MODEL_OPTIONS = {
         {"value": "gpt-5.6-luna", "label": "GPT-5.6-Luna", "efforts": ["low", "medium", "high", "xhigh", "max"]},
     ],
     "codex_effort": [{"value": k, "label": _EFFORT_LABELS[k]} for k in CODEX_EFFORTS],
+    "qwen": [  # 11-13 从千问 Token Plan 的模型清单里挑的能写代码的
+        {"value": "deepseek-v4.1-flash", "label": "DeepSeek V4.1 Flash"},
+        {"value": "deepseek-v4-pro", "label": "DeepSeek V4 Pro"},
+        {"value": "qwen3.8-max", "label": "Qwen3.8 Max"},
+        {"value": "qwen3.8-flash", "label": "Qwen3.8 Flash"},
+        {"value": "glm-5.3", "label": "GLM-5.3"},
+        {"value": "qwen4-max-preview", "label": "Qwen4 Max Preview"},
+    ],
     "cursor": [
         {"value": "auto", "label": "Auto（自动推荐 · 默认）"},
         {"value": "gpt-5.6-sol-xhigh", "label": "GPT-5.6 Sol 1M Extra High"},

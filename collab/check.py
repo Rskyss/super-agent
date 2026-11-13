@@ -17,8 +17,8 @@ from pathlib import Path
 from collab.agents import ask, watched_runner
 from collab.config import load_models, load_role_models, load_team
 
-COMMANDS = {"codex": "codex", "cursor": "agent", "agy": "agy"}   # Cursor 的命令行叫 agent
-TOOL_NAMES = {"codex": "Codex", "cursor": "Cursor", "agy": "agy", "none": "不复查"}
+COMMANDS = {"codex": "codex", "cursor": "agent", "agy": "agy", "qwen": "codex"}   # Cursor 的命令行叫 agent；千问用 Codex 的壳
+TOOL_NAMES = {"codex": "Codex", "cursor": "Cursor", "agy": "agy", "qwen": "千问", "none": "不复查"}
 ROLE_ORDER = ("dispatcher", "tester", "developer", "reviewer")
 ROLE_NAMES = {"dispatcher": "调度员", "tester": "写测试", "developer": "写代码", "reviewer": "复查"}
 PROBE_FILE = "连通检测.txt"
@@ -67,6 +67,12 @@ def check_tool(tool: str, models: dict, timeout: float = DEFAULT_TIMEOUT) -> dic
     if tool.startswith("custom:"):
         return {"ok": True, "status": "ok", "reason": "已找到这个命令（自定义调度员只能检查装没装）", "how": "",
                 "seconds": 0}
+    if tool == "qwen":
+        from collab.config import QWEN_KEY_FILE, qwen_key
+        if not qwen_key():
+            return {"ok": False, "status": "missing", "reason": "千问还没配密钥",
+                    "how": f"把千问 Token Plan 的密钥放进本机文件 {QWEN_KEY_FILE}（只有自己能读），或让 Claude 帮你放",
+                    "seconds": 0}
     folder = Path(tempfile.mkdtemp(prefix="超级助手检测-"))
     start = time.time()
     try:
