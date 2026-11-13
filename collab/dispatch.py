@@ -410,10 +410,14 @@ def _review_reject_pending(cdir: Path, past: list) -> tuple:
     """最近一次复查结论是不通过，且之后没有成功的开发员回复 → 必须带着意见重改。"""
     last_reject = None
     notes = ""
+    closed = _closed_replies(cdir)
+    kept = {e.get("reply"): e.get("back") for e in read_flow(cdir) if e.get("kind") == "以后再修" and e.get("back")}
     for e in reversed(past):
         if e.get("kind") != "回复" or e.get("src") != "复查员":
             continue
-        body = text_of(cdir, e)
+        if e.get("seq") in closed:   # 收口算通过的那次（第四轮 57 复查）：接着跑不再退回
+            return False, ""
+        body = kept.get(e.get("seq")) or text_of(cdir, e)   # 只退回收口后留下的那几条
         kind = review_verdict(body) if body else review_verdict(e.get("summary") or "")
         if kind == "reject":
             last_reject = e
@@ -846,12 +850,13 @@ def _related_old_tests(worktree, cdir: Path, changed_fn) -> list:
     texts = {}
     for path in sorted(tests_dir.rglob("*")):
         rel = path.relative_to(root).as_posix()
-        if not path.is_file() or is_cache(rel) or rel in mine or path.stat().st_size > 2_000_000:
+        if not path.is_file() or is_cache(rel) or path.stat().st_size > 2_000_000:
             continue
         try:
             texts[rel] = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
+    # 本卡自己的测试文件只在最后排除：它们列着的辅助脚本照样要顺着找（复查：辅助脚本被本卡列入后依赖链断了）
     found = [rel for rel, text in texts.items() if _is_test_file(rel) and any(p.search(text) for p in pats)]
     if others:
         # 辅助脚本（测试用的 .js、不是 test_ 开头的 .py）提到了改动的页面文件：再找用到这个辅助脚本的测试（68c 那层）
@@ -860,7 +865,7 @@ def _related_old_tests(worktree, cdir: Path, changed_fn) -> list:
         hp = [_name_pattern(Path(h).name) for h in helpers]
         found += [rel for rel, text in texts.items() if _is_test_file(rel) and rel not in found
                   and any(p.search(text) for p in hp)]
-    return sorted(found)  # 不截断：挑出来多少跑多少（复查第 6 条）
+    return sorted(f for f in found if f not in mine)  # 不截断：挑出来多少跑多少（复查第 6 条）
 
 
 def _is_test_file(rel: str) -> bool:
@@ -931,8 +936,8 @@ def _broken_by_change(worktree, olds: list, judge_fn) -> list:
 _NOW_TAG = "【这次改的】"
 _OLD_TAG = "【原来就有的】"
 _TRIAGE_NOTE = (f"这是改过以后的复查：每条在级别后面再标{_NOW_TAG}或{_OLD_TAG}。"
-                f"{_NOW_TAG}＝问题出在上次复查之后改动的地方，或者上次复查提的问题没改好；"
-                f"{_OLD_TAG}＝上次复查时就已经在那里、上次没提的。")
+                f"{_NOW_TAG}＝问题出在这张卡改动的代码里（和开工前的样子比，用 git diff 看），包括上次复查提的没改好的；"
+                f"{_OLD_TAG}＝开工前项目里就有、不是这张卡改出来的。拿不准的标{_NOW_TAG}。")
 
 
 def _level(item: str) -> str:
@@ -964,8 +969,17 @@ def _closed_replies(cdir: Path) -> set:
     return {e.get("reply") for e in read_flow(cdir) if e.get("kind") == "以后再修" and e.get("closed")}
 
 
+def _places(items: list) -> set:
+    """复查写的位置（文件:行），路径只留最后两段（绝对路径、相对路径都对得上；不同目录的同名文件分得开）。"""
+    out = set()
+    for t in items:
+        for path, line in re.findall(r"([\w./-]+\.[A-Za-z]{1,5}):(\d+)", t):
+            out.add(("/".join(path.strip("/").split("/")[-2:]), line))
+    return out
+
+
 def _files_in(items: list) -> set:
-    return {m.rsplit("/", 1)[-1] for t in items for m in re.findall(r"([\w./-]+\.[A-Za-z]{1,5}):\d+", t)}
+    return {p for p, _ in _places(items)}
 
 
 def _same_place_new(cdir: Path, now_items: list) -> list:
@@ -980,7 +994,7 @@ def _same_place_new(cdir: Path, now_items: list) -> list:
         return []
     before = _numbered_items(bodies[-2], whole=True)
     shared = _files_in(before) & _files_in(now_items)
-    if not shared:
+    if not shared or _places(before) & _places(now_items):   # 同一行又被提：是老问题没改好，不是新问题
         return []
     plain_now = [_plain_words(t) for t in now_items]
     plain_before = [_plain_words(t) for t in before]
@@ -1019,7 +1033,10 @@ def _draft_revise(ask_fn, cdir: Path, adapter: str, models, worktree, needs, cha
               f"最后一句“只改这一部分，别的不动；改完跑本卡测试，过了就交”。"
               f"格式：第一段两句大白话，告诉用户为什么每轮都有新问题（不写文件名、代码名）；然后单独一行 ---；"
               f"下面是给写代码的人的交代正文。只读，不要修改任何文件。")
-    effort = dict(models or {}, codex_effort="xhigh")
+    order = ["low", "medium", "high", "xhigh", "max", "ultra"]
+    mine = str((models or {}).get("codex_effort") or "")
+    top = mine if mine in order and order.index(mine) > order.index("xhigh") else "xhigh"   # 配得更高就用配的
+    effort = dict(models or {}, codex_effort=top, codex_sandbox="read-only")   # 只读（复查：原来没真的只读）
     try:
         result = _dispatch(ask_fn, cdir, "调度员", adapter, "起草", prompt, worktree, effort, round_no)
         text = reply_text(result).strip()
@@ -1072,9 +1089,10 @@ class _FullSlot:
         self.thread.start()
 
     def stop(self):
+        """叫停并等它真的收完（复制、测试都有时限、会响应叫停），不留旧一轮的线程和进程（复查第 5 条）。"""
+        self.event.set()
         if self.thread is not None:
-            self.event.set()
-            self.thread.join(60)
+            self.thread.join()
             record(self.cdir, "全量", src="程序", phase="停", summary="这一轮全量测试不用跑完了（要改代码）")
         self.thread = None
 
@@ -1094,13 +1112,13 @@ class _FullSlot:
             record(self.cdir, "全量", src="程序", phase="结果", result=now.result,
                    summary=f"全部测试{what}", text=now.output[-20000:])
             return now, f"全部测试{what}，需要调度员看看"
-        files = fullrun.failing_files(now.output)
+        files = fullrun.failing_files(now.output, self.worktree)
         if not files:
             record(self.cdir, "全量", src="程序", phase="结果", result=FAIL,
                    summary="全部测试没过，但认不出是哪几项", text=now.output[-20000:])
             return now, "全部测试没过，但认不出是哪几项，需要调度员看看"
         base = self.runner.base(self.worktree, sorted(files), self.event)
-        bad = fullrun.culprits(now, base)
+        bad = fullrun.culprits(now, base, self.worktree)
         names = "、".join(Path(f).stem for f in (bad or sorted(files)))
         if not bad:
             record(self.cdir, "全量", src="程序", phase="结果", result=FAIL,
@@ -1461,11 +1479,11 @@ def _run_card(card, collab_dir, worktree, test_command, dev_adapter, test_adapte
                            text="\n\n".join(later))
                     verdict_kind = "pass"
                 elif later:
-                    record(cdir, "以后再修", src="程序", dst="你", reply=reply_seq,
+                    review_text = "结论：不通过\n" + "\n".join(f"{i + 1}. {t}" for i, t in enumerate(back))
+                    record(cdir, "以后再修", src="程序", dst="你", reply=reply_seq, back=review_text,
                            items=plain_issues("\n".join(f"{i + 1}. {t}" for i, t in enumerate(later))) or None,
                            summary=f"复查另挑出 {len(later)} 件原来就有的或轻微的，记进“以后再修”，这次只退回 {len(back)} 件",
                            text="\n\n".join(later))
-                    review_text = "结论：不通过\n" + "\n".join(f"{i + 1}. {t}" for i, t in enumerate(back))
                 if verdict_kind == "reject":
                     same_files = _same_place_new(cdir, back)
             if verdict_kind == "reject":

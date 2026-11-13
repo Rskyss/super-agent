@@ -137,3 +137,19 @@ class DraftShown(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DraftReadOnly(Base):
+    def test_read_only_and_keeps_higher_effort(self):
+        _, seen = self.go(REJ)
+        self.assertEqual(seen["models"][0].get("codex_sandbox"), "read-only")
+
+    def test_ultra_kept(self):
+        from collab.dispatch import _draft_revise
+        got = {}
+
+        def ask_fn(adapter, prompt, cwd, models=None, **kw):
+            got.update(models or {})
+            return AgentResult(ok=True, output="", attempts=1, final=DRAFT)
+        _draft_revise(ask_fn, self.cdir, "codex", {"codex_effort": "ultra"}, self.worktree, "卡", lambda w: [], 1)
+        self.assertEqual(got["codex_effort"], "ultra")

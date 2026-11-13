@@ -261,3 +261,47 @@ class FullView(unittest.TestCase):
         self.assertIn("全部测试", view["now"]["text"])
         self.record(self.cdir, "全量", src="程序", phase="结果", result=FAIL, summary="老测试坏了：test_old")
         self.assertEqual(self.station(card_view(self.project))["state"], "fail")
+
+
+class ReviewRound1(unittest.TestCase):
+    """第四轮 Codex 复查第 1 轮（全量部分）。"""
+
+    def test_children_cleaned_after_normal_exit(self):
+        with tempfile.TemporaryDirectory() as d:
+            mark = Path(d) / "pid"
+            v = run_command(["/bin/sh", "-c", f"sleep 30 & echo $! > {mark}; echo done"], d, dict(os.environ), 20)
+            self.assertEqual(v.result, PASS)
+            pid = int(mark.read_text().strip())
+            time.sleep(0.2)
+            with self.assertRaises(ProcessLookupError):
+                os.kill(pid, 0)
+
+    def test_more_subtest_failures_blamed(self):
+        base_out = "FAIL: test_a (test_old.T) (x=1)\n"
+        now_out = "FAIL: test_a (test_old.T) (x=1)\nFAIL: test_a (test_old.T) (x=2)\n"
+        self.assertEqual(culprits(Verdict(FAIL, 1, now_out), {"tests/test_old.py": Verdict(FAIL, 1, base_out)}),
+                         ["tests/test_old.py"])
+
+    def test_same_failures_not_blamed(self):
+        out = "FAIL: test_a (test_old.T) (x=1)\n"
+        self.assertEqual(culprits(Verdict(FAIL, 1, out), {"tests/test_old.py": Verdict(FAIL, 1, out)}), [])
+
+    def test_new_python_format_and_nested(self):
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "tests" / "sub").mkdir(parents=True)
+            (Path(d) / "tests" / "test_old.py").write_text("", encoding="utf-8")
+            (Path(d) / "tests" / "sub" / "test_x.py").write_text("", encoding="utf-8")
+            out = ("FAIL: test_a (test_old.T.test_a)\nERROR: test_b (sub.test_x.T.test_b)\n"
+                   "FAIL: test_c (test_old.T)\n")
+            self.assertEqual(set(failing_files(out, d)), {"tests/test_old.py", "tests/sub/test_x.py"})
+
+
+class FullViewStale(FullView):
+    def test_old_start_from_previous_run_not_shown(self):
+        from desktop.view import card_view
+        self.record(self.cdir, "全量", src="程序", phase="开始", summary="跑全部测试")
+        self.record(self.cdir, "开跑", src="调度员", dst="程序", summary="接着施工", pid=os.getpid(),
+                    tools={"测试员": "codex", "开发员": "qwen", "复查员": "codex"})
+        self.record(self.cdir, "派活", src="调度员", dst="开发员", tool="qwen", step="开发", round=1,
+                    summary="写代码", live=True)
+        self.assertNotEqual(self.station(card_view(self.project))["state"], "active")

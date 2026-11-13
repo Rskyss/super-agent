@@ -141,3 +141,61 @@ class LaterShown(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReviewRound1(Base):
+    """第四轮 Codex 复查第 1 轮（收口部分）。"""
+
+    def test_old_means_before_card_started(self):
+        _, calls = self.go([R1, "结论：通过"])
+        self.assertIn("开工前", calls["review"][1])
+        self.assertNotIn("上次复查时就已经在", calls["review"][1])
+
+    def test_resume_after_closed_does_not_return(self):
+        from collab.dispatch import _review_reject_pending
+        from collab.flow import record
+        rep = record(self.cdir, "回复", src="复查员", dst="调度员", ok=True, summary="结论：不通过",
+                     text="结论：不通过\n1. 【轻微】【这次改的】字小。")
+        record(self.cdir, "以后再修", src="程序", reply=rep["seq"], closed=True, items=["字小"], summary="收口")
+        self.assertEqual(_review_reject_pending(self.cdir, read_flow(self.cdir)), (False, ""))
+
+    def test_resume_after_partial_returns_only_kept(self):
+        from collab.dispatch import _review_reject_pending
+        from collab.flow import record
+        rep = record(self.cdir, "回复", src="复查员", dst="调度员", ok=True, summary="结论：不通过",
+                     text="结论：不通过\n1. 【中等】【这次改的】按钮没反应。\n2. 【轻微】【这次改的】字小。")
+        record(self.cdir, "以后再修", src="程序", reply=rep["seq"], items=["字小"], summary="收口",
+               back="结论：不通过\n1. 【中等】【这次改的】按钮没反应。")
+        pending, notes = _review_reject_pending(self.cdir, read_flow(self.cdir))
+        self.assertTrue(pending)
+        self.assertNotIn("字小", notes)
+
+    def test_same_name_other_folder_not_same_place(self):
+        from collab.dispatch import _places
+        a = _places(["x 位置：[frontend/index.js:10](/w/frontend/index.js:10)"])
+        b = _places(["y 位置：[backend/index.js:90](/w/backend/index.js:90)"])
+        self.assertFalse({p for p, _ in a} & {p for p, _ in b})
+
+    def test_same_line_again_is_not_root_cause(self):
+        r1 = "结论：不通过\n1. 【中等】断网重问。位置：[chat.js:600](/x/chat.js:600)"
+        r2 = "结论：不通过\n1. 【中等】【这次改的】切走再回来立刻重查。位置：[chat.js:600](/x/chat.js:600)"
+        _, calls = self.go([r1, r2, "结论：通过"])
+        self.assertNotIn("共同原因", calls["dev"][2])
+
+
+class LaterKept(unittest.TestCase):
+    def test_later_survives_revise(self):
+        from collab.flow import record
+        from collab.phase import card_phase
+        from collab.workspace import init_collab
+        with tempfile.TemporaryDirectory() as d:
+            project = Path(d) / "proj"
+            project.mkdir()
+            cdir = init_collab(project) / "cards" / "CARD-001"
+            cdir.mkdir(parents=True)
+            (cdir / "需求卡.md").write_text("# 卡\n", encoding="utf-8")
+            Card("CARD-001", state="待验收").save(cdir / "状态.json")
+            record(cdir, "以后再修", src="程序", items=["切换对话时卡住"], summary="记进以后再修 1 件")
+            record(cdir, "追加要求", src="你", dst="调度员", summary="再改一处")
+            record(cdir, "结束", src="程序", dst="你", state="待验收", summary="做完了")
+            self.assertEqual(card_phase(str(project), "CARD-001")["later"], ["切换对话时卡住"])

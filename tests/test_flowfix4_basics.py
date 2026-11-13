@@ -69,7 +69,7 @@ class ReworkCount(Base):
         record(self.cdir, "追加要求", src="你", dst="调度员", summary="只改这一块")
         record(self.cdir, "退回", src="程序", dst="开发员", summary="复查不通过，自动退回")
         words = rework_words(0, self.cdir)
-        self.assertEqual(words, "测试没过返工 0 次、复查退回 3 次、继续改 1 次")
+        self.assertEqual(words, "测试没过返工 0 次、复查退回 4 次（其中你继续改 1 次）")
 
     def test_no_returns(self):
         self.assertEqual(rework_words(2, self.cdir), "测试没过返工 2 次、复查退回 0 次")

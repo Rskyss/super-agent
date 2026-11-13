@@ -604,7 +604,10 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
         _set(stations, "check", "idle", "等代码写完")
 
     # 复查的同时程序在跑全量（第四轮 59）：开始了、还没出结果、这一轮也没被叫停 → 跑测试那一格显示在跑
-    fulls = [e for e in events if e.get("kind") == "全量"]
+    # 只认这次开跑、这一轮写代码之后的（复查：中断后接着跑，上一进程留下的“开始”不能算在跑）
+    since = max([e.get("seq", 0) for e in events if e.get("kind") == "开跑"]
+                + [e.get("seq", 0) for e in events if e.get("kind") == "派活" and e.get("dst") == "开发员"], default=0)
+    fulls = [e for e in events if e.get("kind") == "全量" and e.get("seq", 0) > since]
     full_last = fulls[-1] if fulls else None
     full_running = bool(full_last and full_last.get("phase") == "开始" and state not in TERMINAL_STATES
                         and not interrupted_run)

@@ -44,6 +44,12 @@ class Related(unittest.TestCase):
         self.assertNotIn("tests/test_unrelated.py", found)
         self.assertNotIn("tests/test_mine.py", found, "本卡自己的测试不算老测试")
 
+    def test_helper_listed_as_mine_still_followed(self):
+        """辅助脚本被列进本卡测试文件（写测试的改过它）也要顺着找，只是它自己不算老测试。"""
+        (self.cdir / "测试文件.json").write_text(
+            json.dumps(["tests/test_mine.py", "tests/cli_models_68c_page_check.js"]), encoding="utf-8")
+        self.assertIn("tests/test_acceptance_68c_additional.py", self.pick(["desktop/static/abilities.js"]))
+
     def test_name_must_be_whole(self):
         found = self.pick(["desktop/static/abilities.js"])
         self.assertNotIn("tests/test_core.py", found, "abilities_core.js 不算提到 abilities.js")

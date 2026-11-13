@@ -216,5 +216,6 @@ def rework_words(rework: int, card_dir) -> str:
     events = read_flow(card_dir)
     returns = sum(1 for e in events if e.get("kind") == "退回")
     revises = sum(1 for e in events if e.get("kind") == "追加要求")
-    words = f"测试没过返工 {rework} 次、复查退回 {returns} 次"
-    return words + (f"、继续改 {revises} 次" if revises else "")
+    # 方案定的口径：复查退回 = 自动退回 + 你点“继续改”重开（69b 算 4 次）
+    words = f"测试没过返工 {rework} 次、复查退回 {returns + revises} 次"
+    return words + (f"（其中你继续改 {revises} 次）" if revises else "")

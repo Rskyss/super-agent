@@ -241,10 +241,9 @@ def _plan_phase(project: str, card_id: str, cdir: Path, events: list) -> dict:
 
 
 def _later_items(events: list) -> list:
-    """这次开工（最后一条追加要求之后）复查记进“以后再修”的事，大白话（第四轮 57）。"""
-    start = max((i for i, e in enumerate(events) if e.get("kind") == "追加要求"), default=-1)
-    out = []
-    for e in events[start + 1:]:
+    """这张卡复查记进“以后再修”的事，大白话（第四轮 57）。"""
+    out = []   # 整张卡的（继续改以后也留着，复查：清单会在继续改后消失）
+    for e in events:
         if e.get("kind") == "以后再修":
             out += [str(t) for t in (e.get("items") or [])] or [str(e.get("summary") or "")]
     return out
@@ -387,7 +386,7 @@ def card_phase(project: str, card_id: str) -> dict:
             return {
                 "code": "merge_failed", "label": "没能放进项目", "tone": "bad", "needs_you": True,
                 "detail": str(told or "放进项目停在了半路，项目里的代码还没验证完。再点一次继续验证，或点“放弃这个需求”退回。"),
-                "actions": ["accept", "discard"], "branch": branch,
+                "actions": ["accept", "discard"], "branch": branch, "later": _later_items(events),
             }
         worktree = Path(project).parent / f"{Path(project).name}-worktrees" / card_id
         if any(ev.get("kind") == "开跑" for ev in events) and not worktree.is_dir():
@@ -399,13 +398,13 @@ def card_phase(project: str, card_id: str) -> dict:
             return {
                 "code": "merge_failed", "label": "没能放进项目", "tone": "bad", "needs_you": True,
                 "detail": str(last_result.get("summary") or ""), "actions": ["accept", "revise", "discard"],
-                "branch": branch,
+                "branch": branch, "later": _later_items(events),
             }
         if last_result and last_result.get("kind") == "合并开始":
             return {
                 "code": "merge_failed", "label": "没能放进项目", "tone": "bad", "needs_you": True,
                 "detail": "放进项目中途断了，可以再试一次", "actions": ["accept", "revise", "discard"],
-                "branch": branch,
+                "branch": branch, "later": _later_items(events),
             }
         later = _later_items(events)
         return {
