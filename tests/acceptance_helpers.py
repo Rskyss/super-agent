@@ -135,6 +135,9 @@ class ProjectCase(unittest.TestCase):
         os.environ.pop("FAKE_PLAN", None)
         # 假 Codex 分不出“备交接资料”和别的活：这类整条流程的测试不备资料（交接资料自己的测试在 test_flowfix2_dispatch）
         os.environ["SUPERAGENT_NO_HANDOVER"] = "1"
+        os.environ["SUPERAGENT_NO_FULL"] = "1"
+        os.environ["SUPERAGENT_NO_PROGRESS"] = "1"
+        os.environ["SUPERAGENT_NO_DRAFT"] = "1"
         os.environ.pop("CODEX_SANDBOX", None)
 
     def git(self, *args):

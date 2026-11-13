@@ -159,6 +159,14 @@ def _handover_worker(project):
         return None
 
 
+def _full_runner():
+    """复查的同时跑全量（第四轮 59）；集成测试里用 SUPERAGENT_NO_FULL=1 关掉（不然会在项目副本里再跑一遍全量）。"""
+    if os.environ.get("SUPERAGENT_NO_FULL") == "1":
+        return None
+    from collab.fullrun import FullRunner
+    return FullRunner()
+
+
 def _finish_run_line(project, card_id, card, cdir) -> None:
     """台账和终端里的收尾一句：返工次数把复查退回、继续改也算上（第四轮 58）。"""
     words = rework_words(card.rework, cdir)
@@ -271,6 +279,7 @@ def cmd_run(args, ask_fn=None, judge_fn=None, **_):
                       if args.page_check else None),
         reviewer_adapter=reviewer, require_tests=True,
         handover=_handover_worker(args.project) if ask_fn is None else None,  # 测试替身不备资料
+        full_runner=_full_runner() if ask_fn is None else None,
     )
     if session:
         record_card_usage(_collab(args.project), args.card_id, usage_since(session, offset))

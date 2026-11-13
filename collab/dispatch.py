@@ -917,6 +917,90 @@ def _broken_by_change(worktree, olds: list, judge_fn) -> list:
         subprocess.run(["git", "worktree", "prune"], cwd=str(worktree), capture_output=True)
 
 
+class _FullSlot:
+    """复查的同时跑全量（第四轮 59）：start() 在后台开跑，stop() 叫停，finish() 等它跑完给结论。
+    没给 runner（测试替身、关掉了）就什么都不做；不是 Python 项目就记一笔跳过。"""
+
+    def __init__(self, runner, worktree, cdir):
+        import threading
+        self.runner, self.worktree, self.cdir = runner, worktree, cdir
+        self.event = threading.Event()
+        self.thread = None
+        self.result = None
+        self.skipped = False
+
+    def start(self):
+        import threading
+        from collab import fullrun
+        if self.runner is None or self.thread is not None:
+            return
+        if not fullrun.applicable(self.worktree):
+            if not self.skipped:
+                self.skipped = True
+                record(self.cdir, "全量", src="程序", phase="跳过",
+                       summary="不是 Python 项目（没有 tests/test_*.py），全量测试跳过，最后靠人看")
+            return
+        self.event = threading.Event()
+        self.result = None
+        record(self.cdir, "全量", src="程序", phase="开始",
+               summary="复查的同时，程序在一份副本里跑全部测试（真 AI 工具藏起来），看有没有改坏老功能")
+
+        def work():
+            try:
+                self.result = self.runner.run(self.worktree, self.event)
+            except Exception as exc:  # noqa: BLE001 — 跑不起来交给 finish 说清
+                self.result = Verdict(ENV_ERROR, None, f"全量测试跑不起来：{exc}")
+
+        self.thread = threading.Thread(target=work, daemon=True)
+        self.thread.start()
+
+    def stop(self):
+        if self.thread is not None:
+            self.event.set()
+            self.thread.join(60)
+            record(self.cdir, "全量", src="程序", phase="停", summary="这一轮全量测试不用跑完了（要改代码）")
+        self.thread = None
+
+    def finish(self, judge_round: int):
+        """返回 (verdict, 停下原因)。过 → PASS；改坏老功能 → FAIL（交代写明哪几项）；超时、出错、看不懂 → 停下。"""
+        from collab import fullrun
+        if self.thread is None:
+            return Verdict(PASS, 0, ""), ""
+        self.thread.join()
+        self.thread = None
+        now = self.result or Verdict(ENV_ERROR, None, "全量测试没有结果")
+        if now.result == PASS:
+            record(self.cdir, "全量", src="程序", phase="结果", result=PASS, summary="全部测试都过了")
+            return Verdict(PASS, 0, ""), ""
+        if now.result != FAIL:
+            what = "超时（30 分钟没跑完）" if now.result == TIMEOUT else "跑不起来"
+            record(self.cdir, "全量", src="程序", phase="结果", result=now.result,
+                   summary=f"全部测试{what}", text=now.output[-20000:])
+            return now, f"全部测试{what}，需要调度员看看"
+        files = fullrun.failing_files(now.output)
+        if not files:
+            record(self.cdir, "全量", src="程序", phase="结果", result=FAIL,
+                   summary="全部测试没过，但认不出是哪几项", text=now.output[-20000:])
+            return now, "全部测试没过，但认不出是哪几项，需要调度员看看"
+        base = self.runner.base(self.worktree, sorted(files), self.event)
+        bad = fullrun.culprits(now, base)
+        names = "、".join(Path(f).stem for f in (bad or sorted(files)))
+        if not bad:
+            record(self.cdir, "全量", src="程序", phase="结果", result=FAIL,
+                   summary=f"全部测试里有没过的（{names}），但改之前就不过，不算这次改坏的", text=now.output[-20000:])
+            return Verdict(PASS, 0, ""), ""
+        listing = "\n".join(f"- {f}：{'；'.join(sorted(files[f]))}" for f in bad)
+        record(self.cdir, "全量", src="程序", phase="结果", result=FAIL,
+               summary=f"全部测试里这些老测试没过，改之前它们是过的：{names}", text=now.output[-20000:])
+        record(self.cdir, "判定", src="程序", dst="开发员", result=FAIL, round=judge_round,
+               summary=f"第 {judge_round} 轮：复查过了，但全部测试里有老测试被改坏了（{names}）",
+               text=now.output[-20000:])
+        return Verdict(FAIL, now.returncode,
+                       f"本卡测试过了，但全部测试里这些老测试没过，改之前它们是过的（这次改动把原来的功能改坏了，"
+                       f"要改代码让它们也过，不要改老测试；跑法：python3 -m unittest discover -s tests -p 文件名）：\n"
+                       f"{listing}\n\n{now.output[-6000:]}"), ""
+
+
 def _review_return_prompt(notes: str, needs, revise_bit: str, plan_hint: str) -> str:
     """复查退回（第三批 ㊾）：只交要改的这几条（连同复查员写的原因和位置），说清其他已经验过、不要重新核对；
     不带开工时的整卡交接资料（69 里 agy 因此把整张卡又核了一遍，30 分钟改不完一句提示）。"""
@@ -941,7 +1025,7 @@ _VERDICT_SUMMARY = {PASS: "测试全部通过", FAIL: "测试没过", ENV_ERROR:
 def run_card(card: Card, collab_dir, worktree, test_command, dev_adapter, test_adapter,
              ask_fn=default_ask, judge_fn=default_judge, models=None,
              allowed=None, changed_fn=None, page_command=None, reviewer_adapter=None,
-             revert_fn=None, require_tests=False, role_models=None, handover=None):
+             revert_fn=None, require_tests=False, role_models=None, handover=None, full_runner=None):
     """交接资料（第二轮 ㉚）：调度员在后台和写测试的同时备；不管施工怎么结束（交活、卡住、出错、被停），
     都在这里收尾——还没备完就停掉它，不留下后台的工具进程（复查 B 第 5 条、C 第 1 条）。"""
     import threading
@@ -953,11 +1037,13 @@ def run_card(card: Card, collab_dir, worktree, test_command, dev_adapter, test_a
         notes_job = threading.Thread(target=_make_handover, daemon=True,
                                      args=(ask_fn, cdir, handover[0], handover[1], cdir / "需求卡.md", worktree))
         notes_job.start()
+    full = _FullSlot(full_runner, worktree, cdir)
     try:
         return _run_card(card, collab_dir, worktree, test_command, dev_adapter, test_adapter, ask_fn, judge_fn,
                          models, allowed, changed_fn, page_command, reviewer_adapter, revert_fn, require_tests,
-                         role_models, notes_job)
+                         role_models, notes_job, full)
     finally:
+        full.stop()
         if notes_job is not None and notes_job.is_alive():
             _agents.kill_current_tool_process_group()
             notes_job.join(30)
@@ -966,7 +1052,7 @@ def run_card(card: Card, collab_dir, worktree, test_command, dev_adapter, test_a
 
 def _run_card(card, collab_dir, worktree, test_command, dev_adapter, test_adapter, ask_fn, judge_fn, models,
               allowed, changed_fn, page_command, reviewer_adapter, revert_fn, require_tests, role_models,
-              notes_job):
+              notes_job, full=None):
     """role_models：{测试员|开发员|复查员: 模型设置}，每个岗位用自己的模型和强度（流程修理 ①）；没给的岗位用 models。"""
     by_role = role_models or {}
     collab = Path(collab_dir)
@@ -1203,6 +1289,9 @@ def _run_card(card, collab_dir, worktree, test_command, dev_adapter, test_adapte
                                       f"本卡测试过了，但这些老测试没过，改之前它们是过的（这次改动把原来的功能改坏了，"
                                       f"要改代码让它们也过，不要改老测试）：{names}\n\n{old_v.output}")
 
+        if verdict.result == PASS and full is not None:
+            full.start()  # 复查的同时程序在副本里跑全量（第四轮 59）
+
         if verdict.result == PASS and reviewer_adapter:
             # 独立复查：由另一个 AI 只读检查改动是否符合需求，写“结论：通过/不通过”
             review = _dispatch(ask_fn, cdir, "复查员", reviewer_adapter, "复查",
@@ -1223,10 +1312,13 @@ def _run_card(card, collab_dir, worktree, test_command, dev_adapter, test_adapte
                 problem = "" if review.ok else _credit_problem("复查员", reviewer_adapter, review.output)
                 error = "" if review.ok or problem else agy_error(review.output)
                 problem = problem or (f"复查员（{reviewer_adapter}）没有完成：{error}" if error else "")
+                full.stop() if full is not None else None
                 _escalate(collab, cdir, card,
                           problem or f"复查员（{reviewer_adapter}）没有给出结论，不能算通过")
                 return card, verdict
             if verdict_kind == "reject":
+                if full is not None:
+                    full.stop()  # 复查不通过要改代码，这一轮全量不用跑完
                 rejects = _review_rejects(cdir)
                 issues = plain_issues(review_text)
                 hidden = max(0, len(_numbered_items(review_text)) - len(issues))
@@ -1264,6 +1356,12 @@ def _run_card(card, collab_dir, worktree, test_command, dev_adapter, test_adapte
                 last_output = None
                 review_round = rejects
                 continue
+
+        if verdict.result == PASS and full is not None:
+            verdict, stop_reason = full.finish(judge_round=card.rework + 1)
+            if stop_reason:
+                _escalate(collab, cdir, card, stop_reason)
+                return card, verdict
 
         if verdict.result == PASS:
             card.transition("待验收")

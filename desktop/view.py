@@ -603,6 +603,18 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
     else:
         _set(stations, "check", "idle", "等代码写完")
 
+    # 复查的同时程序在跑全量（第四轮 59）：开始了、还没出结果、这一轮也没被叫停 → 跑测试那一格显示在跑
+    fulls = [e for e in events if e.get("kind") == "全量"]
+    full_last = fulls[-1] if fulls else None
+    full_running = bool(full_last and full_last.get("phase") == "开始" and state not in TERMINAL_STATES
+                        and not interrupted_run)
+    if full_running:
+        _set(stations, "check", "active", "复查的同时在跑全部测试，看有没有改坏老功能（约十几分钟）")
+    elif full_last and full_last.get("phase") in ("结果", "跳过") and (
+            not last_verdict or full_last.get("seq", 0) > last_verdict.get("seq", 0)):
+        bad = full_last.get("result") not in (None, PASS) and "不算这次" not in full_last.get("summary", "")
+        _set(stations, "check", "fail" if bad else "done", full_last.get("summary", ""))
+
     # 新一轮开始（写代码、改测试的又派了活）：上一轮的跑测试、复查结果收进“交接”，不再挂在流程里；
     # 写代码的交活后、复查还没出新结论时也一样（复查 A 第 3 条、第 2 轮 A 第 2 条、㉞）
     redo = [e.get("seq", 0) for e in events if e.get("kind") == "派活" and e.get("dst") in ("开发员", "测试员")
@@ -648,6 +660,8 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
         now_text, tone = f"{_label(role, tools.get(role))} {verb}", "run"
     elif testing:
         now_text, tone = f"程序正在跑测试（第 {rnd} 轮）", "run"
+    elif full_running:
+        now_text, tone = "复查过了，程序在跑全部测试，看有没有改坏老功能", "run"
     elif state in ("待对齐", "待派发") and chat and (chat["busy"] or chat["asking"]):
         disp_who, _ = _dispatcher(dispatcher)
         if chat["asking"]:
