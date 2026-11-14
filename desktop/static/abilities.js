@@ -549,12 +549,18 @@ if (typeof document !== "undefined") (function () {
         listUl.className = "result-list";
         (v.body.items || []).forEach(function (item) {
           var li = document.createElement("li");
-          var a = document.createElement("a");
-          a.href = item.url || "#";
-          a.target = "_blank";
-          a.setAttribute("rel", "noopener"); // rel="noopener"
-          a.textContent = item.title || item.url || "无标题";
-          li.appendChild(a);
+          var href = AbilitiesCore.safeLink(item.url);
+          var titleEl;
+          if (href) {
+            titleEl = document.createElement("a");
+            titleEl.href = href;
+            titleEl.target = "_blank";
+            titleEl.setAttribute("rel", "noopener"); // rel="noopener"
+          } else {
+            titleEl = document.createElement("span");
+          }
+          titleEl.textContent = item.title || item.url || "无标题";
+          li.appendChild(titleEl);
           if (item.summary || item.snippet) {
             var sum = document.createElement("p");
             sum.className = "result-summary";

@@ -70,7 +70,10 @@ def _open(url, timeout, limit):
         with opener.open(req, timeout=timeout) as resp:
             return resp.status, resp.headers.get("Location", ""), resp.read(limit + 1)
     except urllib.error.HTTPError as exc:
-        return exc.code, exc.headers.get("Location", "") if exc.headers else "", b""
+        try:
+            return exc.code, exc.headers.get("Location", "") if exc.headers else "", b""
+        finally:
+            exc.close()
 
 
 def _request_json(url, data=None, headers=None, timeout=PAGE_TIMEOUT):
@@ -78,12 +81,16 @@ def _request_json(url, data=None, headers=None, timeout=PAGE_TIMEOUT):
     req = urllib.request.Request(url, data=body, headers=dict({"User-Agent": _UA, "Accept": "application/json"},
                                                               **({"Content-Type": "application/json"} if body else {}),
                                                               **(headers or {})))
+    opener = urllib.request.build_opener(_NoRedirect, urllib.request.HTTPSHandler(context=ssl.create_default_context()))
     try:
-        with urllib.request.urlopen(req, timeout=timeout, context=ssl.create_default_context()) as resp:
+        with opener.open(req, timeout=timeout) as resp:
             raw = resp.read(MAX_PAGE_BYTES + 1)
             status = resp.status
     except urllib.error.HTTPError as exc:
-        raw, status = exc.read(64 * 1024) if exc.fp else b"", exc.code
+        try:
+            raw, status = exc.read(64 * 1024) if exc.fp else b"", exc.code
+        finally:
+            exc.close()
     try:
         return status, json.loads(raw.decode("utf-8", "replace")) if raw else {}
     except ValueError:
@@ -435,6 +442,8 @@ def verify_install(url, install, command=None, search_key=None) -> dict:
         if not default and package["commands"] and spec["package"].split("/")[-1] in package["commands"]:
             default = spec["package"].split("/")[-1]
         command = command or default
+        if package["commands"] and command not in package["commands"]:
+            raise BlockError("装好后的命令名不在这个包登记的命令里：这个包登记的是 " + "、".join(package["commands"]))
     elif spec["type"] == "brew":
         package = brew_info(spec["name"], spec["cask"])
         command = command or spec["name"]

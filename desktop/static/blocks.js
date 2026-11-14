@@ -883,10 +883,11 @@ if (typeof document !== "undefined") (function () {
     });
   }
 
-  function pollModelTrialJob(jobId, cardId, onDone, onError) {
+  function pollModelTrialJob(jobId, cardId, onDone, onError, failures) {
+    var failCount = failures || 0;
     getJson("/api/blocks/job", { id: jobId }).then(function (j) {
       if (!j.done) {
-        setTimeout(function () { pollModelTrialJob(jobId, cardId, onDone, onError); }, 500);
+        setTimeout(function () { pollModelTrialJob(jobId, cardId, onDone, onError, 0); }, 500);
       } else if (j.error) {
         if (onError) onError(new Error(j.error));
         else onDone(new Error(j.error));
@@ -894,7 +895,14 @@ if (typeof document !== "undefined") (function () {
         onDone(null, j.result);
       }
     }).catch(function () {
-      setTimeout(function () { pollModelTrialJob(jobId, cardId, onDone, onError); }, 1000);
+      var nextFailCount = failCount + 1;
+      if (nextFailCount >= 3) {
+        var err = new Error("查不到试用结果（本机服务可能重启过），请再试一次");
+        if (onError) onError(err);
+        else onDone(err);
+        return;
+      }
+      setTimeout(function () { pollModelTrialJob(jobId, cardId, onDone, onError, nextFailCount); }, 1000);
     });
   }
 

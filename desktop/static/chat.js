@@ -775,12 +775,18 @@ if (typeof document !== "undefined") (function () {
       listEl.className = "ability-list";
       (view.body.items || []).forEach(function (item) {
         var li = document.createElement("li");
-        var link = document.createElement("a");
-        link.href = item.url || "#";
-        link.target = "_blank";
-        link.rel = "noopener";
-        link.textContent = item.title || item.url || "无标题";
-        li.appendChild(link);
+        var href = AbilitiesCore.safeLink(item.url);
+        var titleEl;
+        if (href) {
+          titleEl = document.createElement("a");
+          titleEl.href = href;
+          titleEl.target = "_blank";
+          titleEl.rel = "noopener";
+        } else {
+          titleEl = document.createElement("span");
+        }
+        titleEl.textContent = item.title || item.url || "无标题";
+        li.appendChild(titleEl);
         if (item.summary || item.snippet) {
           var summary = document.createElement("p");
           summary.textContent = item.summary || item.snippet;

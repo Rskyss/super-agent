@@ -13,6 +13,11 @@ var AbilitiesCore = {
       .replace(/'/g, "&#39;");
   },
 
+  safeLink: function (url) {
+    var value = String(url || "").trim();
+    return /^https?:\/\//i.test(value) ? value : "";
+  },
+
   statusView: function (item) {
     var st = (item && item.status) || "ok";
     if (st === "ok") return { cls: "ok", text: "能用" };
