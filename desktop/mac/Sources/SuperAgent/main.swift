@@ -137,11 +137,43 @@ final class ViewSwitch: NSView {
     }
 }
 
+/// 这一次是不是走查、截图或自测：--walk 开头的都算，再加截图、行政自测、用文件交密钥。
+/// 自测一律用单独的钥匙串和单独的设置，不改用户的窗口记忆，不真开浏览器（精读报告 S11：
+/// 以前各处各写一份名单，--walk-clerk、--walk-clerk-forget 这些不算自测，会读、存、删用户真实的密钥）
+func isSelfTestRun(_ args: [String] = CommandLine.arguments) -> Bool {
+    let exact: Set<String> = ["--snapshot", "--clerk-try", "--clerk-ui-test", "--clerk-key-file", "--clerk-key-dir"]
+    return args.contains { $0.hasPrefix("--walk") || exact.contains($0) }
+}
+
+/// 页面里点了“新窗口打开”的链接：只有外部网页（http/https、不是本机服务）才交给默认浏览器。
+/// 本机服务的地址带口令，不能交出去；javascript:、file: 等其他开头一律不打开（精读报告第一批修复·链接）
+/// 本机地址的各种写法都认：localhost（含末尾带点、*.localhost）、127.x / 0.x（含 127.1、十进制整数等简写）、
+/// IPv6 的 ::1、::（含展开写法）和 ::ffff:127.x 这类映射写法（Codex 复查第 1 轮）
+func externalWebLink(_ url: URL?) -> URL? {
+    guard let url = url, let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https",
+          var host = url.host?.lowercased() else { return nil }
+    if host.hasPrefix("["), host.hasSuffix("]") { host = String(host.dropFirst().dropLast()) }
+    while host.hasSuffix(".") { host.removeLast() }
+    if host.isEmpty || host == "localhost" || host.hasSuffix(".localhost") { return nil }
+    var v4 = in_addr()
+    if inet_aton(host, &v4) != 0 {
+        let first = UInt32(bigEndian: v4.s_addr) >> 24
+        if first == 127 || first == 0 { return nil }
+    }
+    var v6 = in6_addr()
+    if inet_pton(AF_INET6, host, &v6) == 1 {
+        let b = withUnsafeBytes(of: v6) { Array($0) }
+        let loopOrAny = b[0..<15].allSatisfy { $0 == 0 } && b[15] <= 1
+        let mapped = b[0..<10].allSatisfy { $0 == 0 } && b[10] == 0xff && b[11] == 0xff && (b[12] == 127 || b[12] == 0)
+        if loopOrAny || mapped { return nil }
+    }
+    return url
+}
+
 /// 行政人员的密钥：只放本机钥匙串，不写进任何文件
 /// 走查写“最近一次设置”和“已提醒”到单独一份，不能改用户真实的
 var clerkPrefs: UserDefaults {
-    let walks = CommandLine.arguments.contains { $0.hasPrefix("--walk") || $0 == "--snapshot" || $0 == "--clerk-try" || $0 == "--clerk-ui-test" }
-    return walks ? (UserDefaults(suiteName: "local.superagent.desktop.walk") ?? .standard) : .standard
+    isSelfTestRun() ? (UserDefaults(suiteName: "local.superagent.desktop.walk") ?? .standard) : .standard
 }
 
 enum ClerkKey {
@@ -149,8 +181,7 @@ enum ClerkKey {
     static let changed = Notification.Name("SuperAgentClerkKeysChanged")
 
     static var service: String {
-        let tests = ["--clerk-try", "--clerk-ui-test", "--clerk-key-file", "--walk", "--snapshot"]  // 自测绝不碰用户的钥匙串
-        return "local.superagent.clerk" + (tests.contains { CommandLine.arguments.contains($0) } ? ".selftest" : "")
+        "local.superagent.clerk" + (isSelfTestRun() ? ".selftest" : "")  // 自测绝不碰用户的钥匙串
     }
 
     static func query(account: String) -> [String: Any] {
@@ -376,7 +407,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
     var rightWidth: CGFloat = 372
     var chatKept = false  // 去设置时聊天没断开
     var leaveConfirmed = false  // 这次去终端已经问过了
-    var selfTest: Bool { argValue("--snapshot") != nil || argValue("--walk") != nil }  // 自测不改用户的记忆
+    var selfTest: Bool { isSelfTestRun() }  // 自测不改用户的记忆
     var leftView: LeftView = .terminal
     var recentMenu = NSMenu(title: "最近打开")
     var server: Process?
@@ -1201,10 +1232,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
         }
     }
 
+    /// 结果里的链接是“新窗口打开”：外部网页交给默认浏览器（走查时只记下），不在应用里另开窗口
+    func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
+                 for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
+        if let target = externalWebLink(navigationAction.request.url) { openFromPanel(target) }
+        return nil
+    }
+
     /// 走查时只记下来，不弹浏览器、不开访达
     var walkOpened: [String] = []
     func openFromPanel(_ target: URL) {
-        if CommandLine.arguments.contains(where: { $0.hasPrefix("--walk") }) {
+        if isSelfTestRun() {
             walkOpened.append(target.absoluteString)
         } else {
             NSWorkspace.shared.open(target)

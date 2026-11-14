@@ -221,6 +221,13 @@ final class BlocksWindow: NSObject, NSWindowDelegate, WKScriptMessageHandler, WK
         }
     }
 
+    /// 结果里的链接是“新窗口打开”：外部网页交给默认浏览器（走查时只记下），不在应用里另开窗口
+    func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
+                 for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
+        if let target = externalWebLink(navigationAction.request.url) { app?.openFromPanel(target) }
+        return nil
+    }
+
     /// 积木库页面用不到 superagent:// 地址，一律取消、不做事
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
                  decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void) {

@@ -47,9 +47,12 @@ class WindowRules(Source):
         self.assertIn("clerkAddressIsBad", self.section("func checkClerkChoice", "func askClerk()"))
 
     def test_self_tests_never_touch_the_real_keychain(self):
+        # 精读报告 S11 起名单统一放进 isSelfTestRun，钥匙串那段只调它（行为测试在 test_readfix1）
         key = self.swift[self.swift.index("enum ClerkKey"):self.swift.index("static func query")]
+        self.assertIn("isSelfTestRun()", key)
+        rule = self.section("func isSelfTestRun", "var clerkPrefs")
         for word in ("--walk", "--snapshot", "--clerk-key-file", "--clerk-try", "--clerk-ui-test"):
-            self.assertIn(word, key)
+            self.assertIn(word, rule)
 
     def test_key_prompt_names_the_provider(self):
         body = self.section("func askClerkKey", "func confirmClearClerk")
