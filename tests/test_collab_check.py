@@ -170,11 +170,15 @@ class CheckTest(unittest.TestCase):
         for c in ("codex", "agent", "agy"):
             self.tool(c, "ok")
         self.team()
-        buf = io.StringIO()
-        with redirect_stdout(buf), redirect_stderr(buf):
+        # 正常输出和报错输出分开收；读不出时把拿到的原样打出来（71 号单：全部测试一起跑时偶发读不出）
+        buf, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(buf), redirect_stderr(err):
             code = main(["check", str(self.project), "--json", "--timeout", "10"])
-        self.assertEqual(code, 0, buf.getvalue())
-        data = json.loads(buf.getvalue())
+        self.assertEqual(code, 0, buf.getvalue() + err.getvalue())
+        try:
+            data = json.loads(buf.getvalue())
+        except ValueError:
+            self.fail("检测结果不是格式数据：\n" + buf.getvalue()[:2000] + "\n报错输出：\n" + err.getvalue()[:2000])
         self.assertEqual(len(data), 4)
 
 

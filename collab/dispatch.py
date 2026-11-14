@@ -1197,6 +1197,25 @@ class _FullSlot:
             record(self.cdir, "全量", src="程序", phase="结果", result=FAIL,
                    summary=f"全部测试里有没过的（{names}），但改之前就不过，不算这次改坏的", text=now.output[-20000:])
             return Verdict(PASS, 0, ""), ""
+        # 退回写代码的之前，在现在的样子上单独再跑一次：单独跑能过的是测试自己不稳，写代码的修不了（卡 71 白退 3 轮，1-9）
+        alone_fn = getattr(self.runner, "alone", None)
+        alone = alone_fn(self.worktree, bad, self.event) if alone_fn else {}
+        shaky = [f for f in bad if f in alone and alone[f].result == PASS]
+        unclear = [f for f in bad if f not in alone or alone[f].result not in (PASS, FAIL)]
+        if alone_fn and unclear:   # 单独重跑超时、跑不起来、没跑到：不等于“单独也坏”，交人看（复查第 1 轮）
+            names = "、".join(Path(f).stem for f in unclear)
+            record(self.cdir, "全量", src="程序", phase="结果", result=FAIL,
+                   summary=f"全部测试里 {names} 没过，单独重跑也没得出结论，不退回写代码的", text=now.output[-20000:])
+            return now, f"全部测试里 {names} 没过，单独重跑没得出结论（超时或跑不起来），需要调度员看看"
+        if shaky and len(shaky) == len(bad):
+            names = "、".join(Path(f).stem for f in shaky)
+            record(self.cdir, "全量", src="程序", phase="结果", result=FAIL,
+                   summary=f"全部测试里 {names} 没过，但单独跑能过（多半是测试自己不稳），不退回写代码的",
+                   text=now.output[-20000:])
+            return now, f"全部测试里 {names} 没过，但单独跑能过（多半是测试自己不稳），写代码的修不了，需要调度员看看"
+        if shaky:
+            bad = [f for f in bad if f not in shaky]
+            names = "、".join(Path(f).stem for f in bad)
         listing = "\n".join(f"- {f}：{'；'.join(sorted(files[f]))}" for f in bad)
         record(self.cdir, "全量", src="程序", phase="结果", result=FAIL,
                summary=f"全部测试里这些老测试没过，改之前它们是过的：{names}", text=now.output[-20000:])
@@ -1483,7 +1502,13 @@ def _run_card(card, collab_dir, worktree, test_command, dev_adapter, test_adapte
 
         if verdict.result == PASS:
             # 相关老测试（第三批 ㉜）：本卡测试过了，再跑用到这次改动文件的老测试；不过就当测试没过退回写代码的
+            # 有全部测试兜底（和复查同时跑、几个文件同时跑，几分钟）就不先跑相关老测试挡着复查开工（第一期 1-9）
+            from collab import fullrun as _fullrun
+            covered = full.runner is not None and _fullrun.applicable(worktree)
             olds = _related_old_tests(worktree, cdir, changed_fn)
+            if covered:   # 只省掉全量真会跑到的；全量找不到的（例如没有 __init__.py 的子文件夹）照旧先跑（复查第 1 轮）
+                found = set(_fullrun._test_files(worktree))
+                olds = [o for o in olds if Path(o).as_posix() not in found]
             if olds:
                 names = "、".join(Path(o).stem for o in olds)
                 old_v = judge_fn(_old_tests_command(olds), cwd=worktree, timeout=_TEST_TIMEOUT)

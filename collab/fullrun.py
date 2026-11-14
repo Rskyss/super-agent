@@ -188,12 +188,16 @@ def run_command(cmd, cwd, env, timeout, stop=None, log=None) -> Verdict:
     proc = None
     seen = set()
     try:
+        if _EXITING["on"]:
+            return Verdict(STOPPED, None, "")
         try:
             proc = subprocess.Popen(cmd, cwd=str(cwd), env=env, stdout=out, stderr=subprocess.STDOUT, text=True,
                                     stdin=subprocess.DEVNULL, start_new_session=True)
         except FileNotFoundError as exc:
             return Verdict(ENV_ERROR, None, f"找不到命令：{exc}")
         _GROUPS.add(proc.pid)
+        if _EXITING["on"]:   # 登记前后正好在清场：登记后再看一眼，自己收掉（清场先亮信号再收登记的，1-9 复查第 2 轮）
+            return Verdict(STOPPED, None, "")
         deadline = time.time() + timeout
         seen = set()   # 跑的过程中看到的后代进程组：父进程先退了，它们成了孤儿也要收（复查第 3 轮）
         last_scan = 0.0
@@ -263,25 +267,142 @@ def failing_files(output: str, root=None) -> dict:
     return files
 
 
-class FullRunner:
-    """run(worktree, stop) 跑全量；base(worktree, files, stop) 在改之前的样子上逐个跑这些文件。"""
+def _test_files(root) -> list:
+    """全量要跑的测试文件：和 discover -s tests 找到的一致（顶层 test_*.py，加上带 __init__.py 的子文件夹里的）。"""
+    tests = Path(root) / "tests"
+    out = []
+    for path in sorted(tests.rglob("test_*.py")):
+        parent = path.parent
+        while parent != tests and (parent / "__init__.py").is_file():
+            parent = parent.parent
+        if parent == tests:
+            out.append(path.relative_to(root).as_posix())
+    return out
 
-    def __init__(self, timeout: int = FULL_TIMEOUT):
+
+_SUMMARY = re.compile(r"^Ran (\d+) tests? in [^\n]*\n\n(OK|FAILED|NO TESTS RAN)(?: \(([^)]*)\))?", re.M)
+
+
+def _finished(v: Verdict) -> Verdict:
+    """一个文件跑出的结果：有汇总才算跑完；没有汇总（半路退出，哪怕退出码是 0）算跑不起来；
+    文件里一项测试都没有（新版 Python 写 NO TESTS RAN、退出码 5）算过（1-9 复查第 2 轮）。"""
+    if v.result not in (PASS, FAIL):
+        return v
+    found = list(_SUMMARY.finditer(v.output or ""))
+    if not found:
+        return Verdict(ENV_ERROR, v.returncode, (v.output or "") + "\n（没跑完就退出了，没有汇总）")
+    m = found[-1]   # 只认最后的总汇总（测试里自己跑了小 suite 也会打汇总，复查第 3 轮）
+    if m.group(2) == "NO TESTS RAN":   # 只有新版 Python“文件里没测试”的正常写法（Ran 0、退出码 5）才算过
+        if m.group(1) == "0" and v.returncode == 5:
+            return Verdict(PASS, 0, v.output)
+        return Verdict(ENV_ERROR, v.returncode, (v.output or "") + "\n（汇总写没有测试，但退出得不对，算没跑完，没有汇总）")
+    return v
+
+
+def _merge(results: list, took: float) -> Verdict:
+    """各文件分开跑的结果拼成一份，末尾补一个总汇总（和一次跑完的样子一样，认没过的项照旧）。
+    结果按最坏的算：停了 > 超时 > 跑不起来 > 没过 > 过（第一期 1-9）。"""
+    total = failures = errors = skipped = unexpected = 0
+    parts = []
+    unfinished = []
+    results = [(rel, _finished(v)) for rel, v in results]
+    for rel, v in results:
+        parts.append(f"===== {rel} =====\n{v.output or ''}")
+        if v.result == ENV_ERROR and "没有汇总" in (v.output or ""):
+            unfinished.append(rel)   # 没跑完就退出、没有汇总：不能让别处的老失败把它盖过去（复查第 1、2 轮）
+        for m in list(_SUMMARY.finditer(v.output or ""))[-1:]:   # 每个文件只认最后的总汇总
+            total += int(m.group(1))
+            extra = m.group(3) or ""
+            failures += sum(int(n) for n in re.findall(r"failures=(\d+)", extra))
+            errors += sum(int(n) for n in re.findall(r"errors=(\d+)", extra))
+            skipped += sum(int(n) for n in re.findall(r"skipped=(\d+)", extra))
+            unexpected += sum(int(n) for n in re.findall(r"unexpected successes=(\d+)", extra))
+    order = [STOPPED, TIMEOUT, ENV_ERROR, FAIL, PASS]
+    worst = min((v.result for _, v in results), key=lambda r: order.index(r) if r in order else 0, default=PASS)
+    if unfinished:
+        parts.append("这些测试文件没跑完就退出了（没有汇总）：" + "、".join(unfinished))
+    bits = [f"failures={failures}"] * bool(failures) + [f"errors={errors}"] * bool(errors) \
+        + [f"skipped={skipped}"] * bool(skipped) + [f"unexpected successes={unexpected}"] * bool(unexpected)
+    word = "OK" if worst == PASS else "FAILED"
+    tail = f"\n{'-' * 70}\nRan {total} tests in {took:.3f}s\n\n{word}" + (f" ({', '.join(bits)})" if bits else "")
+    code = 0 if worst == PASS else next((v.returncode for _, v in results if v.result == worst), None)
+    return Verdict(worst, code, "\n".join(parts) + tail + "\n")
+
+
+class FullRunner:
+    """run(worktree, stop) 跑全量；base(worktree, files, stop) 在改之前的样子上逐个跑这些文件；
+    alone(worktree, files, stop) 在现在的样子上单独跑这些文件（只在一起跑时坏的，不算改坏，第一期 1-9）。
+    全量按文件分开、几个同时跑：每个文件单独一个进程，互不干扰，也快（1-9：一个个跑要 13 分钟）。"""
+
+    def __init__(self, timeout: int = FULL_TIMEOUT, workers=None):
         self.timeout = timeout
+        self.workers = workers or max(1, min(6, (os.cpu_count() or 2) // 2))
+
+    @staticmethod
+    def _patterns(files) -> list:
+        """按文件名去重：同名文件在不同子文件夹里，discover -p 一次就都跑到，分开跑会重复算（复查第 1 轮）。"""
+        return sorted({Path(f).name for f in files})
+
+    def _run_files(self, copy, files, env, stop) -> Verdict:
+        from concurrent.futures import ThreadPoolExecutor
+        import threading
+        t0, deadline = time.time(), time.time() + self.timeout
+        inner = threading.Event()   # 外面叫停、或者有一个超时，就把其余的一起收掉
+        halt = _Either(stop, inner)
+
+        def one(name):
+            if halt.is_set():
+                return name, Verdict(STOPPED, None, "")
+            left = deadline - time.time()
+            if left <= 0:
+                return name, Verdict(TIMEOUT, None, "")
+            v = run_command(["python3", "-m", "unittest", "discover", "-s", "tests", "-p", name],
+                            copy, env, left, halt)
+            if v.result in (TIMEOUT, STOPPED):
+                inner.set()
+            return name, v
+
+        with ThreadPoolExecutor(max_workers=self.workers) as pool:
+            results = list(pool.map(one, self._patterns(files)))
+        if halt.is_set() and not any(v.result == TIMEOUT for _, v in results):
+            return Verdict(STOPPED, None, "")
+        if any(v.result == TIMEOUT for _, v in results):
+            done = "\n".join(f"{name}：{v.result}" for name, v in results)
+            return Verdict(TIMEOUT, None, done)
+        return _merge(results, time.time() - t0)
 
     def run(self, worktree, stop=None) -> Verdict:
-        tmp = Path(tempfile.mkdtemp(prefix="collab-full-"))
+        tmp = Path(tempfile.mkdtemp(prefix="collab-full-"))   # 先建好再准备，准备出错也收得掉（复查第 1 轮）
         try:
             copy = tmp / "copy"
             copy_tree(worktree, copy, stop)
-            if stop is not None and stop.is_set():
+            if (stop is not None and stop.is_set()) or _EXITING["on"]:
                 return Verdict(STOPPED, None, "")
-            return run_command(["python3", "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py"],
-                               copy, safe_env(tmp / "bin"), self.timeout, stop)
+            return self._run_files(copy, _test_files(copy), safe_env(tmp / "bin"), stop)
         except subprocess.CalledProcessError as exc:
             if stop is not None and stop.is_set():
                 return Verdict(STOPPED, None, "")
             return Verdict(ENV_ERROR, None, f"复制副本没成：{exc}")
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def alone(self, worktree, files, stop=None) -> dict:
+        """在现在的样子上单独跑这些文件；同名的几个文件结果一样（discover -p 一次都跑到）。"""
+        tmp = Path(tempfile.mkdtemp(prefix="collab-full-alone-"))
+        results = {}
+        try:
+            copy = tmp / "copy"
+            copy_tree(worktree, copy, stop)
+            env = safe_env(tmp / "bin")
+            by_name = {}
+            for name in self._patterns(files):
+                if (stop is not None and stop.is_set()) or _EXITING["on"]:
+                    break
+                by_name[name] = _finished(run_command(["python3", "-m", "unittest", "discover", "-s", "tests",
+                                                       "-p", name], copy, env, self.timeout, stop))
+            return {f: by_name[Path(f).name] for f in files if Path(f).name in by_name}
+        except subprocess.CalledProcessError:
+            return results
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
@@ -320,11 +441,22 @@ class FullRunner:
 
 
 def summary_count(output: str):
-    """unittest 汇总里让它判失败的项数（失败、出错、意外通过）；没有汇总返回 None。"""
-    m = re.search(r"FAILED \(([^)]*)\)", output or "")
-    if not m:
+    """unittest 汇总里让它判失败的项数（失败、出错、意外通过）；没有汇总返回 None。
+    全量按文件分开跑时末尾有一个总汇总，只认最后那个（1-9）。"""
+    found = re.findall(r"FAILED \(([^)]*)\)", output or "")
+    if not found:
         return None
-    return sum(int(n) for n in re.findall(r"(?:failures|errors|unexpected successes)=(\d+)", m.group(1)))
+    return sum(int(n) for n in re.findall(r"(?:failures|errors|unexpected successes)=(\d+)", found[-1]))
+
+
+class _Either:
+    """两个叫停信号任一个亮就算叫停（run_command 只认 is_set）。"""
+
+    def __init__(self, a, b):
+        self.a, self.b = a, b
+
+    def is_set(self) -> bool:
+        return bool(_EXITING["on"] or (self.a is not None and self.a.is_set()) or self.b.is_set())
 
 
 def culprits(now: Verdict, base: dict, root=None) -> list:
