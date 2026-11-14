@@ -26,18 +26,58 @@ _EXCLUDES = (".git", "node_modules", ".collab", "__pycache__", "*.app", ".venv",
 
 
 def applicable(worktree) -> bool:
+    """和全量实际跑的范围一致（discover -s tests）：顶层的 test_*.py，加上带 __init__.py 的子文件夹里的。
+    没有 __init__.py 的子文件夹 unittest 不进去，项目自己的测试命令也跑不到，这里也不算（复查第 3 轮）。"""
     tests = Path(worktree) / "tests"
-    return tests.is_dir() and any(tests.rglob("test_*.py"))   # 子文件夹里的也算（复查第 2 轮）
+    if not tests.is_dir():
+        return False
+    for path in tests.rglob("test_*.py"):
+        parent = path.parent
+        while parent != tests and (parent / "__init__.py").is_file():
+            parent = parent.parent
+        if parent == tests:
+            return True
+    return False
 
 
 _GROUPS: set = set()   # 本进程拉起的独立进程组（复制、跑测试）；停工时一把收掉
 
 
+_EXITING = {"on": False}
+
+
 def kill_all_groups() -> None:
-    """停工信号来了先收这些独立进程组：施工进程被强停后它们不跟着死（复查第 2 轮：8 秒后强杀会留下 rsync、测试）。"""
+    """停工信号来了：之后不再起新的准备命令；登记的独立进程组连同它们另开的进程组一次性强停，不等
+    （复查第 3 轮：一组组温和停再等，总时长会超过桌面 8 秒的强杀期限）。"""
+    import signal
+    _EXITING["on"] = True
     for pgid in list(_GROUPS):
-        _kill_group(pgid)
+        for pid in _descendants(pgid) + [pgid]:
+            for kill in (os.killpg, os.kill):
+                try:
+                    kill(pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError, OSError):
+                    pass
         _GROUPS.discard(pgid)
+
+
+def _descendants(pid: int) -> list:
+    """一个进程的所有后代（包括它们自己另开新进程组的，例如测试里起的工具）。"""
+    try:
+        out = subprocess.run(["ps", "-A", "-o", "pid=,ppid="], capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    kids: dict = {}
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+            kids.setdefault(int(parts[1]), []).append(int(parts[0]))
+    found, todo = [], [pid]
+    while todo:
+        for child in kids.get(todo.pop(), []):
+            found.append(child)
+            todo.append(child)
+    return found
 
 
 def _safe_bin(folder: Path) -> str:
@@ -88,6 +128,8 @@ COPY_TIMEOUT = 300
 
 def _quick(cmd, cwd=None, check=False, stop=None, capture=False):
     """复制副本、git 这类准备命令：有时限、自成一组、登记在案、会响应叫停（复查第 2 轮）。"""
+    if _EXITING["on"]:   # 停工了：不再起新的（清理留给下次 git worktree prune）
+        raise subprocess.CalledProcessError(-1, cmd, stderr="停工了".encode())
     out = tempfile.TemporaryFile()
     proc = subprocess.Popen(cmd, cwd=cwd, stdout=out if capture else subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                             stdin=subprocess.DEVNULL, start_new_session=True)
@@ -113,8 +155,19 @@ def _quick(cmd, cwd=None, check=False, stop=None, capture=False):
 
 
 def _kill_group(pgid: int) -> None:
-    """正常退出也把整组收掉：测试自己拉起的后台进程不能留下（复查：sleep 20 还活着）。"""
+    """正常退出也把整组收掉：测试自己拉起的后台进程不能留下（复查：sleep 20 还活着）；
+    它们另开新进程组的后代也一并收（复查第 3 轮：测试里用 start_new_session 起的工具）。"""
     import signal
+    for pid in _descendants(pgid):
+        try:
+            pgid_of = os.getpgid(pid)
+        except (ProcessLookupError, PermissionError, OSError):
+            continue
+        if pgid_of != pgid and pgid_of != os.getpgid(0):
+            try:
+                os.killpg(pgid_of, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
     for sig in (signal.SIGTERM, signal.SIGKILL):
         try:
             os.killpg(pgid, sig)
@@ -133,6 +186,7 @@ def run_command(cmd, cwd, env, timeout, stop=None, log=None) -> Verdict:
     """整组跑；被叫停或超时就连同子进程一起停掉。输出全留（全量的报错在末尾，不能截到 4000 字）。"""
     out = open(log, "w+", encoding="utf-8") if log else tempfile.TemporaryFile("w+", encoding="utf-8")
     proc = None
+    seen = set()
     try:
         try:
             proc = subprocess.Popen(cmd, cwd=str(cwd), env=env, stdout=out, stderr=subprocess.STDOUT, text=True,
@@ -141,7 +195,16 @@ def run_command(cmd, cwd, env, timeout, stop=None, log=None) -> Verdict:
             return Verdict(ENV_ERROR, None, f"找不到命令：{exc}")
         _GROUPS.add(proc.pid)
         deadline = time.time() + timeout
+        seen = set()   # 跑的过程中看到的后代进程组：父进程先退了，它们成了孤儿也要收（复查第 3 轮）
+        last_scan = 0.0
         while proc.poll() is None:
+            if time.time() - last_scan > 1:
+                last_scan = time.time()
+                for pid in _descendants(proc.pid):
+                    try:
+                        seen.add(os.getpgid(pid))
+                    except (ProcessLookupError, PermissionError, OSError):
+                        pass
             if stop is not None and stop.is_set():
                 _stop_group(proc)
                 return Verdict(STOPPED, None, "")
@@ -155,6 +218,8 @@ def run_command(cmd, cwd, env, timeout, stop=None, log=None) -> Verdict:
     finally:
         if proc is not None:
             _kill_group(proc.pid)   # 不管怎么结束（正常、出错、被叫停、外层异常），整组都收掉
+            for pgid in seen - {proc.pid, os.getpgid(0)}:
+                _kill_group(pgid)
             _GROUPS.discard(proc.pid)
         out.close()
     if proc.returncode == 0:

@@ -97,7 +97,7 @@ class RealCompute(unittest.TestCase):
 
     def test_tester_counts(self):
         job = ProgressJob(self.cdir, self.wt, "写测试", 3, [])
-        job.started = 0
+        job.before = set()   # 当作开工时还没有测试文件
         job.tick()
         self.assertEqual(read(self.cdir)["written"], 3)
 

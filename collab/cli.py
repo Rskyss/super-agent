@@ -265,12 +265,12 @@ def cmd_run(args, ask_fn=None, judge_fn=None, **_):
         if _stopping["done"]:
             return
         _stopping["done"] = True
-        kill_current_tool_process_group()
         try:
             from collab.fullrun import kill_all_groups
-            kill_all_groups()   # 复制副本、跑全量和进度的独立进程组（第四轮复查第 2 轮）
+            kill_all_groups()   # 先一次性强停复制副本、跑全量和进度的独立进程组（第四轮复查第 2、3 轮）
         except Exception:  # noqa: BLE001
             pass
+        kill_current_tool_process_group()
         raise SystemExit(128 + signum)
 
     for sig in (signal.SIGTERM, signal.SIGINT):

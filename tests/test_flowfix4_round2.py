@@ -52,6 +52,8 @@ class FullRunMore(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             (Path(d) / "tests" / "pkg").mkdir(parents=True)
             (Path(d) / "tests" / "pkg" / "test_old.py").write_text("", encoding="utf-8")
+            self.assertFalse(applicable(d), "没有 __init__.py 的子文件夹 unittest 不进去，和实际跑的一致")
+            (Path(d) / "tests" / "pkg" / "__init__.py").write_text("", encoding="utf-8")
             self.assertTrue(applicable(d))
 
     def test_new_format_without_root(self):
@@ -107,7 +109,7 @@ class ProgressMore(unittest.TestCase):
             (Path(d) / "pkg").mkdir()
             (Path(d) / "pkg" / "test_x.py").write_text("def test_a():\n    pass\n", encoding="utf-8")
             job = progress.ProgressJob(d, d, "写测试", 1, [])
-            job.started = 0
+            job.before = set()
             self.assertIn("pkg/test_x.py", job._tester_files())
 
 

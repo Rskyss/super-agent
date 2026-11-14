@@ -97,7 +97,8 @@ class ProgressJob:
                  every: float = CHECK_EVERY):
         self.cdir, self.worktree, self.step, self.seq = Path(cdir), Path(worktree), step, seq
         self.files = [f for f in (test_files or [])]
-        self.py = [f for f in self.files if Path(f).name.startswith("test_") and f.endswith(".py")]
+        self.py = [f for f in self.files if f.endswith(".py") and (Path(f).name.startswith("test_")
+                                                                    or Path(f).name.endswith("_test.py"))]
         self.gap, self.every = gap, every
         self.event = threading.Event()
         self.thread = None
@@ -105,6 +106,7 @@ class ProgressJob:
         self.last_run = None     # 上次开始算的时间
         self.last_seen = None    # 上次算时的文件快照
         self.runs = 0
+        self.before = None       # 写测试开工时已有的测试文件状态：只数新写、新改的（复查第 3 轮）
 
     # ---- 写测试：数 def test_ ----
     def _tester_files(self):
@@ -118,11 +120,13 @@ class ProgressJob:
                     continue
                 path = os.path.join(here, name)
                 try:
-                    if os.stat(path).st_mtime >= self.started - 1:
-                        out.append(os.path.relpath(path, self.worktree))
+                    st = os.stat(path)
                 except OSError:
                     continue
-        return out
+                out.append((os.path.relpath(path, self.worktree), st.st_mtime_ns, st.st_size))
+        if self.before is None:
+            self.before = set(out)
+        return [rel for rel, m, z in out if (rel, m, z) not in self.before]
 
     def due(self, now: float, changed: bool) -> bool:
         """第一次马上算；之后要离上次至少 gap 秒、且有新改动（本卡测试文件以外）。"""
@@ -141,7 +145,9 @@ class ProgressJob:
                 p = Path(rel)
                 if not (copy / p).is_file():
                     continue
-                v = run_command(["python3", "-m", "unittest", "discover", "-s", str(p.parent), "-p", p.name],
+                # tests/ 下的照项目平常的跑法从 tests 发现（包里的相对导入才对，复查第 3 轮）；别处的从所在文件夹
+                start = "tests" if p.parts[:1] == ("tests",) else str(p.parent)
+                v = run_command(["python3", "-m", "unittest", "discover", "-s", start, "-p", p.name],
                                 copy, env, RUN_TIMEOUT, self.event)
                 if self.event.is_set():
                     return {}
@@ -180,6 +186,8 @@ class ProgressJob:
             write(self.cdir, data)
 
     def _loop(self):
+        if self.step == "写测试":
+            self._tester_files()   # 开工时先记下已有的
         if self.step != "写测试" and self.py:
             write(self.cdir, {"seq": self.seq, "step": self.step, "computing": True})
         while not self.event.is_set():

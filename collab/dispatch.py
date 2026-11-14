@@ -967,14 +967,29 @@ def _triage(items: list) -> tuple:
     return back, later
 
 
+_EMBEDDED = re.compile(r"\n\s*(?:[-*•]\s*|\d+[.、)]\s*)?【(?:严重|中等|轻微|测试的问题)】")
+
+
 def _unparsed_serious(text: str, items: list) -> bool:
-    """复查原文里除了认出来的条目，还剩写着【严重】【中等】的话：说明有条目没认全，不能自动收口（复查第 2 轮）。"""
+    """复查原文没认全：条目外还剩写着【严重】【中等】的话，或者某一条里另起一行又是一条带级别的问题
+    （编号和项目符号混排时会被吞进上一条，复查第 2、3 轮）。认不全就不能自动收口，也要把原文整段交给写代码的。"""
+    if any(_EMBEDDED.search(item) for item in items):
+        return True
     rest = text or ""
     for item in items:
         for line in item.splitlines():
             if line.strip():
                 rest = rest.replace(line.strip(), "", 1)
     return bool(re.search(r"【(?:严重|中等)】", rest))
+
+
+def _later_words(later: list) -> list:
+    """以后再修的每一条都要列给用户：认得出就写大白话，认不出就占个位（复查第 3 轮：认不出的被静默漏掉）。"""
+    out = []
+    for t in later:
+        words = plain_issues(f"1. {t}")
+        out.append(words[0] if words else "（有一件没写成大白话，原话在右边“交接”里）")
+    return out
 
 
 def _prior_reviews(cdir: Path) -> int:
@@ -1164,6 +1179,18 @@ class _FullSlot:
                    summary="全部测试没过，但认不出是哪几项", text=now.output[-20000:])
             return now, "全部测试没过，但认不出是哪几项，需要调度员看看"
         base = self.runner.base(self.worktree, sorted(files), self.event)
+        broken_base = [f for f in files if f not in base or (
+            base[f].result != FAIL and base[f].result != PASS and "改之前没有这个测试文件" not in (base[f].output or ""))]
+        if broken_base:   # 改之前的样子没跑成（超时、准备失败）：比不了，交给人看，不算写代码的错（复查第 3 轮）
+            record(self.cdir, "全量", src="程序", phase="结果", result=FAIL,
+                   summary="全部测试里有没过的，但改之前的样子没跑成，比不出是不是这次改坏的", text=now.output[-20000:])
+            return now, "全部测试里有没过的，但改之前的样子没跑成、比不出来，需要调度员看看"
+        unrunnable = [f for f, names in files.items() if any("unittest.loader" in n for n in names)]
+        if unrunnable:   # 测试文件导入就报错：多半是副本缺依赖或解释器不对，不能当“改之前就不过”放过（复查第 3 轮）
+            record(self.cdir, "全量", src="程序", phase="结果", result=FAIL,
+                   summary=f"全部测试里有测试文件跑不起来（{'、'.join(Path(f).stem for f in unrunnable)}）",
+                   text=now.output[-20000:])
+            return now, "全部测试里有测试文件跑不起来（导入就报错，可能缺依赖），需要调度员看看"
         bad = fullrun.culprits(now, base, self.worktree)
         names = "、".join(Path(f).stem for f in (bad or sorted(files)))
         if not bad:
@@ -1186,6 +1213,8 @@ def _review_return_prompt(notes: str, needs, revise_bit: str, plan_hint: str, sa
     """复查退回（第三批 ㊾）：只交要改的这几条（连同复查员写的原因和位置），说清其他已经验过、不要重新核对；
     不带开工时的整卡交接资料（69 里 agy 因此把整张卡又核了一遍，30 分钟改不完一句提示）。"""
     items = _numbered_items(notes, whole=True)
+    if items and _unparsed_serious(notes, items):
+        items = []   # 认不全：整段原文交过去，不能只留编号的那几条（复查第 3 轮）
     if items:
         body = "\n\n".join(f"{i + 1}. {t}" for i, t in enumerate(items))
         head = f"上一次复查不通过，只改下面这 {len(items)} 条（不算一次返工）"
@@ -1522,14 +1551,14 @@ def _run_card(card, collab_dir, worktree, test_command, dev_adapter, test_adapte
                             + "\n".join(f"- {t}" for t in later) + "\n")
                 if items_all and not back:
                     record(cdir, "以后再修", src="程序", dst="你", reply=reply_seq, closed=True,
-                           items=plain_issues("\n".join(f"{i + 1}. {t}" for i, t in enumerate(later))) or None,
+                           items=_later_words(later),
                            summary=f"复查剩下的 {len(later)} 件都是原来就有的或轻微的，记进“以后再修”，不退回",
                            text="\n\n".join(later))
                     verdict_kind = "pass"
                 elif later:
                     review_text = "结论：不通过\n" + "\n".join(f"{i + 1}. {t}" for i, t in enumerate(back))
                     record(cdir, "以后再修", src="程序", dst="你", reply=reply_seq, back=review_text,
-                           items=plain_issues("\n".join(f"{i + 1}. {t}" for i, t in enumerate(later))) or None,
+                           items=_later_words(later),
                            summary=f"复查另挑出 {len(later)} 件原来就有的或轻微的，记进“以后再修”，这次只退回 {len(back)} 件",
                            text="\n\n".join(later))
                 if verdict_kind == "reject":
@@ -1555,7 +1584,11 @@ def _run_card(card, collab_dir, worktree, test_command, dev_adapter, test_adapte
                                    f"{_first_issues(review_text)}")
                     card.transition("需Claude介入")
                     _save(collab, card)
-                    if draft and not re.search(r"测试本身写错了|都是小问题", say):
+                    left = _numbered_items(review_text, whole=True)
+                    test_left = any(TEST_PROBLEM.strip("【】") in _lead_tags(i) for i in left)
+                    minor_only = bool(left) and all(_level(i) == "轻微" for i in left) and \
+                        not _unparsed_serious(review_text, left)
+                    if draft and not test_left and not minor_only:   # 按条目开头的分类判断，不搜正文（复查第 3 轮）
                         _draft_revise(ask_fn, cdir, reviewer_adapter, by_role.get("复查员", models), worktree,
                                       needs, changed_fn, rnd)
                     return card, verdict
