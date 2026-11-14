@@ -67,6 +67,7 @@ from desktop.clerk.desk import ClerkDesk  # noqa: E402
 from desktop.clerk.providers import PROVIDERS, account_for, find as find_provider  # noqa: E402
 from desktop.clerk.tasks import (  # noqa: E402
     StopWrongCard, TaskBusy, TaskWatcher, apply_revise, launch, running, stop_construction,
+    end_drafting as _end_drafting,
 )
 from desktop.preview import PreviewHub  # noqa: E402
 from collab.tasks import TaskError  # noqa: E402
@@ -97,20 +98,9 @@ _SAVED_ACCOUNT = re.compile(r"tencent|bailian|other:[a-z0-9.-]{1,253}|tavily|cli
 _TERMINAL_TTL = 60       # 终端路径一分钟内只读一次
 
 
-def end_drafting(project: str, card_id: str, cdir: Path) -> bool:
-    """卡停下后施工进程还在替你起草“继续改”（第四轮 56 甲）：你点放弃、接受、继续改、接着跑时先把它停掉，
-    不让它接着占额度、占施工位（第四轮复查）。停了返回 True。"""
-    rec = running(project, "run")
-    if rec is None or str(rec.get("card") or "") != str(card_id):
-        return False
-    try:
-        stop_construction(project, card_id)
-    except StopWrongCard:
-        return False
-    drafts = [e for e in read_flow(cdir) if e.get("kind") == "起草"]
-    if drafts and drafts[-1].get("phase") == "开始":
-        flow_record(cdir, "起草", src="程序", dst="你", phase="没成", summary="起草被你的操作打断了")
-    return True
+def end_drafting(project: str, card_id: str, cdir: Path = None) -> bool:
+    """挪到 desktop/clerk/tasks.py（按钮和行政确认共用）；这里只转过去。"""
+    return _end_drafting(project, card_id)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -182,7 +172,7 @@ class Handler(BaseHTTPRequestHandler):
             self._card_action_error("找不到这张卡片。")
             return
         card = Card.load(state_path)
-        if card.state == "需Claude介入" and action in ("discard", "accept_issues", "revise", "resume"):
+        if card.state == "需Claude介入" and action in ("discard", "accept_issues", "resume"):   # 继续改在 apply_revise 里停
             end_drafting(project, card_id, cdir)
 
         if action == "accept":

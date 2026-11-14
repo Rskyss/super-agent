@@ -110,7 +110,7 @@ def check_tool(tool: str, models: dict, timeout: float = DEFAULT_TIMEOUT) -> dic
         return {"ok": False, "status": "fail", "reason": "能建文件，但读文件、算数没做对",
                 "how": "这个组合干不了要读代码的活；换这一家的另一个模型再检测，仍不行就换一家", "seconds": seconds,
                 "version": version}
-    if len(lines) < 2 or not lines[1].isdigit():
+    if len(lines) < 2 or lines[1] not in ("1", "2"):   # 跑 ls 时文件夹里只有题目（和可能已写好的结果）：只能是 1 或 2（复查第 2 轮）
         return {"ok": False, "status": "fail", "reason": "能读写文件，但没跑命令（或跑了没把结果写上）",
                 "how": "这家工具在自动模式下可能不让跑命令；它跑不了本卡测试。换一家或看看它的权限设置",
                 "seconds": seconds, "version": version}
@@ -138,16 +138,26 @@ def tool_version(tool: str) -> str:
     cmd = COMMANDS.get(tool)
     if not cmd or shutil.which(cmd) is None:
         return ""
+    from collab.fullrun import _kill_group
     spare = tempfile.mkdtemp(prefix="超级助手版本-")   # 在空文件夹里问：工具万一把“问版本”当成干活，也不往项目里写东西
+    proc = None
+    out = tempfile.TemporaryFile("w+", encoding="utf-8")
     try:
-        done = subprocess.run([cmd, "--version"], capture_output=True, text=True, timeout=5,
-                              stdin=subprocess.DEVNULL, cwd=spare)
+        # 输出写文件、只等它自己退出：它留下的子进程拿着输出管道时也不会把这里拖到超时
+        proc = subprocess.Popen([cmd, "--version"], stdout=out, stderr=subprocess.STDOUT, text=True,
+                                stdin=subprocess.DEVNULL, cwd=spare, start_new_session=True)
+        proc.wait(timeout=5)
+        out.seek(0)
+        text = out.read()
     except (OSError, subprocess.TimeoutExpired):
         return ""
     finally:
+        if proc is not None:
+            _kill_group(proc.pid)   # 超时、正常结束都把它拉起的子进程收掉（复查第 2 轮）
+        out.close()
         shutil.rmtree(spare, ignore_errors=True)
-    lines = [ln.strip() for ln in (done.stdout or done.stderr or "").splitlines() if ln.strip()]
-    return lines[0][:80] if done.returncode == 0 and lines else ""
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    return lines[0][:80] if proc.returncode == 0 and lines else ""
 
 
 def _versions_path(project_dir) -> Path:

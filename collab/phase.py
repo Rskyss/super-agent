@@ -241,11 +241,18 @@ def _plan_phase(project: str, card_id: str, cdir: Path, events: list) -> dict:
 
 
 def _later_items(events: list) -> list:
-    """这张卡复查记进“以后再修”的事，大白话（第四轮 57）。"""
-    out = []   # 整张卡的（继续改以后也留着，复查：清单会在继续改后消失）
-    for e in events:
-        if e.get("kind") == "以后再修":
-            out += [str(t) for t in (e.get("items") or [])] or [str(e.get("summary") or "")]
+    """这张卡复查记进“以后再修”的事，大白话（第四轮 57）。去重；最后一次继续改之前记的，标“继续改之前记的，可能已经修了”
+    （复查第 2 轮：清单没有“修好了”的标记，不能宣称这次不改）。"""
+    last_revise = max((i for i, e in enumerate(events) if e.get("kind") == "追加要求"), default=-1)
+    out, seen = [], set()
+    for i, e in enumerate(events):
+        if e.get("kind") != "以后再修":
+            continue
+        for t in [str(x) for x in (e.get("items") or [])] or [str(e.get("summary") or "")]:
+            if t in seen:
+                continue
+            seen.add(t)
+            out.append(t + ("（继续改之前记的，可能已经修了）" if i < last_revise else ""))
     return out
 
 

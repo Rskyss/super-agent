@@ -228,6 +228,7 @@ var BlocksCore = {
     if (!job) return { state: "lost", text: "这次检测的结果没留下来（超级助手重开过），再点一次检测" };
     if (!job.done) return { state: "running", text: "正在检测…" };
     if (job.error) return { state: "fail", text: job.error };
+    if (job.result && job.result.ok && job.result.warn) return { state: "warn", text: job.result.reason + (job.result.how ? "。" + job.result.how : "") };   // 通了但用量太大（第四轮 55）
     if (job.result && job.result.ok) return { state: "ok", text: "检测通过 · " + job.result.seconds + " 秒" };
     var res = job.result || {};
     if (res.status === "listed") return { state: "warn", text: "已接上：" + String(res.reason || "").replace(/^已接上：/, "") + (res.how ? "。" + res.how : "") };

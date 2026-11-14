@@ -940,10 +940,16 @@ _TRIAGE_NOTE = (f"这是改过以后的复查：每条在级别后面再标{_NOW
                 f"{_OLD_TAG}＝开工前项目里就有、不是这张卡改出来的。拿不准的标{_NOW_TAG}。")
 
 
+def _lead_tags(item: str) -> list:
+    """条目开头连着的几个【…】（级别、这次改的/原来就有的、测试的问题）；正文里引用的不算（复查第 2 轮）。"""
+    m = re.match(r"\s*((?:【[^】]{1,12}】\s*)+)", item)
+    return re.findall(r"【([^】]{1,12})】", m.group(1)) if m else []
+
+
 def _level(item: str) -> str:
-    head = item[:80]
+    tags = _lead_tags(item)
     for word in ("严重", "轻微", "中等"):
-        if f"【{word}】" in head:
+        if word in tags:
             return word
     return "中等"   # 没标级别的按中等算，宁可多修
 
@@ -952,12 +958,23 @@ def _triage(items: list) -> tuple:
     """复查收口（第四轮 57）：退回的 = 测试的问题 + 严重 + 没标“原来就有的”的中等；其余记进“以后再修”。"""
     back, later = [], []
     for item in items:
+        tags = _lead_tags(item)
         level = _level(item)
-        if TEST_PROBLEM in item or level == "严重" or (level == "中等" and _OLD_TAG not in item[:80]):
+        if TEST_PROBLEM.strip("【】") in tags or level == "严重" or (level == "中等" and _OLD_TAG.strip("【】") not in tags):
             back.append(item)
         else:
             later.append(item)
     return back, later
+
+
+def _unparsed_serious(text: str, items: list) -> bool:
+    """复查原文里除了认出来的条目，还剩写着【严重】【中等】的话：说明有条目没认全，不能自动收口（复查第 2 轮）。"""
+    rest = text or ""
+    for item in items:
+        for line in item.splitlines():
+            if line.strip():
+                rest = rest.replace(line.strip(), "", 1)
+    return bool(re.search(r"【(?:严重|中等)】", rest))
 
 
 def _prior_reviews(cdir: Path) -> int:
@@ -969,32 +986,40 @@ def _closed_replies(cdir: Path) -> set:
     return {e.get("reply") for e in read_flow(cdir) if e.get("kind") == "以后再修" and e.get("closed")}
 
 
-def _places(items: list) -> set:
-    """复查写的位置（文件:行），路径只留最后两段（绝对路径、相对路径都对得上；不同目录的同名文件分得开）。"""
+def _places(items: list, root=None) -> set:
+    """复查写的位置（文件, 行）。有链接就用链接地址（显示文字不另算），路径按施工副本算成相对路径，不截断
+    （复查第 2 轮：只留最后两段会把 apps/admin/src/index.js 和 apps/shop/src/index.js 当成一处）。"""
     out = set()
+    prefix = (str(root).rstrip("/") + "/") if root else None
     for t in items:
-        for path, line in re.findall(r"([\w./-]+\.[A-Za-z]{1,5}):(\d+)", t):
-            out.add(("/".join(path.strip("/").split("/")[-2:]), line))
+        targets = re.findall(r"\]\(([^)\s]+?):(\d+)(?::\d+)?\)", t)
+        bare = re.sub(r"\[[^\]]*\]\([^)]*\)", " ", t)
+        targets += re.findall(r"([\w./-]+\.[A-Za-z]{1,5}):(\d+)", bare)
+        for path, line in targets:
+            if prefix and path.startswith(prefix):
+                path = path[len(prefix):]
+            out.add((path.lstrip("./").lstrip("/") if not prefix else path.lstrip("./"), line))
     return out
 
 
-def _files_in(items: list) -> set:
-    return {p for p, _ in _places(items)}
+def _files_in(items: list, root=None) -> set:
+    return {p for p, _ in _places(items, root)}
 
 
-def _same_place_new(cdir: Path, now_items: list) -> list:
+def _same_place_new(cdir: Path, now_items: list, root=None) -> list:
     """上一次退回和这一次在同一个文件里、但这次全是新问题：返回那些文件名（第四轮 57）。"""
     import difflib
     closed = _closed_replies(cdir)
     replies = [e for e in _after_revise(read_flow(cdir)) if e.get("kind") == "回复" and e.get("src") == "复查员"
                and e.get("ok") is True and e.get("seq") not in closed]
-    bodies = [text_of(cdir, e) or "" for e in replies]
+    kept = {e.get("reply"): e.get("back") for e in read_flow(cdir) if e.get("kind") == "以后再修" and e.get("back")}
+    bodies = [kept.get(e.get("seq")) or text_of(cdir, e) or "" for e in replies]   # 收口后真正退回的那几条
     bodies = [b for b in bodies if review_verdict(b) == "reject"]
     if len(bodies) < 2:
         return []
     before = _numbered_items(bodies[-2], whole=True)
-    shared = _files_in(before) & _files_in(now_items)
-    if not shared or _places(before) & _places(now_items):   # 同一行又被提：是老问题没改好，不是新问题
+    shared = _files_in(before, root) & _files_in(now_items, root)
+    if not shared or _places(before, root) & _places(now_items, root):   # 同一行又被提：是老问题没改好，不是新问题
         return []
     plain_now = [_plain_words(t) for t in now_items]
     plain_before = [_plain_words(t) for t in before]
@@ -1006,6 +1031,24 @@ def _same_place_new(cdir: Path, now_items: list) -> list:
 def _plain_words(item: str) -> str:
     first = re.split(r"位置[:：]|原因[:：]|\[", item.split("\n")[0])[0]   # 只比现象那句，位置、原因不算
     return re.sub(r"【[^】]*】", "", first).strip()
+
+
+def _top_effort(models, adapter: str) -> str:
+    """所选模型支持的最高强度（复查第 2 轮：只提到 xhigh，gpt-6.1-sol 其实支持 ultra）；查不到用 xhigh。"""
+    order = ["low", "medium", "high", "xhigh", "max", "ultra"]
+    best = "xhigh"
+    mine = str((models or {}).get("codex_effort") or "")
+    if mine in order and order.index(mine) > order.index(best):
+        best = mine   # 配得更高就用配的
+    try:
+        from collab.config import MODEL_OPTIONS
+        model = str((models or {}).get(adapter) or "")
+        for opt in MODEL_OPTIONS.get(adapter, []):
+            if isinstance(opt, dict) and opt.get("value") == model and opt.get("efforts"):
+                return opt["efforts"][-1]
+    except Exception:  # noqa: BLE001
+        pass
+    return best
 
 
 def _draft_revise(ask_fn, cdir: Path, adapter: str, models, worktree, needs, changed_fn, round_no) -> None:
@@ -1033,10 +1076,9 @@ def _draft_revise(ask_fn, cdir: Path, adapter: str, models, worktree, needs, cha
               f"最后一句“只改这一部分，别的不动；改完跑本卡测试，过了就交”。"
               f"格式：第一段两句大白话，告诉用户为什么每轮都有新问题（不写文件名、代码名）；然后单独一行 ---；"
               f"下面是给写代码的人的交代正文。只读，不要修改任何文件。")
-    order = ["low", "medium", "high", "xhigh", "max", "ultra"]
-    mine = str((models or {}).get("codex_effort") or "")
-    top = mine if mine in order and order.index(mine) > order.index("xhigh") else "xhigh"   # 配得更高就用配的
-    effort = dict(models or {}, codex_effort=top, codex_sandbox="read-only")   # 只读（复查：原来没真的只读）
+    if adapter not in ("codex", "qwen"):
+        adapter = "codex"   # Cursor、agy 没有按次只读的开关：起草改用 Codex（复查第 2 轮）
+    effort = dict(models or {}, codex_effort=_top_effort(models, adapter), codex_sandbox="read-only")
     try:
         result = _dispatch(ask_fn, cdir, "调度员", adapter, "起草", prompt, worktree, effort, round_no)
         text = reply_text(result).strip()
@@ -1113,6 +1155,10 @@ class _FullSlot:
                    summary=f"全部测试{what}", text=now.output[-20000:])
             return now, f"全部测试{what}，需要调度员看看"
         files = fullrun.failing_files(now.output, self.worktree)
+        listed = sum(len(v) for v in files.values())
+        total = fullrun.summary_count(now.output)
+        if files and total is not None and total > listed:
+            files = {}   # 汇总里还有列不出名字的（例如意外通过）：认不全就交给人看，不能当旧问题放过（复查第 2 轮）
         if not files:
             record(self.cdir, "全量", src="程序", phase="结果", result=FAIL,
                    summary="全部测试没过，但认不出是哪几项", text=now.output[-20000:])
@@ -1466,6 +1512,8 @@ def _run_card(card, collab_dir, worktree, test_command, dev_adapter, test_adapte
             if verdict_kind == "reject" and triage_on:
                 items_all = _numbered_items(review_text, whole=True)
                 back, later = _triage(items_all)
+                if _unparsed_serious(review_text, items_all):
+                    back, later = items_all or [review_text], []   # 认不全：全部照原样退回
                 reply_seq = max((e.get("seq", 0) for e in read_flow(cdir) if e.get("kind") == "回复"
                                  and e.get("src") == "复查员"), default=0)
                 if later:
@@ -1485,7 +1533,7 @@ def _run_card(card, collab_dir, worktree, test_command, dev_adapter, test_adapte
                            summary=f"复查另挑出 {len(later)} 件原来就有的或轻微的，记进“以后再修”，这次只退回 {len(back)} 件",
                            text="\n\n".join(later))
                 if verdict_kind == "reject":
-                    same_files = _same_place_new(cdir, back)
+                    same_files = _same_place_new(cdir, back, worktree)
             if verdict_kind == "reject":
                 if full is not None:
                     full.stop()  # 复查不通过要改代码，这一轮全量不用跑完
@@ -1507,7 +1555,7 @@ def _run_card(card, collab_dir, worktree, test_command, dev_adapter, test_adapte
                                    f"{_first_issues(review_text)}")
                     card.transition("需Claude介入")
                     _save(collab, card)
-                    if draft and not re.search(r"测试本身写错了|范围外|都是小问题", say):
+                    if draft and not re.search(r"测试本身写错了|都是小问题", say):
                         _draft_revise(ask_fn, cdir, reviewer_adapter, by_role.get("复查员", models), worktree,
                                       needs, changed_fn, rnd)
                     return card, verdict

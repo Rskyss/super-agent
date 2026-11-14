@@ -198,4 +198,4 @@ class LaterKept(unittest.TestCase):
             record(cdir, "以后再修", src="程序", items=["切换对话时卡住"], summary="记进以后再修 1 件")
             record(cdir, "追加要求", src="你", dst="调度员", summary="再改一处")
             record(cdir, "结束", src="程序", dst="你", state="待验收", summary="做完了")
-            self.assertEqual(card_phase(str(project), "CARD-001")["later"], ["切换对话时卡住"])
+            self.assertEqual(card_phase(str(project), "CARD-001")["later"], ["切换对话时卡住（继续改之前记的，可能已经修了）"])

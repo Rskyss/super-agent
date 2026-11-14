@@ -27,7 +27,17 @@ _EXCLUDES = (".git", "node_modules", ".collab", "__pycache__", "*.app", ".venv",
 
 def applicable(worktree) -> bool:
     tests = Path(worktree) / "tests"
-    return tests.is_dir() and any(tests.glob("test_*.py"))
+    return tests.is_dir() and any(tests.rglob("test_*.py"))   # 子文件夹里的也算（复查第 2 轮）
+
+
+_GROUPS: set = set()   # 本进程拉起的独立进程组（复制、跑测试）；停工时一把收掉
+
+
+def kill_all_groups() -> None:
+    """停工信号来了先收这些独立进程组：施工进程被强停后它们不跟着死（复查第 2 轮：8 秒后强杀会留下 rsync、测试）。"""
+    for pgid in list(_GROUPS):
+        _kill_group(pgid)
+        _GROUPS.discard(pgid)
 
 
 def _safe_bin(folder: Path) -> str:
@@ -46,49 +56,60 @@ def safe_env(folder: Path) -> dict:
     return env
 
 
-def copy_tree(src, dst) -> None:
+def copy_tree(src, dst, stop=None) -> None:
     """复制一份再在副本里建一个新仓库。是 git 仓库就只复制仓库里的文件和新建的（不含 .gitignore 忽略的
-    编译产物、密钥文件——本项目 desktop/mac 下的编译产物有 1.6G）；不是就 rsync 并排除 .git、依赖、运行记录。"""
+    编译产物、密钥文件——本项目 desktop/mac 下的编译产物有 1.6G）；不是就 rsync 并排除 .git、依赖、运行记录。
+    每条命令都有时限、会响应叫停。"""
     Path(dst).mkdir(parents=True, exist_ok=True)
-    listed = subprocess.run(["git", "ls-files", "-co", "--exclude-standard", "-z"], cwd=str(src),
-                            capture_output=True)
+    code, listed = _quick(["git", "ls-files", "-co", "--exclude-standard", "-z"], cwd=str(src), stop=stop,
+                          capture=True)
     args = ["rsync", "-a"]
     for ex in _EXCLUDES:
         args += ["--exclude", ex]
-    if listed.returncode == 0:
-        names = [n for n in listed.stdout.split(b"\0") if n and (Path(src) / n.decode("utf-8", "replace")).exists()]
+    if code == 0:
+        names = [n for n in listed.split(b"\0") if n and (Path(src) / n.decode("utf-8", "replace")).exists()]
         with tempfile.NamedTemporaryFile("wb", delete=False) as fh:
             fh.write(b"\0".join(names))
             listing = fh.name
         try:
-            _quick(args + ["--from0", f"--files-from={listing}", f"{src}/", f"{dst}/"], check=True)
+            _quick(args + ["--from0", f"--files-from={listing}", f"{src}/", f"{dst}/"], check=True, stop=stop)
         finally:
             os.unlink(listing)
     else:
-        _quick(args + [f"{src}/", f"{dst}/"], check=True)
+        _quick(args + [f"{src}/", f"{dst}/"], check=True, stop=stop)
     quiet = ["-c", "gc.auto=0", "-c", "maintenance.auto=false", "-c", "core.fsmonitor=false"]  # 不留后台整理进程
     for cmd in (["git", "init", "-q"], ["git", *quiet, "add", "-A"],
                 ["git", *quiet, "-c", "user.name=collab", "-c", "user.email=collab@local", "commit", "-qm", "副本"]):
-        _quick(cmd, cwd=str(dst))
+        _quick(cmd, cwd=str(dst), stop=stop)
 
 
 COPY_TIMEOUT = 300
 
 
-def _quick(cmd, cwd=None, check=False):
-    """复制副本用的命令：有时限、自成一组，超时连同子进程一起停（复查：大项目复制慢时线程收不掉）。"""
-    proc = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+def _quick(cmd, cwd=None, check=False, stop=None, capture=False):
+    """复制副本、git 这类准备命令：有时限、自成一组、登记在案、会响应叫停（复查第 2 轮）。"""
+    out = tempfile.TemporaryFile()
+    proc = subprocess.Popen(cmd, cwd=cwd, stdout=out if capture else subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                             stdin=subprocess.DEVNULL, start_new_session=True)
+    _GROUPS.add(proc.pid)
     try:
-        _, err = proc.communicate(timeout=COPY_TIMEOUT)
-    except subprocess.TimeoutExpired:
-        _stop_group(proc)
-        raise subprocess.CalledProcessError(-1, cmd, stderr="超时".encode())
+        deadline = time.time() + COPY_TIMEOUT
+        while proc.poll() is None:
+            if (stop is not None and stop.is_set()) or time.time() > deadline:
+                raise subprocess.CalledProcessError(-1, cmd, stderr="叫停或超时".encode())
+            time.sleep(0.1)
+        if check and proc.returncode != 0:
+            raise subprocess.CalledProcessError(proc.returncode, cmd)
+        out.seek(0)
+        return proc.returncode, out.read()
     finally:
         _kill_group(proc.pid)
-    if check and proc.returncode != 0:
-        raise subprocess.CalledProcessError(proc.returncode, cmd, stderr=err)
-    return proc.returncode
+        _GROUPS.discard(proc.pid)
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        out.close()
 
 
 def _kill_group(pgid: int) -> None:
@@ -118,6 +139,7 @@ def run_command(cmd, cwd, env, timeout, stop=None, log=None) -> Verdict:
                                     stdin=subprocess.DEVNULL, start_new_session=True)
         except FileNotFoundError as exc:
             return Verdict(ENV_ERROR, None, f"找不到命令：{exc}")
+        _GROUPS.add(proc.pid)
         deadline = time.time() + timeout
         while proc.poll() is None:
             if stop is not None and stop.is_set():
@@ -133,6 +155,7 @@ def run_command(cmd, cwd, env, timeout, stop=None, log=None) -> Verdict:
     finally:
         if proc is not None:
             _kill_group(proc.pid)   # 不管怎么结束（正常、出错、被叫停、外层异常），整组都收掉
+            _GROUPS.discard(proc.pid)
         out.close()
     if proc.returncode == 0:
         return Verdict(PASS, 0, text)
@@ -158,8 +181,12 @@ def _test_file(test: str, where: str, root) -> str:
             rel = "tests/" + "/".join(parts[:n]) + ".py"
             if (Path(root) / rel).is_file():
                 return rel
-    keep = parts if loader or len(parts) == 1 else parts[:-1]
-    return "tests/" + "/".join(keep) + ".py"
+    if not loader:
+        if len(parts) > 1 and parts[-1] == test:   # 新写法末尾是方法名
+            parts = parts[:-1]
+        if len(parts) > 1 and parts[-1][:1].isupper():   # 再去掉类名
+            parts = parts[:-1]
+    return "tests/" + "/".join(parts) + ".py"
 
 
 def failing_files(output: str, root=None) -> dict:
@@ -181,10 +208,14 @@ class FullRunner:
         tmp = Path(tempfile.mkdtemp(prefix="collab-full-"))
         try:
             copy = tmp / "copy"
-            copy_tree(worktree, copy)
+            copy_tree(worktree, copy, stop)
+            if stop is not None and stop.is_set():
+                return Verdict(STOPPED, None, "")
             return run_command(["python3", "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py"],
                                copy, safe_env(tmp / "bin"), self.timeout, stop)
         except subprocess.CalledProcessError as exc:
+            if stop is not None and stop.is_set():
+                return Verdict(STOPPED, None, "")
             return Verdict(ENV_ERROR, None, f"复制副本没成：{exc}")
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
@@ -194,12 +225,12 @@ class FullRunner:
         head = tmp / "head"
         results = {}
         try:
-            add = subprocess.run(["git", "worktree", "add", "-q", "--detach", str(head), "HEAD"], cwd=str(worktree),
-                                 capture_output=True, text=True)
-            if add.returncode != 0:
+            code, _ = _quick(["git", "worktree", "add", "-q", "--detach", str(head), "HEAD"], cwd=str(worktree),
+                             stop=stop)
+            if code != 0:
                 return {}
             copy = tmp / "copy"
-            copy_tree(head, copy)
+            copy_tree(head, copy, stop)
             env = safe_env(tmp / "bin")
             for rel in files:
                 p = Path(rel)
@@ -215,10 +246,20 @@ class FullRunner:
         except subprocess.CalledProcessError:
             return results
         finally:
-            subprocess.run(["git", "worktree", "remove", "--force", str(head)], cwd=str(worktree),
-                           capture_output=True)
-            subprocess.run(["git", "worktree", "prune"], cwd=str(worktree), capture_output=True)
+            for cmd in (["git", "worktree", "remove", "--force", str(head)], ["git", "worktree", "prune"]):
+                try:
+                    _quick(cmd, cwd=str(worktree))
+                except subprocess.CalledProcessError:
+                    pass
             shutil.rmtree(tmp, ignore_errors=True)
+
+
+def summary_count(output: str):
+    """unittest 汇总里让它判失败的项数（失败、出错、意外通过）；没有汇总返回 None。"""
+    m = re.search(r"FAILED \(([^)]*)\)", output or "")
+    if not m:
+        return None
+    return sum(int(n) for n in re.findall(r"(?:failures|errors|unexpected successes)=(\d+)", m.group(1)))
 
 
 def culprits(now: Verdict, base: dict, root=None) -> list:

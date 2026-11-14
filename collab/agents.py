@@ -135,13 +135,14 @@ def _is_codex_shell(adapter: str) -> bool:
     return adapter in ("codex", "qwen")
 
 
-def qwen_command(prompt: str, model: str, effort: str = DEFAULT_MODELS["codex_effort"], last_path=None) -> list:
+def qwen_command(prompt: str, model: str, effort: str = DEFAULT_MODELS["codex_effort"], last_path=None,
+                 sandbox: str = "workspace-write") -> list:
     """千问：Codex 的壳，模型来源换成千问 Token Plan（responses 接法；chat 接法 Codex 已不支持，11-13 实测）。
     密钥放进环境变量交给 Codex，命令行里不出现。"""
     from collab.config import QWEN_BASE_URL, QWEN_KEY_ENV
     # 密钥不放进本程序的环境（否则之后起的每个工具、每次测试都会继承，复查发现可能被印进测试结果和交接），
     # 只在起千问这一个进程时单独交给它（ask → runner 的 env）；Codex 默认不把名字带 KEY 的变量传给它跑的命令，这里再明说一次
-    cmd = codex_command(prompt, model=model, effort=effort, last_path=last_path)
+    cmd = codex_command(prompt, model=model, effort=effort, last_path=last_path, sandbox=sandbox)
     provider = ["-c", 'model_providers.qwtp.name="千问 Token Plan"',
                 "-c", f'model_providers.qwtp.base_url="{QWEN_BASE_URL}"',
                 "-c", f'model_providers.qwtp.env_key="{QWEN_KEY_ENV}"',
@@ -168,7 +169,8 @@ def _build(adapter: str, prompt: str, models: dict, last_path=None):
         return agy_command(prompt, model=models["agy"])
     if adapter == "qwen":
         return qwen_command(prompt, model=models.get("qwen") or DEFAULT_MODELS["qwen"],
-                            effort=models.get("codex_effort") or DEFAULT_MODELS["codex_effort"], last_path=last_path)
+                            effort=models.get("codex_effort") or DEFAULT_MODELS["codex_effort"], last_path=last_path,
+                            sandbox=models.get("codex_sandbox") or "workspace-write")   # 起草只读（第四轮复查第 2 轮）
     raise KeyError(adapter)  # 未知适配器直接报错
 
 

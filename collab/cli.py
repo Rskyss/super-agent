@@ -159,15 +159,18 @@ def _handover_worker(project):
         return None
 
 
-def _remind_upgrades(project, card_id) -> None:
-    """开跑前：团队用的工具升级过、还没重新检测，就在卡片里提醒一句（行政会播报）；不拦着开跑（第四轮 55）。"""
+def _remind_upgrades(project, card_id, tools=None) -> None:
+    """开跑前：这次实际用的工具（命令里指定的也算）升级过、还没重新检测，就在卡片里提醒一句（行政会播报）；
+    不拦着开跑（第四轮 55）。"""
     try:
         from collab.check import version_changes
-        words = version_changes(project)
+        team = {"tester": tools.get("test"), "developer": tools.get("dev"), "reviewer": tools.get("review")} \
+            if tools else None
+        words = version_changes(project, team)
     except Exception:  # noqa: BLE001 — 查不到版本不耽误开跑
         return
     for line in words:
-        flow_record(_collab(project) / "cards" / card_id, "提醒", src="程序", dst="你", summary=line)
+        flow_record(_collab(project) / "cards" / card_id, "升级提醒", src="程序", dst="你", summary=line)
         print(line, file=sys.stderr)
 
 
@@ -225,7 +228,7 @@ def cmd_run(args, ask_fn=None, judge_fn=None, **_):
         print(f"团队配置有问题：{exc}", file=sys.stderr)
         return 1
 
-    _remind_upgrades(args.project, args.card_id)
+    _remind_upgrades(args.project, args.card_id, tools)
     tag = vcs.snapshot(project, f"pre-{args.card_id}-{datetime.now():%Y%m%d-%H%M%S}")
     _backup_row(args.project, args.card_id, tag)
 
@@ -263,6 +266,11 @@ def cmd_run(args, ask_fn=None, judge_fn=None, **_):
             return
         _stopping["done"] = True
         kill_current_tool_process_group()
+        try:
+            from collab.fullrun import kill_all_groups
+            kill_all_groups()   # 复制副本、跑全量和进度的独立进程组（第四轮复查第 2 轮）
+        except Exception:  # noqa: BLE001
+            pass
         raise SystemExit(128 + signum)
 
     for sig in (signal.SIGTERM, signal.SIGINT):

@@ -45,7 +45,7 @@ _lock = threading.Lock()
 
 # 行政在卡片对话里播报的记录（起草：第四轮 56 甲，停下后替你起草“继续改”）
 _NEWS_KINDS = {"方案", "方案失败", "开跑", "判定", "转人工", "结束", "停下", "合并失败", "合并", "提醒", "退回", "接着走",
-               "起草"}
+               "起草", "升级提醒"}   # 升级提醒单独一类：几家都升级时各说各的，不像“没动静”那样合成一条
 
 
 class ReviseNotStarted(RuntimeError):
@@ -1094,6 +1094,23 @@ def running(project: str, kind: str) -> Optional[Dict[str, Any]]:
     return data
 
 
+def end_drafting(project: str, card_id: str) -> bool:
+    """卡停下后施工进程还在替你起草“继续改”（第四轮 56 甲）：你点放弃、接受、继续改、接着跑时先把它停掉，
+    不让它接着占额度、占施工位。只停这张卡自己的。停了返回 True。"""
+    rec = running(project, "run")
+    if rec is None or str(rec.get("card") or "") != str(card_id):
+        return False
+    try:
+        stop_construction(project, card_id)
+    except StopWrongCard:
+        return False
+    cdir = Path(project) / ".collab" / "cards" / card_id
+    drafts = [e for e in _flow_events(cdir) if e.get("kind") == "起草"]
+    if drafts and drafts[-1].get("phase") == "开始":
+        flow_record(cdir, "起草", src="程序", dst="你", phase="没成", summary="起草被你的操作打断了")
+    return True
+
+
 def apply_revise(project: str, card_id: str, text: str, files=None) -> None:
     """确认框和按钮都走这里：能改才改，施工中先确认没有别的卡在跑。"""
     words = (text or "").strip()
@@ -1114,6 +1131,8 @@ def apply_revise(project: str, card_id: str, text: str, files=None) -> None:
         except TaskBusy:
             pass
         return
+    if phase.get("code") == "blocked":
+        end_drafting(project, card_id)   # 停下后还在起草的先停掉（按钮、行政确认都走这里，第四轮复查第 2 轮）
     if running(project, "run") is not None:
         raise RuntimeError("已有一张卡在施工，等它做完再改")
     if running(project, "merge") is not None or merge_unfinished(project):

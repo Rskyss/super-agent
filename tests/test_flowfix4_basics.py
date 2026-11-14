@@ -63,6 +63,7 @@ class ReworkCount(Base):
         self.assertIn("测试没过返工 0 次", end["summary"])
 
     def test_69b_like_history(self):
+        record(self.cdir, "开跑", src="调度员", dst="程序", summary="开工")
         for _ in range(2):
             record(self.cdir, "退回", src="程序", dst="开发员", summary="复查不通过，自动退回")
         record(self.cdir, "转人工", src="程序", dst="调度员", summary="复查不通过")
@@ -70,6 +71,11 @@ class ReworkCount(Base):
         record(self.cdir, "退回", src="程序", dst="开发员", summary="复查不通过，自动退回")
         words = rework_words(0, self.cdir)
         self.assertEqual(words, "测试没过返工 0 次、复查退回 4 次（其中你继续改 1 次）")
+
+    def test_plan_change_before_start_not_counted(self):
+        record(self.cdir, "追加要求", src="你", dst="调度员", summary="方案再改改")
+        record(self.cdir, "开跑", src="调度员", dst="程序", summary="开工")
+        self.assertEqual(rework_words(0, self.cdir), "测试没过返工 0 次、复查退回 0 次")
 
     def test_no_returns(self):
         self.assertEqual(rework_words(2, self.cdir), "测试没过返工 2 次、复查退回 0 次")

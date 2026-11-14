@@ -167,6 +167,15 @@ def _seed(folder) -> int:
     return number
 
 
+def _usage_warn(result: dict, output: str) -> None:
+    """Codex 壳打出来的用量太大（这件小活正常几万，带一大包说明时几十万）：通了，但提醒一句（第四轮 55，复查第 2 轮）。"""
+    from collab.check import USAGE_WARN, tokens_used
+    used = tokens_used(output)
+    if used and used > USAGE_WARN:
+        result.update(warn="usage", reason=f"{result['reason']}；但这件小活用了约 {used // 10000} 万 token",
+                      how="这个组合每次都要带一大包说明，干大活会很慢；换一个模型试试")
+
+
 def _answer_problem(folder, file_name: str, number: int):
     """检查小活做对没有：对了返回 None，不对返回 (原因, 怎么办)。"""
     try:
@@ -176,7 +185,7 @@ def _answer_problem(folder, file_name: str, number: int):
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
     if not lines or lines[0] != str(number + 1):
         return ("能建文件，但读文件、算数没做对", "这个模型做不了要读资料的活；在名单里换一个模型再检测")
-    if len(lines) < 2 or not lines[1].isdigit():
+    if len(lines) < 2 or lines[1] not in ("1", "2"):
         return ("能读写文件，但没跑命令（或跑了没把结果写上）", "这家工具在自动模式下可能不让跑命令；看看它的权限设置")
     return None
 
@@ -426,6 +435,7 @@ def check_cli(card, root=None, approved=None, runner=None, timeout=DEFAULT_TIMEO
             seconds = round(time.time() - started, 1)
             if ok:
                 result = {"ok": True, "status": "ok", "reason": f"通了 · {seconds:g} 秒", "how": ""}
+                _usage_warn(result, output)
             else:
                 reason, how = (wrong or _explain("", card["command"], card["name"])) if code == 0 \
                     else _explain(output, card["command"], card["name"])
@@ -478,6 +488,7 @@ def check_cli(card, root=None, approved=None, runner=None, timeout=DEFAULT_TIMEO
             else:
                 reason = f"通了 · {seconds:g} 秒"
             result = {"ok": True, "status": "ok", "reason": reason, "how": ""}
+            _usage_warn(result, output)
         else:
             reason, how = (wrong or _explain("", card["command"], card["name"])) if code == 0 \
                 else _explain(output, card["command"], card["name"])

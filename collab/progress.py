@@ -30,7 +30,7 @@ def count_written(worktree, files) -> int:
     n = 0
     for rel in files:
         try:
-            n += len(re.findall(r"^\s*(?:async\s+)?def test_", (Path(worktree) / rel).read_text(
+            n += len(re.findall(r"^\s*(?:async\s+)?def test_|^\s*(?:it|test)\(", (Path(worktree) / rel).read_text(
                 encoding="utf-8", errors="replace"), re.M))
         except OSError:
             continue
@@ -38,13 +38,17 @@ def count_written(worktree, files) -> int:
 
 
 def tally(output: str):
-    """unittest 输出 → (通过, 总数)；认不出返回 None。"""
+    """unittest 输出 → (通过, 总数)；认不出返回 None。同一个方法里几个子测试没过，只算这个方法没过一次（复查第 2 轮）。"""
     m = re.search(r"^Ran (\d+) tests?", output or "", re.M)
     if not m:
         return None
     total = int(m.group(1))
+    names = {f"{a} ({b})" for a, b in re.findall(r"^(?:FAIL|ERROR): (\S+) \(([^)]*)\)", output or "", re.M)}
     bad = re.search(r"FAILED \(([^)]*)\)", output or "")
-    failed = sum(int(n) for n in re.findall(r"(?:failures|errors|unexpected successes)=(\d+)", bad.group(1))) if bad else 0
+    unexpected = re.search(r"unexpected successes=(\d+)", bad.group(1)) if bad else None
+    failed = len(names) + (int(unexpected.group(1)) if unexpected else 0)
+    if bad and not names and not unexpected:   # 有汇总却列不出名字：照汇总扣
+        failed = sum(int(n) for n in re.findall(r"(?:failures|errors)=(\d+)", bad.group(1)))
     skipped = re.search(r"skipped=(\d+)", output or "")
     return max(0, total - failed - (int(skipped.group(1)) if skipped else 0)), total
 
@@ -104,16 +108,20 @@ class ProgressJob:
 
     # ---- 写测试：数 def test_ ----
     def _tester_files(self):
-        root = self.worktree / "tests"
-        if not root.is_dir():
-            return []
+        """写测试那步新写、新改的测试文件：整个工作副本里 test_*.py、*_test.py、*.test.js 这类（复查第 2 轮：只看 tests/ 会漏）。"""
+        import os
         out = []
-        for p in root.rglob("test_*"):
-            try:
-                if p.is_file() and p.stat().st_mtime >= self.started - 1:
-                    out.append(p.relative_to(self.worktree).as_posix())
-            except OSError:
-                continue
+        for here, dirs, files in os.walk(self.worktree):
+            dirs[:] = [d for d in dirs if d not in _SKIP_DIRS and not d.endswith(".app")]
+            for name in files:
+                if not (name.startswith("test_") or re.search(r"[._-]test\.\w+$|[._-]spec\.\w+$", name)):
+                    continue
+                path = os.path.join(here, name)
+                try:
+                    if os.stat(path).st_mtime >= self.started - 1:
+                        out.append(os.path.relpath(path, self.worktree))
+                except OSError:
+                    continue
         return out
 
     def due(self, now: float, changed: bool) -> bool:
@@ -126,7 +134,7 @@ class ProgressJob:
         tmp = Path(tempfile.mkdtemp(prefix="collab-progress-"))
         try:
             copy = tmp / "copy"
-            copy_tree(self.worktree, copy)
+            copy_tree(self.worktree, copy, self.event)
             env = safe_env(tmp / "bin")
             passed = total = 0
             for rel in self.py:
@@ -142,8 +150,9 @@ class ProgressJob:
                             "error": "测试跑超时了" if v.result == TIMEOUT else "测试跑不起来"}
                 got = tally(v.output)
                 if got is None or "unittest.loader._FailedTest" in (v.output or ""):
-                    # 导入就报错（代码还没写出来）：总数照测试文件里写了几项算，通过 0
-                    got = (0, count_written(copy, [rel]))
+                    # 导入就报错：照方案说“跑不起来”，不装成“通过 0/N”（复查第 2 轮）
+                    return {"seq": self.seq, "step": self.step,
+                            "error": "测试跑不起来（多半是代码还没写到能导入）"}
                 passed, total = passed + got[0], total + got[1]
             return {"seq": self.seq, "step": self.step, "passed": passed, "total": total}
         except Exception:  # noqa: BLE001 — 算不出就说一声，不影响干活

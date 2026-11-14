@@ -226,7 +226,9 @@ def rework_words(rework: int, card_dir) -> str:
     69b 只写“返工 0 次”，其实复查退回了 3 次、继续改 1 次。"""
     events = read_flow(card_dir)
     returns = sum(1 for e in events if e.get("kind") == "退回")
-    revises = sum(1 for e in events if e.get("kind") == "追加要求")
+    started = next((i for i, e in enumerate(events) if e.get("kind") == "开跑"), None)
+    # 只算开工以后的继续改；开工前改方案也记“追加要求”，不是退回（复查第 2 轮）
+    revises = 0 if started is None else sum(1 for e in events[started:] if e.get("kind") == "追加要求")
     # 方案定的口径：复查退回 = 自动退回 + 你点“继续改”重开（69b 算 4 次）
     words = f"测试没过返工 {rework} 次、复查退回 {returns + revises} 次"
     return words + (f"（其中你继续改 {revises} 次）" if revises else "")

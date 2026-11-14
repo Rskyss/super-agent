@@ -164,9 +164,14 @@ class EndDrafting(unittest.TestCase):
             cdir.mkdir()
             record(cdir, "起草", src="程序", dst="你", phase="开始", summary="正在起草")
             stopped = []
-            with patch.object(server, "running", lambda p, k: {"card": "CARD-001", "pid": 1}), \
-                    patch.object(server, "stop_construction", lambda p, c: stopped.append(c)):
-                self.assertTrue(server.end_drafting(d, "CARD-001", cdir))
+            from desktop.clerk import tasks as ctasks
+            proj = Path(d) / "proj"
+            cdir = proj / ".collab" / "cards" / "CARD-001"
+            cdir.mkdir(parents=True)
+            record(cdir, "起草", src="程序", dst="你", phase="开始", summary="正在起草")
+            with patch.object(ctasks, "running", lambda p, k: {"card": "CARD-001", "pid": 1}), \
+                    patch.object(ctasks, "stop_construction", lambda p, c: stopped.append(c)):
+                self.assertTrue(server.end_drafting(str(proj), "CARD-001", cdir))
             self.assertEqual(stopped, ["CARD-001"])
             self.assertEqual(read_flow(cdir)[-1].get("phase"), "没成")
 
@@ -174,6 +179,27 @@ class EndDrafting(unittest.TestCase):
         from unittest.mock import patch
         from desktop import server
         with tempfile.TemporaryDirectory() as d:
-            with patch.object(server, "running", lambda p, k: {"card": "CARD-002", "pid": 1}), \
-                    patch.object(server, "stop_construction", lambda p, c: self.fail("不该停别的卡")):
+            from desktop.clerk import tasks as ctasks
+            with patch.object(ctasks, "running", lambda p, k: {"card": "CARD-002", "pid": 1}), \
+                    patch.object(ctasks, "stop_construction", lambda p, c: self.fail("不该停别的卡")):
                 self.assertFalse(server.end_drafting(d, "CARD-001", Path(d)))
+
+
+class ReviseStopsDraft(unittest.TestCase):
+    def test_clerk_confirm_path_stops_draft_first(self):
+        from unittest.mock import patch
+        from desktop.clerk import tasks as ctasks
+        order = []
+
+        class Stop(Exception):
+            pass
+
+        def fake_running(p, k):
+            order.append("running")
+            raise Stop()
+        with patch.object(ctasks, "card_phase", lambda p, c: {"code": "blocked", "actions": ["revise"]}), \
+                patch.object(ctasks, "end_drafting", lambda p, c: order.append("end")), \
+                patch.object(ctasks, "running", fake_running):
+            with self.assertRaises(Stop):
+                ctasks.apply_revise("/x", "CARD-001", "改一下")
+        self.assertEqual(order[:2], ["end", "running"])
