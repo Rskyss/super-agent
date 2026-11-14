@@ -14,6 +14,43 @@ var TeamCore = {
       return team[r] === team[role] && TeamCore.needsCheck(team, r) && TeamCore.pickKey(team, r, picks) === key;
     });
   },
+  // agy 拆出思考强度框（11-14）：编号结尾是强度的几档并成一个模型，存的仍是完整编号
+  EFFORT_ORDER: ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+  splitEfforts: function (opts) {
+    var groups = [], byBase = {};
+    (opts || []).forEach(function (o) {
+      var m = /^(.*)-(none|minimal|low|medium|high|xhigh|max)$/.exec(o.value || "");
+      if (!m) { groups.push({ base: o.value, label: o.label, efforts: [] }); return; }
+      var g = byBase[m[1]];
+      if (!g) {
+        g = byBase[m[1]] = { base: m[1], label: String(o.label || m[1]).replace(/\s*[（(][^）)]*[）)]\s*$/, "") || m[1], efforts: [] };
+        groups.push(g);
+      }
+      g.efforts.push({ effort: m[2], value: o.value });
+    });
+    groups.forEach(function (g) {
+      g.efforts.sort(function (a, b) { return TeamCore.EFFORT_ORDER.indexOf(a.effort) - TeamCore.EFFORT_ORDER.indexOf(b.effort); });
+    });
+    return groups;
+  },
+  findEffort: function (groups, value) {
+    for (var i = 0; i < groups.length; i++) {
+      var e = groups[i].efforts.find(function (x) { return x.value === value; });
+      if (e) return { base: groups[i].base, effort: e.effort };
+    }
+    return null;
+  },
+  // 换模型时尽量保持原档位，没有就选最接近的（一样近选高的）；原来没档位按“高”算
+  nearestEffort: function (group, effort) {
+    var order = TeamCore.EFFORT_ORDER, want = order.indexOf(effort || "high");
+    if (want < 0) want = order.indexOf("high");
+    var best = null;
+    group.efforts.forEach(function (e) {
+      var d = Math.abs(order.indexOf(e.effort) - want);
+      if (!best || d <= best.d) best = { d: d, e: e };
+    });
+    return best ? best.e : null;
+  },
   pickKey: function (team, role, picks) {
     var p = picks && picks[role];
     if (!p || p.tool !== team[role]) return String(team[role]);
@@ -208,7 +245,16 @@ if (typeof document !== "undefined") (function () {
     box.innerHTML = "";
 
     var pick = pickOf(role, tool);
+    if (tool === "agy" && TeamCore.findEffort(TeamCore.splitEfforts(modelOptions.agy), pick.model)) {
+      renderEffortSplitBox(role, box, pick, TeamCore.splitEfforts(modelOptions.agy));
+      return;
+    }
     var opts = (modelOptions[tool] || []).slice();
+    if (tool === "agy") {  // 当前是名单外的自定义名：照旧单框；名单里的模型并成一项，选了再出强度框
+      opts = TeamCore.splitEfforts(opts).map(function (g) {
+        return { value: g.efforts.length ? TeamCore.nearestEffort(g, "high").value : g.base, label: g.label };
+      });
+    }
     var curVal = pick.model || "";
     var inPreset = opts.some(function (o) { return o.value === curVal; });
     if (curVal && !inPreset) {
@@ -250,7 +296,7 @@ if (typeof document !== "undefined") (function () {
       } else {
         customInput.hidden = true;
         pick.model = sel1.value;
-        if (tool === "codex") renderRoleModelBox(role);
+        if (tool === "codex" || tool === "agy") renderRoleModelBox(role);
         onModelModified(role);
       }
     });
@@ -299,6 +345,90 @@ if (typeof document !== "undefined") (function () {
       none.textContent = "—";
       box.appendChild(none);
     }
+  }
+
+  // agy：左边选模型、右边选思考强度；两个框合起来存成完整编号（如 gemini-4-hydrogen-xhigh），保存格式不变
+  var EFFORT_SHORT = { none: "无", minimal: "最少", low: "低", medium: "中", high: "高", xhigh: "极高", max: "最大" };
+  function effortLabel(effort) {
+    var o = (modelOptions.codex_effort || []).find(function (x) { return x.value === effort; });
+    return o ? o.label : (EFFORT_SHORT[effort] || effort);
+  }
+  function renderEffortSplitBox(role, box, pick, groups) {
+    var cur = TeamCore.findEffort(groups, pick.model);
+    var group = groups.find(function (g) { return g.base === cur.base; });
+
+    var row1 = document.createElement("div");
+    row1.className = "model-row";
+    var lbl1 = document.createElement("span");
+    lbl1.className = "model-lbl";
+    lbl1.textContent = "使用模型";
+    var sel1 = document.createElement("select");
+    sel1.className = "model-sub";
+    sel1.setAttribute("aria-label", ROLE[role] + "模型");
+    groups.concat([{ base: "__custom__", label: "其他自定义模型名…" }]).forEach(function (g) {
+      var op = document.createElement("option");
+      op.value = g.base;
+      op.textContent = g.label;
+      sel1.appendChild(op);
+    });
+    sel1.value = cur.base;
+    row1.appendChild(lbl1);
+    row1.appendChild(sel1);
+    box.appendChild(row1);
+
+    var customInput = document.createElement("input");
+    customInput.type = "text";
+    customInput.className = "model-sub model-custom";
+    customInput.placeholder = "输入模型名，例如 " + pick.model;
+    customInput.hidden = true;
+    box.appendChild(customInput);
+
+    var row2 = document.createElement("div");
+    sel1.addEventListener("change", function () {
+      if (sel1.value === "__custom__") {  // 填自定义名时收起强度框，免得点它把自定义名盖掉（复查 11-14）
+        if (row2.parentNode) row2.parentNode.removeChild(row2);  // .model-row 是 display: contents，hidden 盖不住（复查第 2 轮）
+        customInput.hidden = false;
+        customInput.value = pick.model || "";
+        customInput.focus();
+        return;
+      }
+      var g = groups.find(function (x) { return x.base === sel1.value; });
+      var now = TeamCore.findEffort(groups, pick.model);  // 按此刻的档位（用户可能刚改过强度，复查 11-14）
+      var e = g && TeamCore.nearestEffort(g, now ? now.effort : cur.effort);
+      pick.model = e ? e.value : sel1.value;
+      renderRoleModelBox(role);
+      onModelModified(role);
+    });
+    customInput.addEventListener("input", function () {
+      var v = customInput.value.trim();
+      if (v) {
+        pick.model = v;
+        onModelModified(role);
+      }
+    });
+
+    row2.className = "model-row effort";
+    var lbl2 = document.createElement("span");
+    lbl2.className = "model-lbl";
+    lbl2.textContent = "思考强度";
+    var sel2 = document.createElement("select");
+    sel2.className = "model-sub";
+    sel2.setAttribute("aria-label", ROLE[role] + "思考强度");
+    group.efforts.forEach(function (e) {
+      var op = document.createElement("option");
+      op.value = e.value;
+      op.textContent = effortLabel(e.effort);
+      sel2.appendChild(op);
+    });
+    sel2.value = pick.model;
+    sel2.addEventListener("change", function () {
+      if (sel1.value === "__custom__") return;  // 正在填自定义名时不许盖掉它
+      pick.model = sel2.value;
+      onModelModified(role);
+    });
+    row2.appendChild(lbl2);
+    row2.appendChild(sel2);
+    box.appendChild(row2);
   }
 
   // 这个岗位此刻的模型选择；换了工具就从这家的整体设置起步
