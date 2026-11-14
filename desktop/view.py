@@ -545,6 +545,12 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
         and not process_is_alive(last_run_pid, last_run_started)
     )
     disp_busy_after = bool(chat and (chat["busy"] or chat["asking"]) and state == "待验收")
+    # 卡已过了开发，最后那次派活还没交活（被停下、Claude 接手）：当它作废，各步照最后一次做完的结果显示，
+    # 顶部一句话跟卡片状态走，不再“正在返工”、不再转圈计时（试跑记录 70）
+    moved_on = state not in ("开发中", "待测试", "测试中")
+    stopped_ev = open_ev if moved_on else None
+    if moved_on:
+        open_ev = None
 
     _set(stations, "you", "done", requirement["summary"] if requirement else view["card"]["title"])
     plan_writes = [e for e in events if e.get("kind") == "写方案"]
@@ -622,7 +628,31 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
     # 写代码的交活后、复查还没出新结论时也一样（复查 A 第 3 条、第 2 轮 A 第 2 条、㉞）
     redo = [e.get("seq", 0) for e in events if e.get("kind") == "派活" and e.get("dst") in ("开发员", "测试员")
             and e.get("step") != "写测试"]
-    if redo:  # 停下（中断）时也一样，不让上一轮结果冒回来（第 3 轮 A 第 1 条）
+    if stopped_ev:
+        key = ROLE_KEYS.get(stopped_ev.get("dst"))
+        st = next((x for x in stations if x["key"] == key), None)
+        if st is not None:
+            if st.get("state") in ("done", "fail"):
+                st["detail"] = (st.get("detail") or "") + "（之后又开的一轮中途停下，没交活）"
+            else:
+                _set(stations, key, "idle", "这一轮中途停下了，没交活")
+    if state == "已合并":   # 放进项目时程序只重跑本卡测试，过了才放：照实说清哪项复验过（复查第 2 轮）
+        st = next(x for x in stations if x["key"] == "check")
+        checks = [e for e in events if e.get("kind") in ("判定", "页面检查")
+                  or (e.get("kind") == "全量" and e.get("phase") == "结果")]
+        if st.get("state") == "fail" and checks:
+            before, last_check = st.get("detail", ""), checks[-1]   # 按最后一次检查（红叉的来源）判断
+            claude_ok = any(e.get("kind") == "验收" and e.get("src") == "Claude"
+                            and e.get("seq", 0) > last_check.get("seq", 0) for e in events)
+            own_test = (last_check.get("kind") == "判定"
+                        and not any(w in last_check.get("summary", "") for w in ("全部测试", "老测试")))
+            if claude_ok:
+                _set(stations, "check", "done", f"Claude 最后检查时全部测试已通过（之前一轮：{before}）")
+            elif own_test:
+                _set(stations, "check", "done", f"放进项目前本卡测试已通过（之前一轮：{before}）")
+            else:
+                st["detail"] = before + "（放进项目前只重跑了本卡测试，这项没再复验）"
+    if redo and not moved_on:  # 停下（中断）时也一样，不让上一轮结果冒回来（第 3 轮 A 第 1 条）
         round_start = redo[-1]
         for key, ev, words in (("check", last_verdict, "等这一轮代码写完再跑"),
                                ("rev", replies.get("复查员"), "等这一轮测试过了再复查")):
