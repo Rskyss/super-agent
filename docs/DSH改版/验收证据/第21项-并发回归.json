@@ -1,0 +1,25 @@
+{
+  "rounds": [
+    {
+      "round": 1,
+      "plugin": 166,
+      "python": 2600,
+      "pythonSeconds": 161.222,
+      "result": "pass"
+    },
+    {
+      "round": 2,
+      "plugin": 167,
+      "python": 2600,
+      "pythonSeconds": 158.951,
+      "result": "pass"
+    },
+    {
+      "round": 3,
+      "plugin": 167,
+      "python": 2600,
+      "pythonSeconds": 164.523,
+      "result": "pass"
+    }
+  ]
+}

@@ -1,0 +1,850 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8"><title>超级助手页面草图</title>
+<style>
+:root{--bg:#19191b;--side:#1d1d1f;--card:#222225;--card2:#2a2a2d;--line:#2f2f33;--tx:#e9e9ea;--tx2:#a0a0a6;--tx3:#6f6f75;--blue:#4c8dff;--green:#3fb37f;--amber:#e0a43a;--red:#e5655b}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#000;font-family:-apple-system,"PingFang SC","Helvetica Neue",sans-serif;color:var(--tx);font-size:14px}
+.screen{display:none;width:1440px;height:900px;background:var(--bg);position:relative;overflow:hidden}
+.screen.on{display:flex}
+/* 侧栏 */
+.side{width:280px;background:var(--side);border-right:1px solid var(--line);padding:16px 12px;display:flex;flex-direction:column;flex-shrink:0}
+.brand{display:flex;align-items:center;gap:8px;font-weight:600;font-size:15px;padding:4px 6px 16px}
+.logo{width:26px;height:26px;border-radius:7px;background:linear-gradient(135deg,#4c8dff,#7b5cff);display:flex;align-items:center;justify-content:center;font-size:13px;color:#fff}
+.newbtn{background:#38383b;border:1px solid #48484c;border-radius:8px;padding:10px;text-align:center;font-size:14px;margin-bottom:14px}
+.nav div{padding:8px 10px;border-radius:7px;color:var(--tx);display:flex;gap:10px;align-items:center;margin-bottom:2px}
+.nav div.cur{background:#2c2c2f}
+.nav i{font-style:normal;width:16px;text-align:center;color:var(--tx2)}
+.sec{color:var(--tx3);font-size:13px;margin:18px 8px 8px}
+.sess div{padding:7px 10px 7px 26px;border-radius:7px;display:flex;justify-content:space-between;font-size:13.5px}
+.sess div.cur{background:#2c2c2f}
+.sess span{color:var(--tx3);font-size:11px}
+.sidefoot{margin-top:auto;color:var(--tx2);font-size:13px;padding:8px}
+/* 主区 */
+.main{flex:1;display:flex;flex-direction:column;min-width:0}
+.head{height:56px;border-bottom:1px solid var(--line);padding:14px 28px 0}
+.head h1{font-size:15px;font-weight:600;display:flex;gap:12px;align-items:center}
+.tag{font-size:12px;color:var(--tx2);font-weight:400}
+.tabs{display:flex;gap:28px;margin-top:12px;font-size:14px;color:var(--tx2)}
+.tabs .cur{color:var(--blue);border-bottom:2px solid var(--blue);padding-bottom:7px}
+.body{flex:1;overflow:hidden;padding:24px 0}
+.col{width:780px;margin:0 auto}
+.user{background:var(--card2);border-radius:16px;padding:12px 16px;margin:0 0 18px auto;max-width:560px;line-height:1.6}
+.meta{color:var(--tx3);font-size:12px;margin:0 0 10px}
+.ai{line-height:1.75;margin-bottom:14px}
+.compose{width:780px;margin:0 auto 14px;background:#232326;border:1px solid #36363a;border-radius:20px;padding:14px 16px}
+.compose .ph{color:var(--tx3);margin-bottom:22px}
+.crow{display:flex;justify-content:space-between;color:var(--tx2);font-size:13px;align-items:center}
+.send{width:32px;height:32px;border-radius:50%;background:#3b6fd8;display:inline-flex;align-items:center;justify-content:center;color:#fff}
+.status{display:flex;justify-content:center;gap:28px;color:var(--tx2);font-size:12.5px;padding-bottom:14px}
+/* 卡片 */
+.box{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin:10px 0 16px}
+.box h3{font-size:14.5px;margin-bottom:10px;display:flex;justify-content:space-between;align-items:center}
+.pill{font-size:11.5px;padding:2px 8px;border-radius:10px;border:1px solid #444;color:var(--tx2);font-weight:400}
+.pill.g{color:var(--green);border-color:#2d5c46}.pill.a{color:var(--amber);border-color:#6b5222}.pill.b{color:var(--blue);border-color:#2b4a80}.pill.r{color:var(--red);border-color:#6b2f2a}
+table{width:100%;border-collapse:collapse;font-size:13.5px}
+td,th{text-align:left;padding:9px 8px;border-bottom:1px solid var(--line);vertical-align:top;line-height:1.55}
+th{color:var(--tx2);font-weight:500;font-size:12.5px}
+.btns{display:flex;gap:10px;margin-top:14px}
+.btn{padding:8px 16px;border-radius:8px;border:1px solid #48484c;font-size:13.5px}
+.btn.p{background:#e9e9ea;color:#111;border-color:#e9e9ea}
+.dim{color:var(--tx2)}.s{font-size:12.5px}
+.ok{color:var(--green)}.warn{color:var(--amber)}.bad{color:var(--red)}
+.step{display:flex;gap:12px;padding:10px 0;border-bottom:1px solid var(--line)}
+.step:last-child{border-bottom:0}
+.dot{width:20px;height:20px;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:11px;margin-top:2px}
+.dot.d{background:#1f4a36;color:var(--green)}.dot.r{border:2px solid var(--blue);border-right-color:transparent}.dot.w{border:1.5px solid #555}
+.st{flex:1}.st b{font-weight:500}.st .l{color:var(--tx2);font-size:12.5px;line-height:1.6;margin-top:3px}
+.right{width:340px;border-left:1px solid var(--line);background:var(--side);padding:18px;flex-shrink:0}
+.right h4{font-size:13.5px;margin-bottom:12px}
+.kv{display:flex;justify-content:space-between;padding:7px 0;font-size:13px;border-bottom:1px solid var(--line)}
+.kv span:first-child{color:var(--tx2)}
+.entry{flex:1;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:20px}
+.entry h3{font-size:16px;margin-bottom:8px}
+.page{width:900px;margin:0 auto;padding-top:28px}
+.page h2{font-size:20px;font-weight:600}
+.row{display:flex;align-items:center;gap:14px;padding:14px 0;border-bottom:1px solid var(--line)}
+.ic{width:40px;height:40px;border-radius:10px;background:#2a2a2d;border:1px solid var(--line);display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0}
+.row .t{flex:1}.row .t div:last-child{color:var(--tx2);font-size:12.5px;margin-top:3px}
+.banner{border:1px solid #6b5222;background:#2a2418;border-radius:10px;padding:12px 16px;display:flex;justify-content:space-between;align-items:center;margin-bottom:22px}
+.note{position:absolute;right:16px;top:10px;background:#4c8dff;color:#fff;font-size:12px;padding:5px 10px;border-radius:6px}
+.stabs{display:flex;gap:6px;margin:18px 4px 10px;background:#141416;border-radius:8px;padding:3px}
+.stabs span{flex:1;text-align:center;padding:6px;border-radius:6px;color:var(--tx2);font-size:13px}
+.stabs span.cur{background:#2c2c2f;color:var(--tx)}
+.stabs em{font-style:normal;background:var(--amber);color:#111;border-radius:8px;padding:0 6px;font-size:11px;margin-left:2px}
+.sess .g{color:var(--tx3);font-size:12px;padding:10px 10px 4px}
+.sess .warn{color:var(--amber)!important}.sess .blue{color:var(--blue)!important}
+.tc{display:flex;gap:14px;align-items:center;background:var(--card);border:1px solid #2b4a80;border-radius:12px;padding:14px 16px;margin:6px 0 16px}
+.tc .num{width:44px;height:44px;border-radius:10px;background:#1b2436;color:var(--blue);display:flex;align-items:center;justify-content:center;font-weight:600}
+.stat{flex:1;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px}
+.stat b{font-size:24px;display:block;margin-top:4px}
+.stabs{margin-top:4px!important}
+.setbtn{padding:6px 10px;border-radius:7px}
+.setbtn.cur{background:#2c2c2f;color:var(--tx)}
+.snav{width:200px;border-right:1px solid var(--line);padding:28px 12px;flex-shrink:0}
+.snav .t{color:var(--tx3);font-size:12px;margin:0 10px 10px}
+.snav div.i{padding:8px 10px;border-radius:7px;margin-bottom:2px}
+.snav div.i.cur{background:#2c2c2f}
+.snav .hint{color:var(--tx3);font-size:11.5px;margin:-2px 10px 8px}
+.more{float:right;color:var(--tx2);font-size:12.5px;font-weight:400}
+.more.open{color:var(--blue)}
+.detail{margin-top:8px;background:#161618;border:1px solid var(--line);border-radius:8px;padding:10px 12px;font-size:12.5px;line-height:1.75;color:var(--tx2)}
+.detail code{font-family:Menlo,monospace;color:#c9c9cf;font-size:12px}
+.spin{display:inline-block;width:12px;height:12px;border:1.6px solid var(--blue);border-right-color:transparent;border-radius:50%;vertical-align:middle}
+.adot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--amber);vertical-align:middle}
+.mscroll::-webkit-scrollbar{width:10px}.mscroll::-webkit-scrollbar-track{background:#1b1b1d}.mscroll::-webkit-scrollbar-thumb{background:#55555b;border-radius:6px;border:2px solid #1b1b1d}
+.brand2{display:flex;align-items:center;gap:10px;padding:4px 6px 16px}.brand2 img{height:34px;width:auto}.brand2 .bn{font-weight:700;font-size:17px;line-height:1.2}.brand2 .bv{font-size:11px;font-weight:400;color:var(--tx3);margin-left:4px}.brand2 .bs{font-size:12px;font-weight:700;color:#8a93a6;letter-spacing:.3px;margin-top:2px}
+.hl{background:rgba(224,164,58,.18);border-bottom:1px dashed var(--amber)}
+</style></head><body>
+
+<!-- 侧栏模板由脚本复制 -->
+<template id="side">
+<div class="side">
+  <div class="brand2"><img src="aisoup-碗-反白.png" alt=""><div><div class="bn">超级助手 <span class="bv">v0.1</span></div><div class="bs">AIsoup Lab</div></div></div>
+  <div class="newbtn">＋ 新会话</div>
+  <div class="stabs"><span data-t="chat">对话</span><span data-t="task">任务 <em>1</em></span></div>
+  <div class="sess chatlist">
+    <div data-k="s6">接上高德，做个查路线的能力 <span>刚刚</span></div>
+    <div data-k="s5">想要一个找公众号选题的能力 <span>刚刚</span></div>
+    <div data-k="s1">积木库想加个一键检测 <span>12 分钟</span></div>
+    <div data-k="s2">把超级助手配置好 <span>昨天</span></div>
+    <div data-k="s3">聊聊产品定位和 DSH <span>昨天</span></div>
+    <div data-k="s4">公众号选题随便聊聊 <span>3 天</span></div>
+  </div>
+  <div class="sess tasklist">
+    <div class="g">等你处理 1</div>
+    <div data-k="t72">72 号 积木库一键检测全部 <span><i class="adot"></i></span></div>
+    <div class="g">进行中 2</div>
+    <div data-k="t73">73 号 能力卡复制一份 <span><i class="spin"></i></span></div>
+    <div data-k="t74">74 号 新能力：公众号选题 <span><i class="spin"></i></span></div>
+    <div class="g">已完成 71</div>
+    <div data-k="t71">71 号 第一批修复卡 1 <span>今天</span></div>
+    <div data-k="t70">70 号 卡片右栏状态 <span>昨天</span></div>
+  </div>
+  <div class="sidefoot"><span class="setbtn">⚙ 设置</span></div>
+</div>
+</template>
+
+<!-- 00 初始页面 a：只有服务商和 Key -->
+<div class="screen" id="s00" data-nav="" data-sess="" data-empty="1">
+ <div class="main">
+  <div class="body" style="display:flex;flex-direction:column;justify-content:center">
+   <div class="col" style="width:560px">
+        <div style="font-size:24px;font-weight:600;margin-bottom:8px">配置一个大模型来做你的超级助手吧</div>
+    <div class="dim" style="line-height:1.7;margin-bottom:22px">它负责和你对话，也负责帮你把各种工具接进来。这一步设好后一般不用再改。</div>
+    <div class="box" style="padding:20px 22px"><div class="s dim" style="margin-bottom:8px">服务商</div><div style="display:flex;gap:8px;margin-bottom:18px"><span class="btn" style="border-color:var(--blue);color:var(--tx)">DeepSeek</span><span class="btn">阿里百炼</span><span class="btn">腾讯云</span><span class="btn">其他（OpenAI 兼容）</span></div><div class="s dim" style="margin-bottom:8px;display:flex;justify-content:space-between"><span>API Key</span><span style="color:var(--blue)">去哪里拿？</span></div><div style="background:#161618;border:1px solid var(--blue);border-radius:8px;padding:10px 12px;color:var(--tx3);font-family:Menlo,monospace;font-size:13px">粘贴你的 API Key，粘贴后自动验证</div><div class="s" style="color:var(--tx3);margin-top:6px">只存在这台电脑的钥匙串里，不会上传。</div></div>
+   </div>
+  </div>
+  <div class="compose" style="opacity:.45"><div class="ph">接好大模型后就能跟超级助手说话…</div><div class="crow"><span>＋</span><span class="send">↑</span></div></div>
+ </div>
+ <div class="note">00a 第一次打开：只有服务商和 Key</div>
+</div>
+
+<!-- 00e：选了“其他（OpenAI 兼容）” -->
+<div class="screen" id="s00e" data-nav="" data-sess="" data-empty="1">
+ <div class="main">
+  <div class="body" style="display:flex;flex-direction:column;justify-content:center">
+   <div class="col" style="width:560px">
+        <div style="font-size:24px;font-weight:600;margin-bottom:8px">配置一个大模型来做你的超级助手吧</div>
+    <div class="dim" style="line-height:1.7;margin-bottom:22px">它负责和你对话，也负责帮你把各种工具接进来。这一步设好后一般不用再改。</div>
+    <div class="box" style="padding:20px 22px"><div class="s dim" style="margin-bottom:8px">服务商</div><div style="display:flex;gap:8px;margin-bottom:18px"><span class="btn">DeepSeek</span><span class="btn">阿里百炼</span><span class="btn">腾讯云</span><span class="btn" style="border-color:var(--blue);color:var(--tx)">其他（OpenAI 兼容）</span></div><div class="s dim" style="margin-bottom:8px">接口地址</div><div style="background:#161618;border:1px solid #3a3a3e;border-radius:8px;padding:10px 12px;color:var(--tx3);font-family:Menlo,monospace;font-size:13px;margin-bottom:6px">例：https://api.example.com/v1</div><div class="s" style="color:var(--tx3);margin-bottom:16px">服务商文档里写的“OpenAI 兼容地址”，一般以 /v1 结尾。</div><div class="s dim" style="margin-bottom:8px;display:flex;justify-content:space-between"><span>API Key</span><span style="color:var(--blue)">去哪里拿？</span></div><div style="background:#161618;border:1px solid var(--blue);border-radius:8px;padding:10px 12px;color:var(--tx3);font-family:Menlo,monospace;font-size:13px">粘贴你的 API Key，粘贴后自动验证</div><div class="s" style="color:var(--tx3);margin-top:6px">只存在这台电脑的钥匙串里，不会上传。</div></div>
+   </div>
+  </div>
+  <div class="compose" style="opacity:.45"><div class="ph">接好大模型后就能跟超级助手说话…</div><div class="crow"><span>＋</span><span class="send">↑</span></div></div>
+ </div>
+ <div class="note">00e 选了“其他（OpenAI 兼容）”：多一个接口地址框，模型列表照样自动拉</div>
+</div>
+
+<!-- 00b：Key 通了，展开选模型 -->
+<div class="screen" id="s00b" data-nav="" data-sess="" data-empty="1">
+ <div class="main">
+  <div class="body" style="display:flex;flex-direction:column;justify-content:center">
+   <div class="col" style="width:560px">
+        <div style="font-size:24px;font-weight:600;margin-bottom:8px">配置一个大模型来做你的超级助手吧</div>
+    <div class="dim" style="line-height:1.7;margin-bottom:22px">它负责和你对话，也负责帮你把各种工具接进来。这一步设好后一般不用再改。</div>
+    <div class="box" style="padding:20px 22px"><div class="s dim" style="margin-bottom:8px">服务商</div><div style="display:flex;gap:8px;margin-bottom:18px"><span class="btn" style="border-color:var(--blue);color:var(--tx)">DeepSeek</span><span class="btn">阿里百炼</span><span class="btn">腾讯云</span><span class="btn">其他（OpenAI 兼容）</span></div><div class="s dim" style="margin-bottom:8px;display:flex;justify-content:space-between"><span>API Key</span><span style="color:var(--blue)">去哪里拿？</span></div><div style="background:#161618;border:1px solid #3a3a3e;border-radius:8px;padding:10px 12px;color:var(--tx2);font-family:Menlo,monospace;font-size:13px;display:flex;justify-content:space-between"><span>sk-••••••••••••••••••••3f9a</span><span class="ok">✓ 有效</span></div><div style="margin-top:18px;border-top:1px solid var(--line);padding-top:16px">
+ <div class="s dim" style="margin-bottom:8px">选一个模型</div>
+ <div class="mscroll" style="background:#161618;border:1px solid #3a3a3e;border-radius:8px;max-height:140px;overflow-y:scroll;margin-bottom:16px"><div style="padding:9px 12px">○ deepseek-v4.1-flash</div><div style="padding:9px 12px;border-top:1px solid var(--line)">○ deepseek-v4.1-pro</div><div style="padding:9px 12px;border-top:1px solid var(--line)">○ deepseek-v4-flash-1017</div><div style="padding:9px 12px;border-top:1px solid var(--line)">○ deepseek-v4-flash</div><div style="padding:9px 12px;border-top:1px solid var(--line)">○ deepseek-v4-pro</div><div style="padding:9px 12px;border-top:1px solid var(--line)">○ deepseek-v3.2</div></div>
+<div style="margin-top:16px"><span class="btn p" style="opacity:.35">确认</span><span class="s" style="color:var(--tx3);margin-left:10px">先选一个模型</span></div></div></div>
+   </div>
+  </div>
+  <div class="compose" style="opacity:.45"><div class="ph">接好大模型后就能跟超级助手说话…</div><div class="crow"><span>＋</span><span class="send">↑</span></div></div>
+ </div>
+ <div class="note">00b Key 验证通了：展开模型列表，默认不选，选了才能点确认</div>
+</div>
+
+<!-- 00c：完成 -->
+<div class="screen" id="s00c" data-nav="" data-sess="" data-empty="1" data-ready="1">
+ <div class="main">
+  <div class="body" style="display:flex;flex-direction:column;justify-content:center;align-items:center">
+   <div style="width:760px">
+    <div style="font-size:30px;font-weight:600;text-align:center;margin-bottom:26px">今天想交给我什么事？</div>
+    <div class="compose" style="width:760px;margin:0"><div class="ph">跟超级助手说你想做什么…</div><div class="crow"><span>＋　附件 / 截图</span><span class="send">↑</span></div></div>
+   </div>
+  </div>
+ </div>
+ <div class="note">00c 超级助手设好后：就是普通的新会话页，输入框在中间</div>
+</div>
+
+<!-- 00d Key无效 -->
+<div class="screen" id="s00d" data-nav="" data-sess="" data-empty="1">
+ <div class="main">
+  <div class="body" style="display:flex;flex-direction:column;justify-content:center">
+   <div class="col" style="width:560px">
+        <div style="font-size:24px;font-weight:600;margin-bottom:8px">配置一个大模型来做你的超级助手吧</div>
+    <div class="dim" style="line-height:1.7;margin-bottom:22px">它负责和你对话，也负责帮你把各种工具接进来。这一步设好后一般不用再改。</div>
+    <div class="box" style="padding:20px 22px"><div class="s dim" style="margin-bottom:8px">服务商</div><div style="display:flex;gap:8px;margin-bottom:18px"><span class="btn" style="border-color:var(--blue);color:var(--tx)">DeepSeek</span><span class="btn">阿里百炼</span><span class="btn">腾讯云</span><span class="btn">其他（OpenAI 兼容）</span></div><div class="s dim" style="margin-bottom:8px;display:flex;justify-content:space-between"><span>API Key</span><span style="color:var(--blue)">去哪里拿？</span></div><div style="background:#161618;border:1px solid #3a3a3e;border-radius:8px;padding:10px 12px;color:var(--tx2);font-family:Menlo,monospace;font-size:13px;display:flex;justify-content:space-between"><span>sk-••••••••••••••••••••3f9a</span><span class="bad">✕ 未通过</span></div><div class="s bad" style="margin-top:8px">Key 不对或已失效，请重新复制</div>
+    <div class="s" style="margin-top:8px"><span style="color:var(--blue)">去哪里拿？</span>　<span style="color:var(--blue)">换一家服务商</span></div></div>
+   </div>
+  </div>
+  <div class="compose" style="opacity:.45"><div class="ph">接好大模型后就能跟超级助手说话…</div><div class="crow"><span>＋</span><span class="send">↑</span></div></div>
+ </div>
+ <div class="note">00d Key 无效：只提示一处，不展开模型</div>
+</div>
+
+<!-- 01 日常新会话页（= 00c + 配置提醒条；原“首页”已去掉） -->
+<div class="screen" id="s01" data-nav="" data-sess="">
+ <div class="main">
+  <div class="body" style="display:flex;flex-direction:column;justify-content:center;align-items:center">
+   <div style="width:760px">
+    <div style="font-size:30px;font-weight:600;text-align:center;margin-bottom:26px">今天想交给我什么事？</div>
+    <div class="compose" style="width:760px;margin:0"><div class="ph">跟超级助手说你想做什么…</div><div class="crow"><span>＋　附件 / 截图</span><span class="send">↑</span></div></div>
+   </div>
+  </div>
+ </div>
+ <div class="note">01 日常新会话页：就是 00c（配置提醒条先不放，等调度员、零件、流程对完再定）</div>
+</div>
+
+<!-- 03 确认做法 -->
+<div class="screen" id="s03" data-nav="" data-sess="s1">
+ <div class="main">
+  <div class="head"><h1>积木库想加个一键检测 <span class="tag">超级助手</span></h1></div>
+  <div class="body"><div class="col">
+   <div class="user">积木库零件多了，一个个点检测太麻烦。加个“一键检测全部”按钮，测完告诉我哪些通了哪些没通。</div>
+   <div class="ai">我理解成下面这样。有两处要你拍板，标了 <span class="warn">？</span>。</div>
+  </div></div>
+   <div class="box" style="width:780px;margin:0 auto 8px;border-color:#6b5222;max-height:none"><h3><span>积木库一键检测全部　<span class="pill" style="color:var(--tx)">干活 · 开发软件</span> <span class="s" style="color:var(--blue);font-weight:400">不对，改成…</span></span><span class="pill b">等你确认</span></h3>
+   <table>
+    <tr><th style="width:110px">要做什么</th><td>积木库页面右上角加“一键检测全部”，点了把所有零件挨个测一遍，结果显示在每一行上，最上面汇总“通了 5 个，没通 2 个”</td></tr>
+    <tr><th>验收标准</th><td>① 测的时候每行显示“检测中”，按钮不能再点<br>② 一个零件卡住，最多等 30 秒就跳过，不影响别的<br>③ 测完汇总数字和每行状态对得上</td></tr>
+    <tr><th>不做什么</th><td>不改单个零件的检测做法；没通的不自动修，只告诉你</td></tr>
+    <tr><th><span class="warn">？</span> 没登录的</th><td>订阅工具没登录的，是跳过、还是算“没通”？<span class="dim">（建议算没通，并提示去登录）</span></td></tr>
+    <tr><th><span class="warn">？</span> 会花钱的</th><td>检测按量付费的大模型会花一点钱（每次约 ¥0.01），要不要一起测？<span class="dim">（建议一起测）</span></td></tr>
+    <tr><th>用哪条流程</th><td>开发软件 · 第 4 版（超级助手按“改软件”判断的）：写测试 → 写代码 → 跑全部测试 → 复查（最多 3 轮）→ 你验收</td></tr>
+   </table>
+   <div class="btns"><span class="btn p">确认，建任务</span><span class="btn">我要改</span></div>
+  </div>
+  <div class="compose"><div class="ph">回复超级助手，比如“没登录的算没通，会花钱的也测”…</div><div class="crow"><span>＋</span><span class="send">↑</span></div></div>
+ </div>
+ <div class="note">03 干活确认卡：要做什么、不做什么、验收标准、要你拍板的、用哪条流程</div>
+</div>
+
+<!-- 03b 确认后变成任务卡 -->
+<div class="screen" id="s03b" data-nav="" data-sess="s1" data-nobadge="1">
+ <div class="main">
+  <div class="head"><h1>积木库想加个一键检测 <span class="tag">超级助手</span></h1></div>
+  <div class="body"><div class="col">
+   <div class="user">积木库零件多了，一个个点检测太麻烦。加个“一键检测全部”按钮，测完告诉我哪些通了哪些没通。</div>
+   <div class="box" style="opacity:.7"><h3>需求 · 72 号 <span class="pill g">已确认</span></h3><div class="dim s">积木库加“一键检测全部”· 3 条验收标准 · 没登录的算没通（按建议）· 会花钱的也测（按建议）　<span style="color:var(--blue)">展开</span></div></div>
+   <div class="ai">任务卡建好了。调度员先写一份方案，写好了我在任务卡里拿给你批，你批了才开工。这边我们可以接着聊别的。</div>
+   <div class="tc"><div class="num">72</div><div style="flex:1"><div><b>积木库一键检测全部</b>　<span class="pill b">进行中 · 调度员写方案</span></div><div class="dim s" style="margin-top:5px">开发软件 · 第 4 版 · 调度员 Codex · 09:12 建卡</div></div><span class="btn">查看任务</span></div>
+   <div class="user">对了，顺便想想积木库以后零件多了怎么分类？</div>
+   <div class="ai">可以按用途分成“干活的、查资料的、发东西的”三组，零件多了再加搜索。你想做的话说一声，我出一张确认卡；不说就只是聊聊。</div>
+  </div></div>
+  <div class="compose"><div class="ph">接着聊…</div><div class="crow"><span>＋</span><span class="send">↑</span></div></div>
+ </div>
+ <div class="note">03b 点确认 → 聊天里生成任务卡，第一步是调度员写方案</div>
+</div>
+
+<!-- 03c 还没有调度员时建卡 -->
+<div class="screen" id="s03c" data-nav="" data-sess="s1">
+ <div class="main">
+  <div class="head"><h1>积木库想加个一键检测 <span class="tag">超级助手</span></h1></div>
+  <div class="body"><div class="col">
+   <div class="user">积木库零件多了，一个个点检测太麻烦。加个“一键检测全部”按钮，测完告诉我哪些通了哪些没通。</div>
+   <div class="ai">我理解成下面这样（要你拍板的两处这里先省略，同 03）。</div>
+  </div></div>
+   <div class="box" style="width:780px;margin:0 auto 8px;border-color:#6b5222;max-height:none"><h3><span>积木库一键检测全部　<span class="pill" style="color:var(--tx)">干活 · 开发软件</span></span><span class="pill b">等你确认</span></h3>
+   <table>
+    <tr><th style="width:110px">要做什么</th><td>积木库页面右上角加“一键检测全部”，点了把所有零件挨个测一遍，结果显示在每一行上，最上面汇总“通了 5 个，没通 2 个”</td></tr>
+    <tr><th>验收标准</th><td>① 测的时候每行显示“检测中”，按钮不能再点<br>② 一个零件卡住，最多等 30 秒就跳过，不影响别的<br>③ 测完汇总数字和每行状态对得上</td></tr>
+    <tr><th>不做什么</th><td>不改单个零件的检测做法；没通的不自动修，只告诉你</td></tr>
+    <tr><th>用哪条流程</th><td>开发软件 · 第 4 版：写测试 → 写代码 → 跑全部测试 → 复查（最多 3 轮）→ 你验收</td></tr>
+    <tr><th><span class="warn">！</span> 调度员</th><td>还没有。建卡后我先在任务卡里帮你接一个（订阅的 Codex、agy，或按量付费的大模型都行），接好就开始写方案。</td></tr>
+   </table>
+   <div class="btns"><span class="btn p">确认，建任务</span><span class="btn">我要改</span></div>
+  </div>
+  <div class="compose"><div class="ph">回复超级助手…</div><div class="crow"><span>＋</span><span class="send">↑</span></div></div>
+ </div>
+ <div class="note">03c 还没有调度员：确认卡多一行提醒，建卡后先在卡里接调度员</div>
+</div>
+
+<!-- 04a 等你批方案 -->
+<div class="screen" id="s04a" data-nav="" data-sess="t72" data-tab="task">
+ <div class="main">
+  <div class="head"><h1>72 号：积木库一键检测全部 <span class="tag">等你批方案</span></h1></div>
+  <div class="body"><div class="col" style="width:720px">
+   <div class="meta">11-15 09:12　你确认了需求，建卡；调度员开始写方案</div>
+   <div class="ai">调度员把方案写好了，有 1 个问题要你答，我标了建议。你批了才开工。</div>
+  </div></div>
+   <div class="box" style="width:720px;margin:0 auto 8px;border-color:#6b5222;max-height:none"><h3>方案 · 第 1 版 <span class="pill a">等你批</span></h3>
+   <table>
+    <tr><th style="width:110px">要做什么</th><td>积木库加“一键检测全部”按钮，挨个测完在每行显示结果，最上面汇总</td></tr>
+    <tr><th>分几步</th><td>① 先按 3 条验收标准写测试 ② 改积木库页面加按钮和汇总 ③ 改检测，加“卡住 30 秒跳过” ④ 跑全部测试 ⑤ 复查</td></tr>
+    <tr><th>做完你会看到</th><td>点按钮后每行变“检测中”，测完显示通没通，最上面“通了 5 个，没通 2 个”</td></tr>
+    <tr><th>不做什么</th><td>不改单个零件的检测做法；没通的不自动修</td></tr>
+    <tr><th>只动这些地方</th><td>积木库页面、检测那部分，加上新写的测试。别的地方动了会被拦下</td></tr>
+    <tr><th>怎么算做好</th><td>新写的测试全过，原有的全部测试也都过</td></tr>
+    <tr><th><span class="warn">？</span> 一次测几个</th><td>零件挨个测，还是同时测几个？<span class="dim">（建议同时测 3 个：快一些，也不会互相影响）</span></td></tr>
+   </table>
+   <div class="btns"><span class="btn p">批准，开工</span><span class="btn">我要改</span></div>
+  </div>
+  <div class="compose" style="width:720px"><div class="ph">对方案有意见直接说，比如“挨个测就行”…</div><div class="crow"><span>＋</span><span class="send">↑</span></div></div>
+  <div class="status"><span>调度员 Codex · 订阅额度</span><span>超级助手花费 ¥0.02</span></div>
+ </div>
+ <div class="right" style="width:420px;overflow:hidden">
+  <h4 style="display:flex;justify-content:space-between">进度 · 第 2 步 / 共 7 步 <span class="pill a">等你</span></h4>
+  <div class="step"><div class="dot d">✓</div><div class="st"><b>调度员写方案</b> <span class="more">详情 ▸</span><div class="dim s">Codex · gpt-6.1-sol · 中 · 58 秒</div><div class="l">分 5 步，只动积木库页面和检测两处；1 个问题要你答。</div></div></div>
+  <div class="step"><div class="dot" style="border:2px solid var(--amber)"></div><div class="st"><b>你批方案</b><div class="dim s">等你 · 2 分钟</div><div class="l">看下面的方案，批准就开工；有意见直接说，调度员改了再给你看。</div></div></div>
+  <div class="step"><div class="dot w"></div><div class="st"><b class="dim">写测试</b></div></div>
+  <div class="step"><div class="dot w"></div><div class="st"><b class="dim">写代码</b></div></div>
+  <div class="step"><div class="dot w"></div><div class="st"><b class="dim">跑全部测试</b></div></div>
+  <div class="step"><div class="dot w"></div><div class="st"><b class="dim">复查 · 最多 3 轮</b></div></div>
+  <div class="step"><div class="dot w"></div><div class="st"><b class="dim">你验收</b></div></div>
+ </div>
+ <div class="note" style="top:auto;bottom:10px">04a 任务页：等你批方案（问号不答也能批，按建议走）</div>
+</div>
+
+<!-- 04 调度员干活 -->
+<div class="screen" id="s04" data-nav="" data-sess="t72" data-tab="task" data-running="1">
+ <div class="main">
+  <div class="head"><h1>72 号：积木库一键检测全部 <span class="tag">调度员 · 运行中</span></h1></div>
+  <div class="body"><div class="col" style="width:720px">
+   <div class="meta">11-15 09:15　你批了方案（一次测几个：按建议，同时测 3 个），开工</div>
+   <div class="ai dim s">09:18　写测试完成：7 项测试，改代码前都不过（符合预期）</div>
+   <div class="ai dim s">09:25　写代码完成，跑全部测试 2566 项通过，开始复查</div>
+   <div class="user">汇总能不能放在按钮旁边？别放最上面。</div>
+   <div class="ai">可以。这要改验收标准第 3 条，你确认了我再交给调度员，等复查这一轮跑完顺手改，不影响已经通过的测试。</div>
+   <div class="box" style="padding:12px 16px"><div class="s" style="margin-bottom:8px">验收标准第 3 条：测完汇总数字和每行状态对得上 → <b>汇总放在按钮旁边</b>，数字和每行状态对得上</div><div class="btns" style="margin-top:0"><span class="btn p">确认改</span><span class="btn">算了</span></div></div>
+   <div class="user">复查在查什么？</div>
+   <div class="ai">正在查两件事：连点两次按钮会不会重复检测；检测途中关掉窗口会怎样。查完我第一时间告诉你结果，右边的进度也会更新。</div>
+  </div></div>
+  <div class="compose" style="width:720px"><div class="ph">问进度、插话改要求，都可以在这里说…</div><div class="crow"><span>＋</span><span class="send">↑</span></div></div>
+  <div class="status"><span>调度员 Codex · 订阅额度</span><span>超级助手花费 ¥0.05</span></div>
+ </div>
+ <div class="right" style="width:420px;overflow:hidden">
+  <h4 style="display:flex;justify-content:space-between">进度 · 第 6 步 / 共 7 步 <span class="pill b">14 分 05 秒</span></h4>
+  <div class="step"><div class="dot d">✓</div><div class="st"><b>调度员写方案</b> <span class="more">详情 ▸</span><div class="dim s">Codex · gpt-6.1-sol · 中 · 58 秒</div></div></div>
+  <div class="step"><div class="dot d">✓</div><div class="st"><b>你批方案</b> <span class="more">详情 ▸</span><div class="dim s">你 · 09:15 批准 · 1 个问题按建议</div></div></div>
+  <div class="step"><div class="dot d">✓</div><div class="st"><b>写测试</b> <span class="more">详情 ▸</span><div class="dim s">Codex · gpt-6.1-sol · 高 · 3 分 10 秒</div><div class="l">按 3 条验收标准写了 7 项测试，改代码前都不过（说明测试真的在测）。</div>
+   </div></div>
+  <div class="step"><div class="dot d">✓</div><div class="st"><b>写代码</b> <span class="more">详情 ▸</span><div class="dim s">千问 · 中 · 6 分 40 秒</div><div class="l">改了积木库页面和检测两处，7 项新测试全过。</div></div></div>
+  <div class="step"><div class="dot d">✓</div><div class="st"><b>跑全部测试</b> <span class="more">详情 ▸</span><div class="dim s">程序 · 2 分 22 秒</div><div class="l">2566 项全部通过，没有改坏别的。</div></div></div>
+  <div class="step"><div class="dot r"></div><div class="st"><b>复查 · 第 1 轮 / 最多 3 轮</b> <span class="more">详情 ▸</span><div class="dim s">Codex · gpt-6.1-sol · 高 · 1 分 53 秒</div><div class="l">正在查：连点两次会不会重复检测；检测途中关掉窗口会怎样。</div></div></div>
+  <div class="step"><div class="dot w"></div><div class="st"><b class="dim">你验收</b><div class="l">复查通过后，请你在积木库里点一遍。</div></div></div>
+  <div style="margin-top:14px;border-top:1px solid var(--line);padding-top:10px;color:var(--tx2);font-size:13px">▸ 本次运行　·　改了 3 个文件　·　守住 2 条规矩</div>
+ </div>
+ <div class="note" style="top:auto;bottom:10px">04 任务页：右栏固定进度，中间聊这个任务</div>
+</div>
+
+<!-- 05 验收 -->
+<div class="screen" id="s05" data-nav="" data-sess="t72" data-tab="task">
+ <div class="main">
+  <div class="head" style="height:auto;padding:14px 28px 0"><h1>72 号：积木库一键检测全部 <span class="tag">等你验收</span><span class="tag" style="margin-left:8px;color:var(--tx2)"><i class="spin" style="display:inline-block;width:10px;height:10px;border:1.5px solid currentColor;border-right-color:transparent;border-radius:50%;vertical-align:-1px"></i> 1 个后台任务 · 预览</span></h1>
+   <div style="display:flex;gap:22px;margin-top:10px;font-size:13.5px"><span style="padding-bottom:8px;color:var(--tx);border-bottom:2px solid var(--blue)">对话</span><span style="padding-bottom:8px;color:var(--tx2)">轨迹</span></div></div>
+  <div class="body" style="padding-top:18px"><div class="col" style="width:720px">
+   <div class="meta">09:24　你确认改了验收标准第 3 条：汇总放在按钮旁边</div>
+   <div class="ai dim s">09:26　复查第 1 轮：1 条中等问题（连点两次会测两遍），已退回写代码，汇总位置一起改了</div>
+   <div class="ai dim s">09:33　复查第 2 轮通过 · 全部测试 2567 项通过 · 已打开预览，等你验收</div>
+   <div class="user">复查第 1 轮具体查出了什么？</div>
+   <div class="ai">连点两次“一键检测全部”会把所有零件测两遍，第二遍会把第一遍的结果盖掉。写代码那步改成：检测中按钮变灰，再点没反应，并补了一项测试。原话在“轨迹”里的复查第 1 轮。</div>
+   <div class="user">好，我去预览里点点看。</div>
+  </div></div>
+  <div style="width:720px;margin:0 auto 8px;background:var(--card);border:1px solid #6b5222;border-radius:14px;padding:14px 16px">
+   <div style="display:flex;justify-content:space-between;align-items:center"><b style="font-size:14px">做好了，请你验收</b><span class="pill a">等你 · 用时 21 分 30 秒</span></div>
+   <div class="dim s" style="margin:6px 0 8px;line-height:1.7">积木库右上角多了“一键检测全部”，汇总在按钮旁边。3 条验收标准全部 <span class="ok">✓</span>（第 3 条是你 09:24 改的）<span style="color:var(--blue)">　展开</span></div>
+   <div class="s" style="color:var(--tx2)">预览已经打开（顶上“1 个后台任务”）。在预览里点一遍“一键检测全部”，没问题就放进项目。</div>
+   <div class="btns" style="margin-top:10px"><span class="btn">打开预览窗口</span><span class="btn p">没问题，放进项目</span><span class="btn">继续改</span></div>
+  </div>
+  <div class="compose" style="width:720px"><div class="ph">接着聊不会把验收卡顶走；哪里不对直接说，可以贴截图…</div><div class="crow"><span>＋　截图</span><span class="send">↑</span></div></div>
+ </div>
+ <div class="right" style="width:420px">
+  <h4 style="display:flex;justify-content:space-between">进度 · 第 7 步 / 共 7 步 <span class="pill a">等你验收</span></h4>
+  <div class="step"><div class="dot d">✓</div><div class="st"><b>调度员写方案</b> <span class="more">详情 ▸</span><div class="dim s">Codex · gpt-6.1-sol · 中 · 58 秒</div></div></div>
+  <div class="step"><div class="dot d">✓</div><div class="st"><b>你批方案</b> <span class="more">详情 ▸</span><div class="dim s">你 · 09:15 批准 · 1 个问题按建议</div></div></div>
+  <div class="step"><div class="dot d">✓</div><div class="st"><b>写测试</b> <span class="more">详情 ▸</span><div class="dim s">Codex · gpt-6.1-sol · 高 · 3 分 10 秒</div></div></div>
+  <div class="step"><div class="dot d">✓</div><div class="st"><b>写代码</b> <span class="more">详情 ▸</span><div class="dim s">千问 · 中 · 6 分 40 秒 + 返工 2 分 05 秒</div></div></div>
+  <div class="step"><div class="dot d">✓</div><div class="st"><b>跑全部测试</b> <span class="more">详情 ▸</span><div class="dim s">程序 · 2567 项通过</div></div></div>
+  <div class="step"><div class="dot d">✓</div><div class="st"><b>复查 · 2 轮</b> <span class="more">详情 ▸</span><div class="dim s">第 1 轮 1 条中等已修 · 第 2 轮通过</div></div></div>
+  <div class="step"><div class="dot r" style="border-color:var(--amber);border-right-color:transparent"></div><div class="st"><b>你验收</b><div class="dim s">等你 · 6 分钟</div><div class="l">预览已打开；没问题就放进项目，这张卡完成。</div></div></div>
+ </div>
+ <div class="note" style="top:auto;bottom:10px">05 你验收：等你点的卡贴在输入框上面，接着聊也不会被顶走</div>
+</div>
+
+<!-- 05t 轨迹 -->
+<div class="screen" id="s05t" data-nav="" data-sess="t72" data-tab="task">
+ <div class="main">
+  <div class="head" style="height:auto;padding:14px 28px 0"><h1>72 号：积木库一键检测全部 <span class="tag">等你验收</span><span class="tag" style="margin-left:8px;color:var(--tx2)"><i class="spin" style="display:inline-block;width:10px;height:10px;border:1.5px solid currentColor;border-right-color:transparent;border-radius:50%;vertical-align:-1px"></i> 1 个后台任务 · 预览</span></h1>
+   <div style="display:flex;gap:22px;margin-top:10px;font-size:13.5px"><span style="padding-bottom:8px;color:var(--tx2)">对话</span><span style="padding-bottom:8px;color:var(--tx);border-bottom:2px solid var(--blue)">轨迹</span></div></div>
+  <div class="body" style="padding:18px 28px"><div style="max-width:1000px">
+   <div class="dim s" style="margin-bottom:6px">用时分布（总 21 分 30 秒，其中等你 3 分 20 秒）</div>
+   <div style="display:flex;height:22px;border-radius:6px;overflow:hidden;font-size:11px;margin-bottom:18px">
+    <div style="width:5%;background:#2b4a80" title="写方案"></div><div style="width:15%;background:#6b5222"></div><div style="width:15%;background:#2b4a80"></div><div style="width:31%;background:#1f4a36"></div><div style="width:11%;background:#3a3a40"></div><div style="width:9%;background:#2b4a80"></div><div style="width:10%;background:#1f4a36"></div><div style="width:4%;background:#2b4a80"></div>
+   </div>
+   <div class="dim s" style="display:flex;gap:16px;margin:-12px 0 16px"><span>■ 写方案 58 秒</span><span style="color:var(--amber)">■ 等你批 3 分 20 秒</span><span>■ 写测试 3 分 10 秒</span><span style="color:var(--green)">■ 写代码 6 分 40 秒 + 返工 2 分 05 秒</span><span>■ 跑测试 2 分 22 秒</span><span>■ 复查 2 轮 3 分 01 秒</span></div>
+   <table style="font-size:13px">
+    <tr><th style="width:62px">时间</th><th style="width:150px">谁</th><th>做了什么</th><th style="width:80px">用时</th><th style="width:80px">用量</th></tr>
+    <tr><td>09:12</td><td>调度员 · Codex</td><td>读需求和 3 个相关文件 → 写方案（分 5 步、只动 2 处、1 个问题）<span style="color:var(--blue)">　看原文</span></td><td>58 秒</td><td>1.8 万字</td></tr>
+    <tr><td>09:15</td><td>你</td><td>批准方案；“一次测几个”按建议</td><td>3 分 20 秒</td><td>—</td></tr>
+    <tr><td>09:15</td><td>写测试 · Codex</td><td>写 7 项测试 → 跑一遍，7 项都不过（应当不过）<span style="color:var(--blue)">　看原文　看运行输出</span></td><td>3 分 10 秒</td><td>2.4 万字</td></tr>
+    <tr><td>09:18</td><td>写代码 · 千问</td><td>改积木库页面、检测两处 → 7 项新测试全过<span style="color:var(--blue)">　看原文　看改动</span></td><td>6 分 40 秒</td><td>5.1 万字</td></tr>
+    <tr><td>09:25</td><td>程序</td><td>跑全部测试 2566 项，全过</td><td>2 分 22 秒</td><td>—</td></tr>
+    <tr><td>09:27</td><td>复查 · Codex</td><td>第 1 轮：1 条中等——连点两次会测两遍<span style="color:var(--blue)">　看原文</span></td><td>1 分 53 秒</td><td>3.2 万字</td></tr>
+    <tr><td>09:29</td><td>写代码 · 千问</td><td>返工：检测中按钮变灰 + 补 1 项测试；顺手把汇总挪到按钮旁<span style="color:var(--blue)">　看原文　看改动</span></td><td>2 分 05 秒</td><td>1.6 万字</td></tr>
+    <tr><td>09:32</td><td>复查 · Codex</td><td>第 2 轮：通过<span style="color:var(--blue)">　看原文</span></td><td>1 分 08 秒</td><td>2.0 万字</td></tr>
+    <tr><td>09:33</td><td>程序</td><td>打开预览（后台任务）</td><td>9 秒</td><td>—</td></tr>
+   </table>
+  </div></div>
+ </div>
+ <div class="right" style="width:420px">
+  <h4 style="display:flex;justify-content:space-between">进度 · 第 7 步 / 共 7 步 <span class="pill a">等你验收</span></h4>
+  <div class="step"><div class="dot d">✓</div><div class="st"><b>调度员写方案</b> <span class="more">详情 ▸</span><div class="dim s">Codex · gpt-6.1-sol · 中 · 58 秒</div></div></div>
+  <div class="step"><div class="dot d">✓</div><div class="st"><b>你批方案</b> <span class="more">详情 ▸</span><div class="dim s">你 · 09:15 批准 · 1 个问题按建议</div></div></div>
+  <div class="step"><div class="dot d">✓</div><div class="st"><b>写测试</b> <span class="more">详情 ▸</span><div class="dim s">Codex · gpt-6.1-sol · 高 · 3 分 10 秒</div></div></div>
+  <div class="step"><div class="dot d">✓</div><div class="st"><b>写代码</b> <span class="more">详情 ▸</span><div class="dim s">千问 · 中 · 6 分 40 秒 + 返工 2 分 05 秒</div></div></div>
+  <div class="step"><div class="dot d">✓</div><div class="st"><b>跑全部测试</b> <span class="more">详情 ▸</span><div class="dim s">程序 · 2567 项通过</div></div></div>
+  <div class="step"><div class="dot d">✓</div><div class="st"><b>复查 · 2 轮</b> <span class="more">详情 ▸</span><div class="dim s">第 1 轮 1 条中等已修 · 第 2 轮通过</div></div></div>
+  <div class="step"><div class="dot r" style="border-color:var(--amber);border-right-color:transparent"></div><div class="st"><b>你验收</b><div class="dim s">等你 · 6 分钟</div><div class="l">预览已打开；没问题就放进项目，这张卡完成。</div></div></div>
+ </div>
+ <div class="note" style="top:auto;bottom:10px">05t 轨迹：每一步谁做的、做了什么、用了多久、用了多少，原文都在这里</div>
+</div>
+
+<!-- 05j 后台任务展开 -->
+<div class="screen" id="s05j" data-nav="" data-sess="t72" data-tab="task">
+ <div class="main" style="position:relative">
+  <div class="head" style="height:auto;padding:14px 28px 0"><h1>72 号：积木库一键检测全部 <span class="tag">等你验收</span><span class="tag" style="margin-left:8px;color:var(--blue)"><i class="spin" style="display:inline-block;width:10px;height:10px;border:1.5px solid currentColor;border-right-color:transparent;border-radius:50%;vertical-align:-1px"></i> 1 个后台任务 · 预览</span></h1>
+   <div style="display:flex;gap:22px;margin-top:10px;font-size:13.5px"><span style="padding-bottom:8px;color:var(--tx);border-bottom:2px solid var(--blue)">对话</span><span style="padding-bottom:8px;color:var(--tx2)">轨迹</span></div></div>
+  <div class="body" style="padding-top:18px"><div class="col" style="width:720px">
+   <div class="meta">09:24　你确认改了验收标准第 3 条：汇总放在按钮旁边</div>
+   <div class="ai dim s">09:33　复查第 2 轮通过 · 全部测试 2567 项通过 · 已打开预览，等你验收</div>
+  </div></div>
+  <div style="width:720px;margin:0 auto 8px;background:var(--card);border:1px solid #6b5222;border-radius:14px;padding:14px 16px">
+   <div style="display:flex;justify-content:space-between;align-items:center"><b style="font-size:14px">做好了，请你验收</b><span class="pill a">等你 · 用时 21 分 30 秒</span></div>
+   <div class="dim s" style="margin:6px 0 8px;line-height:1.7">积木库右上角多了“一键检测全部”，汇总在按钮旁边。3 条验收标准全部 <span class="ok">✓</span>（第 3 条是你 09:24 改的）<span style="color:var(--blue)">　展开</span></div>
+   <div class="s" style="color:var(--tx2)">预览已经打开（顶上“1 个后台任务”）。在预览里点一遍“一键检测全部”，没问题就放进项目。</div>
+   <div class="btns" style="margin-top:10px"><span class="btn">打开预览窗口</span><span class="btn p">没问题，放进项目</span><span class="btn">继续改</span></div>
+  </div>
+  <div class="compose" style="width:720px"><div class="ph">接着聊不会把验收卡顶走；哪里不对直接说，可以贴截图…</div><div class="crow"><span>＋　截图</span><span class="send">↑</span></div></div>
+  <div style="position:absolute;left:300px;top:46px;width:560px;background:#1f1f22;border:1px solid #3a3a3f;border-radius:12px;padding:12px;box-shadow:0 10px 30px rgba(0,0,0,.5)">
+   <div class="dim s" style="margin-bottom:8px">进行中</div>
+   <div style="background:var(--card2);border-radius:8px;padding:10px 12px;display:flex;justify-content:space-between;align-items:center"><div><b style="font-weight:500">预览：积木库一键检测全部（改好的版本）</b><div class="dim s" style="margin-top:3px">程序 · 6 分 12 秒 · 地址 127.0.0.1:8770</div></div><span class="btn" style="padding:5px 12px">停止</span></div>
+   <div style="margin-top:8px;background:#161618;border:1px solid var(--line);border-radius:8px;padding:10px 12px;font-family:Menlo,monospace;font-size:12px;line-height:1.8;color:#c9c9cf">启动改好的版本（施工副本）…<br>本机服务已启动，地址 http://127.0.0.1:8770<br>已打开预览窗口<br>09:36 积木库：一键检测全部 → 通了 5 个，没通 2 个</div>
+   <div class="dim s" style="margin-top:10px">已结束 1 · 安装依赖（09:15，4 秒）</div>
+   <div class="dim s" style="margin-top:6px">放进项目或点“继续改”后，预览自动停止。</div>
+  </div>
+ </div>
+ <div class="right" style="width:420px">
+  <h4 style="display:flex;justify-content:space-between">进度 · 第 7 步 / 共 7 步 <span class="pill a">等你验收</span></h4>
+  <div class="step"><div class="dot d">✓</div><div class="st"><b>调度员写方案</b> <span class="more">详情 ▸</span><div class="dim s">Codex · gpt-6.1-sol · 中 · 58 秒</div></div></div>
+  <div class="step"><div class="dot d">✓</div><div class="st"><b>你批方案</b> <span class="more">详情 ▸</span><div class="dim s">你 · 09:15 批准 · 1 个问题按建议</div></div></div>
+  <div class="step"><div class="dot d">✓</div><div class="st"><b>写测试</b> <span class="more">详情 ▸</span><div class="dim s">Codex · gpt-6.1-sol · 高 · 3 分 10 秒</div></div></div>
+  <div class="step"><div class="dot d">✓</div><div class="st"><b>写代码</b> <span class="more">详情 ▸</span><div class="dim s">千问 · 中 · 6 分 40 秒 + 返工 2 分 05 秒</div></div></div>
+  <div class="step"><div class="dot d">✓</div><div class="st"><b>跑全部测试</b> <span class="more">详情 ▸</span><div class="dim s">程序 · 2567 项通过</div></div></div>
+  <div class="step"><div class="dot d">✓</div><div class="st"><b>复查 · 2 轮</b> <span class="more">详情 ▸</span><div class="dim s">第 1 轮 1 条中等已修 · 第 2 轮通过</div></div></div>
+  <div class="step"><div class="dot r" style="border-color:var(--amber);border-right-color:transparent"></div><div class="st"><b>你验收</b><div class="dim s">等你 · 6 分钟</div><div class="l">预览已打开；没问题就放进项目，这张卡完成。</div></div></div>
+ </div>
+ <div class="note" style="top:auto;bottom:10px">05j 点顶上“1 个后台任务”：看在跑什么、输出，能停掉</div>
+</div>
+
+<!-- 06a 设置·积木库（刚设好超级助手） -->
+<div class="screen" id="s06a" data-nav="blocks" data-sess="" data-set="1" data-empty="1" data-ready="1">
+ <div class="snav"><div class="t">设置</div><div class="i">业务流程</div><div class="hint">能力卡串成的流程</div><div class="i">能力层</div><div class="hint">一件件能办的事</div><div class="i cur">积木库</div><div class="hint">零件：大脑、订阅工具、工具</div><div class="i">定时任务</div><div class="hint">持续运行的流程</div><div class="i">通用</div><div class="hint">花费、外观、数据</div></div>
+ <div class="main"><div class="page">
+  <div style="display:flex;justify-content:space-between;align-items:flex-start"><div><h2>积木库 <span class="tag">基础层 · 零件</span></h2><div class="dim s" style="margin-top:6px">超级助手能用的所有零件。要接新的，直接对超级助手说。</div></div><div class="btn p">＋ 让超级助手帮我接一个</div></div>
+  <div class="sec" style="margin-left:0;margin-top:22px">大脑（按量付费接口）</div>
+  <div class="row"><div class="ic">D</div><div class="t"><div>DeepSeek · deepseek-v4.1-flash</div><div>超级助手在用</div></div><span class="pill g">已连接</span><span class="btn">更换</span></div>
+  <div class="sec" style="margin-left:0">干活的（订阅的命令行工具）</div>
+  <div class="row"><div class="t dim">还没有</div></div>
+  <div class="sec" style="margin-left:0">工具（命令行工具、MCP、接口）</div>
+  <div class="row"><div class="t dim">还没有</div></div>
+ </div></div>
+ <div class="note">06a 设置·积木库：刚设好超级助手时只有这一项</div>
+</div>
+
+<!-- 06 积木库 = 基础层 -->
+<div class="screen" id="s06" data-set="1" data-nav="blocks" data-sess="">
+ <div class="snav"><div class="t">设置</div><div class="i">业务流程</div><div class="hint">能力卡串成的流程</div><div class="i">能力层</div><div class="hint">一件件能办的事</div><div class="i cur">积木库</div><div class="hint">零件：大脑、订阅工具、工具</div><div class="i">定时任务</div><div class="hint">持续运行的流程</div><div class="i">通用</div><div class="hint">超级助手用哪个模型、界面</div></div><div class="main"><div class="page">
+  <div style="display:flex;justify-content:space-between;align-items:flex-start"><div><h2>积木库 <span class="tag">基础层 · 零件</span></h2><div class="dim s" style="margin-top:6px">超级助手能用的所有零件。接新的、查状态，都可以直接跟超级助手说。</div></div><div style="display:flex;gap:10px"><div class="btn">一键检测全部</div><div class="btn p">＋ 让超级助手帮我接一个</div></div></div>
+  <div class="sec" style="margin-left:0;margin-top:22px">大脑（按量付费接口）</div>
+  <div class="row"><div class="ic">D</div><div class="t"><div>DeepSeek V4.1</div><div>超级助手在用 · 本月约 ¥3.2</div></div><span class="pill g">已连接</span></div>
+  <div class="sec" style="margin-left:0">干活的（订阅的命令行工具）</div>
+  <div class="row"><div class="ic">C</div><div class="t"><div>Codex</div><div>ChatGPT 订阅 · 被 3 张能力卡用到</div></div><span class="pill g">已登录</span></div>
+  <div class="row"><div class="ic">千</div><div class="t"><div>千问</div><div>订阅 · 被 1 张能力卡用到</div></div><span class="pill g">已登录</span></div>
+  <div class="row"><div class="ic">A</div><div class="t"><div>agy</div><div>订阅 · 没被用到</div></div><span class="pill a">没登录</span></div>
+  <div class="sec" style="margin-left:0">工具（命令行工具、MCP、接口）</div>
+  <div class="row"><div class="ic">搜</div><div class="t"><div>搜索 · 腾讯云</div><div>接口 · 被“搜资料”卡用到</div></div><span class="pill g">已连接</span></div>
+  <div class="row"><div class="ic">高</div><div class="t"><div>高德地图</div><div>官方命令行工具 · 没被用到</div></div><span class="pill g">已连接</span></div>
+ </div></div>
+ <div class="note">06 第一层 积木库：零件</div>
+</div>
+
+<!-- 07 能力层 -->
+<div class="screen" id="s07" data-set="1" data-nav="ability" data-sess="">
+ <div class="snav"><div class="t">设置</div><div class="i">业务流程</div><div class="hint">能力卡串成的流程</div><div class="i cur">能力层</div><div class="hint">一件件能办的事</div><div class="i">积木库</div><div class="hint">零件：大脑、订阅工具、工具</div><div class="i">定时任务</div><div class="hint">持续运行的流程</div><div class="i">通用</div><div class="hint">超级助手用哪个模型、界面</div></div><div class="main"><div class="page">
+  <div style="display:flex;justify-content:space-between;align-items:flex-start"><div><h2>能力层 <span class="tag">能力卡</span></h2><div class="dim s" style="margin-top:6px">每张卡是一件能单独办的事：收什么、交回什么、怎么算做对，都写清楚。试做通过才能放进来。</div></div><div class="btn p">＋ 跟超级助手说一个新能力</div></div>
+  <table style="margin-top:22px">
+   <tr><th style="width:120px">能力卡</th><th>收什么 → 交回什么</th><th style="width:150px">谁来跑</th><th style="width:210px">怎么算做对</th><th style="width:90px"></th></tr>
+   <tr><td><b>写测试</b></td><td class="dim">需求 + 验收标准 → 一组测试</td><td>Codex · 高</td><td class="dim">改代码前先跑，必须不过</td><td><span class="pill g">用过 71 次</span></td></tr>
+   <tr><td><b>写代码</b></td><td class="dim">需求 + 测试 → 改好的代码</td><td>千问 · 中</td><td class="dim">新测试全过、只改范围内的文件</td><td><span class="pill g">用过 71 次</span></td></tr>
+   <tr><td><b>跑全部测试</b></td><td class="dim">项目 → 通过 / 没过的清单</td><td>程序</td><td class="dim">全部通过</td><td><span class="pill g">用过 71 次</span></td></tr>
+   <tr><td><b>复查</b></td><td class="dim">改动 → 问题清单（严重 / 中等 / 小）</td><td>Codex · 高</td><td class="dim">没有严重和中等问题</td><td><span class="pill g">用过 64 次</span></td></tr>
+   <tr><td><b>搜资料</b></td><td class="dim">问题 → 带出处的摘要</td><td>搜索 + DeepSeek</td><td class="dim">每条都有链接</td><td><span class="pill g">用过 9 次</span></td></tr>
+   <tr><td><b>写文章</b></td><td class="dim">题目 + 要求 → 一篇稿子</td><td>DeepSeek</td><td class="dim">字数在范围内</td><td><span class="pill">草稿</span></td></tr>
+  </table>
+ </div></div>
+ <div class="note">07 第二层 能力层：能力卡</div>
+</div>
+
+<!-- 08 业务流程 -->
+<div class="screen" id="s08" data-set="1" data-nav="flow" data-sess="">
+ <div class="snav"><div class="t">设置</div><div class="i cur">业务流程</div><div class="hint">能力卡串成的流程</div><div class="i">能力层</div><div class="hint">一件件能办的事</div><div class="i">积木库</div><div class="hint">零件：大脑、订阅工具、工具</div><div class="i">定时任务</div><div class="hint">持续运行的流程</div><div class="i">通用</div><div class="hint">超级助手用哪个模型、界面</div></div><div class="main"><div class="page">
+  <div style="display:flex;justify-content:space-between;align-items:flex-start"><div><h2>业务流程 · 开发软件 <span class="tag">第 4 版 · 跑过 71 次</span></h2><div class="dim s" style="margin-top:6px">把能力卡串起来，规定每一关怎么过、过不了怎么办、哪里要你拍板。</div></div><div style="display:flex;gap:10px"><div class="btn">改这条流程</div><div class="btn p">用它做一个新需求</div></div></div>
+  <div style="display:flex;align-items:stretch;gap:10px;margin-top:26px">
+   <div class="box" style="flex:1;margin:0"><div class="s dim">第 1 步</div><b>写测试</b><div class="s dim" style="margin-top:6px">能力卡 · Codex</div><div class="s" style="margin-top:8px">关卡：先跑必须不过</div></div>
+   <div style="align-self:center;color:var(--tx3)">→</div>
+   <div class="box" style="flex:1;margin:0"><div class="s dim">第 2 步</div><b>写代码</b><div class="s dim" style="margin-top:6px">能力卡 · 千问</div><div class="s" style="margin-top:8px">关卡：新测试全过</div></div>
+   <div style="align-self:center;color:var(--tx3)">→</div>
+   <div class="box" style="flex:1;margin:0"><div class="s dim">第 3 步</div><b>跑全部测试</b><div class="s dim" style="margin-top:6px">能力卡 · 程序</div><div class="s" style="margin-top:8px">关卡：全部通过</div></div>
+   <div style="align-self:center;color:var(--tx3)">→</div>
+   <div class="box" style="flex:1;margin:0"><div class="s dim">第 4 步</div><b>复查</b><div class="s dim" style="margin-top:6px">能力卡 · Codex</div><div class="s" style="margin-top:8px">关卡：无严重、中等问题</div></div>
+   <div style="align-self:center;color:var(--tx3)">→</div>
+   <div class="box" style="flex:1;margin:0;border-color:#2b4a80"><div class="s dim">第 5 步</div><b>你验收</b><div class="s dim" style="margin-top:6px">人</div><div class="s" style="margin-top:8px">在真实窗口点一遍</div></div>
+  </div>
+  <div class="box" style="margin-top:16px"><h3>过不了怎么办</h3>
+   <table>
+    <tr><td style="width:200px">写测试时，测试一跑就通过</td><td class="dim">说明测试没测到东西，退回重写测试</td></tr>
+    <tr><td>新测试或全部测试没过</td><td class="dim">带着报错退回写代码</td></tr>
+    <tr><td>复查有严重或中等问题</td><td class="dim">带着问题清单退回写代码，最多 3 轮</td></tr>
+    <tr><td>3 轮还没过</td><td class="warn">停下来交给你，不硬跑</td></tr>
+   </table>
+  </div>
+  <div class="dim s">其他流程：修一个问题（跑过 12 次）· 写公众号文章（草稿）</div>
+ </div></div>
+ <div class="note">08 第三层 业务流程：能力卡串起来</div>
+</div>
+
+<!-- 10 造能力：聊天里出搭建确认卡 -->
+<div class="screen" id="s10" data-nav="" data-sess="s5">
+ <div class="main">
+  <div class="head"><h1>想要一个找公众号选题的能力 <span class="tag">超级助手</span></h1></div>
+  <div class="body"><div class="col">
+   <div class="user">我写公众号总要先找选题。能不能做一个能力：给个方向，帮我找 3 个最近热的选题，每个说清楚为什么热、出处在哪。</div>
+   <div class="ai">这是要新做一张能力卡，以后写公众号的流程也能用上。我查了积木库：搜索（腾讯云）已经接好，能直接用，不用再接零件。整理如下：</div>
+   <div class="box"><h3><span>新能力 · 公众号选题　<span class="pill" style="color:var(--tx)">搭建 · 造能力</span> <span class="s" style="color:var(--blue);font-weight:400">不对，改成…</span></span><span class="pill b">等你确认</span></h3>
+    <table>
+     <tr><th style="width:110px">收什么</th><td>一个方向（如“AI 编程工具”），可选：避开最近写过的题目</td></tr>
+     <tr><th>交回什么</th><td>3 个选题，每个：标题、为什么热（附数据或事件）、出处链接</td></tr>
+     <tr><th>用到的零件</th><td>搜索 · 腾讯云 <span class="ok">已接好</span></td></tr>
+     <tr><th>怎么算做对</th><td>① 正好 3 个　② 每个都有出处链接、链接打得开　③ 都是最近 30 天的事</td></tr>
+     <tr><th>怎么做出来</th><td>起草 → 查格式 → 用“AI 编程工具”试做一次 → 你看试做结果，满意才放进能力层</td></tr>
+    </table>
+    <div class="btns"><span class="btn p">确认，开始做</span><span class="btn">我要改</span></div>
+   </div>
+  </div></div>
+  <div class="compose"><div class="ph">回复超级助手…</div><div class="crow"><span>＋</span><span class="send">↑</span></div></div>
+ </div>
+ <div class="note">10 造能力确认卡：收什么、交回什么、用到的零件、怎么算做对、怎么做出来</div>
+</div>
+
+<!-- 11 搭建任务：最后一步确认入库 -->
+<div class="screen" id="s11" data-nav="" data-sess="t74" data-tab="task" data-wait74="1">
+ <div class="main">
+  <div class="head"><h1>74 号：新能力 · 公众号选题 <span class="tag">造能力 · 等你确认入库</span></h1></div>
+  <div class="body"><div class="col" style="width:720px">
+   <div class="meta">11-15 10:05　你确认了，超级助手开始做这张能力卡</div>
+   <div class="ai dim s">10:07　起草完成；查格式第 1 次没过（字数上限写错），改了一处后通过</div>
+   <div class="ai dim s">10:09　按“收什么”给了“AI 编程工具”，试做了一次</div>
+  </div></div>
+   <div class="box" style="width:720px;margin:0 auto 8px;border-color:#6b5222"><h3>试做结果，请你看看 <span class="pill a">用时 4 分 12 秒</span></h3>
+    <table>
+     <tr><th style="width:30px">#</th><th>选题</th><th style="width:260px">为什么热</th></tr>
+     <tr><td>1</td><td>非程序员用 AI 做出第一个 App，要多久？</td><td class="dim">本月 3 篇爆文讨论“零基础做应用” · <span style="color:var(--blue)">出处</span></td></tr>
+     <tr><td>2</td><td>订阅制 AI 编程工具涨价，谁最划算</td><td class="dim">两家工具 11 月调价 · <span style="color:var(--blue)">出处</span></td></tr>
+     <tr><td>3</td><td>AI 写的代码，谁来检查？</td><td class="dim">开发者社区热帖 2.1 万讨论 · <span style="color:var(--blue)">出处</span></td></tr>
+    </table>
+    <div class="s" style="margin-top:10px"><span class="ok">✓ 正好 3 个</span>　<span class="ok">✓ 链接都打得开</span>　<span class="ok">✓ 都在 30 天内</span></div>
+    <div class="btns"><span class="btn p">满意，放进能力层</span><span class="btn">再试一次</span><span class="btn">我要改</span></div>
+    <div class="s" style="color:var(--tx3);margin-top:8px">放进去之后，在 设置 → 能力层 能看到它；写公众号的流程可以直接用。</div>
+   </div>
+  <div class="compose" style="width:720px"><div class="ph">比如“再多要 2 个”“避开写过的”…</div><div class="crow"><span>＋</span><span class="send">↑</span></div></div>
+ </div>
+ <div class="right" style="width:420px">
+  <h4 style="display:flex;justify-content:space-between">进度 · 第 4 步 / 共 4 步 <span class="pill a">等你确认</span></h4>
+  <div class="step"><div class="dot d">✓</div><div class="st"><b>起草</b> <span class="more">详情 ▸</span><div class="dim s">超级助手 · DeepSeek v4.1 · 1 分 40 秒</div></div></div>
+  <div class="step"><div class="dot d">✓</div><div class="st"><b>查格式</b> <span class="more">详情 ▸</span><div class="dim s">程序 · 第 2 次通过</div><div class="l">第 1 次：字数上限写错，已改。</div></div></div>
+  <div class="step"><div class="dot d">✓</div><div class="st"><b>试做</b> <span class="more">详情 ▸</span><div class="dim s">超级助手 + 搜索 · 腾讯云 · 2 分 32 秒</div><div class="l">3 条“怎么算做对”都通过。</div></div></div>
+  <div class="step"><div class="dot r" style="border-color:var(--amber);border-right-color:transparent"></div><div class="st"><b>你确认入库</b><div class="l">看试做结果，满意才放进能力层。</div></div></div>
+ </div>
+ <div class="note" style="top:auto;bottom:10px">11 搭建任务：试做结果 + 你确认入库</div>
+</div>
+
+<!-- 12 接零件确认卡（拆成两张；照 DSH 创造模式的方法接入） -->
+<div class="screen" id="s12" data-nav="" data-sess="s6">
+ <div class="main">
+  <div class="head"><h1>接上高德，做个查路线的能力 <span class="tag">超级助手</span></h1></div>
+  <div class="body"><div class="col">
+   <div class="user">帮我接上高德地图，再做一个“查两地路线和耗时”的能力。</div>
+   <div class="ai">这是两件事，先帮你接高德；接好了我再跟你说做能力的事。我查过了：高德有官方命令行工具，积木库里还没有它的接入插件，需要写一个。</div>
+   <div class="box"><h3><span>接入零件 · 高德地图　<span class="pill" style="color:var(--tx)">搭建 · 接零件</span> <span class="s" style="color:var(--blue);font-weight:400">不对，改成…</span></span><span class="pill b">等你确认</span></h3>
+    <table>
+     <tr><th style="width:110px">是什么</th><td>高德官方命令行工具：查路线、地点、天气　<span class="ok">官方</span></td></tr>
+     <tr><th>怎么接</th><td>没有现成的接入插件，我照 DSH 的做法写一个，让超级助手和调度员都会用它</td></tr>
+     <tr><th>要做的事</th><td>装到这台电脑 → 你填 Key → 写接入插件 → 试用 → 复查 → 你确认启用</td></tr>
+     <tr><th><span class="warn">需要你</span></th><td>① 安装前<b>再确认一次</b>（会往电脑里装东西）　② 高德 Key 你自己填，我看不到明文　③ 最后看试用结果，满意才启用</td></tr>
+    </table>
+    <div class="btns"><span class="btn p">确认，开始接入</span><span class="btn">我要改</span></div>
+   </div>
+  </div></div>
+  <div class="compose"><div class="ph">回复超级助手…</div><div class="crow"><span>＋</span><span class="send">↑</span></div></div>
+ </div>
+ <div class="note">12 接零件确认卡：写清怎么接、要你做什么；一句话两件事，一次只出一张</div>
+</div>
+
+<!-- 13 接零件任务：等你填 Key -->
+<div class="screen" id="s13" data-nav="" data-sess="t75" data-tab="task" data-extra="t75">
+ <div class="main">
+  <div class="head"><h1>75 号：接入高德地图 <span class="tag">搭建 · 等你填 Key</span></h1></div>
+  <div class="body"><div class="col" style="width:720px">
+   <div class="meta">11-15 10:30　你确认了，超级助手开始接入</div>
+   <div class="ai dim s">10:30　查了：这台电脑还没装高德命令行</div>
+   <div class="ai dim s">10:31　你同意了安装，已装好</div>
+   <div class="box"><h3>请你填高德的 Key <span class="pill a">等你</span></h3>
+    <div class="dim s" style="line-height:1.7;margin-bottom:10px">在高德开放平台免费申请，<span style="color:var(--blue)">去哪里拿？</span>　只存在这台电脑的钥匙串里，聊天记录和超级助手都看不到它。</div>
+    <div style="background:#161618;border:1px solid var(--blue);border-radius:8px;padding:10px 12px;color:var(--tx3);font-family:Menlo,monospace;font-size:13px">粘贴高德 Key</div>
+    <div class="btns"><span class="btn p">保存</span></div>
+   </div>
+  </div></div>
+  <div class="compose" style="width:720px"><div class="ph">有问题可以问超级助手…</div><div class="crow"><span>＋</span><span class="send">↑</span></div></div>
+ </div>
+ <div class="right" style="width:420px">
+  <h4 style="display:flex;justify-content:space-between">进度 · 第 3 步 / 共 7 步 <span class="pill a">等你</span></h4>
+  <div class="step"><div class="dot d">✓</div><div class="st"><b>查这台电脑</b> <span class="more">详情 ▸</span><div class="dim s">超级助手 · 8 秒</div></div></div><div class="step"><div class="dot d">✓</div><div class="st"><b>安装命令行</b> <span class="more">详情 ▸</span><div class="dim s">你确认后程序执行 · 41 秒</div></div></div><div class="step"><div class="dot r" style="border-color:var(--amber);border-right-color:transparent"></div><div class="st"><b>你填 Key</b><div class="l">在左边填，超级助手看不到明文</div></div></div><div class="step"><div class="dot w"></div><div class="st"><b class="dim">写接入插件</b><div class="l">照 DSH 的说明书写，把命令行包成 3 个工具</div></div></div><div class="step"><div class="dot w"></div><div class="st"><b class="dim">试用</b><div class="l">用你的 Key 查一条北京到天津的路线</div></div></div><div class="step"><div class="dot w"></div><div class="st"><b class="dim">复查</b><div class="l">复查员检查：会不会乱访问、出错提示清不清楚</div></div></div><div class="step"><div class="dot w"></div><div class="st"><b class="dim">你确认启用</b><div class="l">看试用结果，满意才放进积木库</div></div></div>
+ </div>
+ <div class="note" style="top:auto;bottom:10px">13 接零件任务：安装要你确认、Key 要你自己填</div>
+</div>
+
+<!-- 13b 接零件任务：等你确认启用 -->
+<div class="screen" id="s13b" data-nav="" data-sess="t75" data-tab="task" data-extra="t75">
+ <div class="main">
+  <div class="head"><h1>75 号：接入高德地图 <span class="tag">搭建 · 等你确认启用</span></h1></div>
+  <div class="body"><div class="col" style="width:720px">
+   <div class="meta">11-15 10:30　你确认了，超级助手开始接入</div>
+   <div class="ai dim s">10:33　Key 已保存</div>
+   <div class="ai dim s">10:38　接入插件写好了：查路线、查地点、查天气</div>
+   <div class="ai dim s">10:39　试用通过；复查第 1 次提了 1 处，改了后通过</div>
+   <div class="box"><h3>试用结果，请你看看 <span class="pill a">用时 9 分钟</span></h3>
+    <table>
+     <tr><th style="width:110px">试用</th><td>“北京到天津开车多久”</td></tr>
+     <tr><th>它回的</th><td>走京沪高速，约 1 小时 50 分，137 公里</td></tr>
+     <tr><th>它能做</th><td>查路线 · 查地点 · 查天气</td></tr>
+     <tr><th>它会碰</th><td>只访问高德的服务器，只用你的高德 Key　<span class="ok">✓ 复查确认</span></td></tr>
+    </table>
+    <div class="btns"><span class="btn p">启用，放进积木库</span><span class="btn">再试一次</span><span class="btn">我要改</span></div>
+    <div class="s" style="color:var(--tx3);margin-top:8px">启用后在 设置 → 积木库 → 工具 里能看到它，超级助手和调度员都能用。</div>
+   </div>
+  </div></div>
+  <div class="compose" style="width:720px"><div class="ph">比如“再查一条上海到杭州的”…</div><div class="crow"><span>＋</span><span class="send">↑</span></div></div>
+ </div>
+ <div class="right" style="width:420px">
+  <h4 style="display:flex;justify-content:space-between">进度 · 第 7 步 / 共 7 步 <span class="pill a">等你确认</span></h4>
+  <div class="step"><div class="dot d">✓</div><div class="st"><b>查这台电脑</b> <span class="more">详情 ▸</span><div class="dim s">超级助手 · 8 秒</div></div></div><div class="step"><div class="dot d">✓</div><div class="st"><b>安装命令行</b> <span class="more">详情 ▸</span><div class="dim s">你确认后程序执行 · 41 秒</div></div></div><div class="step"><div class="dot d">✓</div><div class="st"><b>你填 Key</b> <span class="more">详情 ▸</span><div class="dim s">已存进钥匙串</div></div></div><div class="step"><div class="dot d">✓</div><div class="st"><b>写接入插件</b> <span class="more">详情 ▸</span><div class="dim s">超级助手 · 5 分 20 秒</div><div class="l">3 个工具：查路线、查地点、查天气。</div></div></div><div class="step"><div class="dot d">✓</div><div class="st"><b>试用</b> <span class="more">详情 ▸</span><div class="dim s">超级助手 · 12 秒 · 通过</div></div></div><div class="step"><div class="dot d">✓</div><div class="st"><b>复查</b> <span class="more">详情 ▸</span><div class="dim s">复查员 · 第 2 次通过</div><div class="l">第 1 次：出错时没分清是 Key 问题还是网络问题，已改。</div></div></div><div class="step"><div class="dot r" style="border-color:var(--amber);border-right-color:transparent"></div><div class="st"><b>你确认启用</b><div class="l">看试用结果，满意才放进积木库</div></div></div>
+ </div>
+ <div class="note" style="top:auto;bottom:10px">13b 接零件任务：试用结果 + 你确认启用</div>
+</div>
+
+<!-- 14 出错：复查3轮没过 -->
+<div class="screen" id="s14" data-nav="" data-sess="t73" data-tab="task" data-stop73="1">
+ <div class="main">
+  <div class="head"><h1>73 号：能力卡复制一份 <span class="tag">停下了 · 需要你决定</span></h1></div>
+  <div class="body"><div class="col" style="width:720px">
+   <div class="ai dim s">10:41　复查第 1 轮：重名时会覆盖旧卡 → 退回写代码</div>
+   <div class="ai dim s">10:49　复查第 2 轮：重名检查在复制中途才做 → 退回写代码</div>
+   <div class="ai dim s">10:58　复查第 3 轮：两个窗口同时复制仍会重名 → 3 轮用完，停下</div>
+   <div class="ai">复查 3 轮都没通过，我先停下来了，详情在下面。每一轮都卡在“重名”上，再硬跑可能越改越乱。</div>
+  </div></div>
+  <div class="box" style="width:720px;margin:0 auto 8px;border-color:#6b5222"><h3>复查 3 轮都没通过，停下了 <span class="pill a">需要你</span></h3>
+   <table>
+    <tr><th style="width:80px">轮次</th><th>复查发现</th><th style="width:150px">写代码改了什么</th></tr>
+    <tr><td>第 1 轮</td><td>重名时会覆盖旧卡</td><td class="dim">加了重名检查</td></tr>
+    <tr><td>第 2 轮</td><td>重名检查在复制中途才做</td><td class="dim">挪到复制前</td></tr>
+    <tr><td>第 3 轮</td><td>两个窗口同时复制仍会重名</td><td class="dim">没改好</td></tr>
+   </table>
+   <div class="s" style="margin:10px 0 2px;line-height:1.7"><b>我的建议</b>：两个窗口同时复制很少见，可以接受剩下这条，在需求里记一笔“不处理同时复制”，然后照常验收。</div>
+   <div class="btns"><span class="btn p">接受剩下的问题，去验收</span><span class="btn">按我说的改</span><span class="btn">再跑一次</span><span class="btn">先不做</span></div>
+  </div>
+  <div class="compose" style="width:720px"><div class="ph">点“按我说的改”前，先在这里说怎么改…</div><div class="crow"><span>＋　截图</span><span class="send">↑</span></div></div>
+ </div>
+ <div class="right" style="width:420px">
+  <h4 style="display:flex;justify-content:space-between">进度 · 第 6 步 / 共 7 步 <span class="pill a">已停下 · 等你</span></h4>
+  <div class="step"><div class="dot d">✓</div><div class="st"><b>调度员写方案</b> <span class="more">详情 ▸</span><div class="dim s">Codex · gpt-6.1-sol · 中 · 1 分 05 秒</div></div></div>
+  <div class="step"><div class="dot d">✓</div><div class="st"><b>你批方案</b> <span class="more">详情 ▸</span><div class="dim s">你 · 10:20 批准</div></div></div>
+  <div class="step"><div class="dot d">✓</div><div class="st"><b>写测试</b> <span class="more">详情 ▸</span><div class="dim s">Codex · gpt-6.1-sol · 高 · 2 分 40 秒</div></div></div>
+  <div class="step"><div class="dot d">✓</div><div class="st"><b>写代码</b> <span class="more">详情 ▸</span><div class="dim s">千问 · 中 · 5 分 10 秒 + 返工 3 次</div></div></div>
+  <div class="step"><div class="dot d">✓</div><div class="st"><b>跑全部测试</b> <span class="more">详情 ▸</span><div class="dim s">程序 · 2560 项通过</div></div></div>
+  <div class="step"><div class="dot" style="background:#4a2a26;color:var(--red)">!</div><div class="st"><b>复查 · 3 / 3 轮</b> <span class="more">详情 ▸</span><div class="dim s">Codex · gpt-6.1-sol · 高 · 共 5 分 20 秒</div><div class="l bad">3 轮都有中等问题，已停下，等你决定。</div></div></div>
+  <div class="step"><div class="dot w"></div><div class="st"><b class="dim">你验收</b></div></div>
+ </div>
+ <div class="note" style="top:auto;bottom:10px">14 停下要你决定：复查 3 轮没过（同样的卡贴在输入框上面）</div>
+</div>
+
+<!-- 15 设置·通用 -->
+<div class="screen" id="s15" data-nav="general" data-sess="" data-set="1">
+ <div class="snav"><div class="t">设置</div><div class="i">业务流程</div><div class="hint">能力卡串成的流程</div><div class="i">能力层</div><div class="hint">一件件能办的事</div><div class="i">积木库</div><div class="hint">零件：大脑、订阅工具、工具</div><div class="i">定时任务</div><div class="hint">持续运行的流程</div><div class="i cur">通用</div><div class="hint">超级助手的大模型、花费、外观</div></div>
+ <div class="main"><div class="page">
+  <h2>通用</h2>
+  <div class="sec" style="margin-left:0;margin-top:22px">花费提醒</div>
+  <div class="row"><div class="t"><div>超级助手本月已花 ¥3.2，本周 ¥0.9</div><div>超过 ¥ 20 时提醒我，只提醒，不会自动停下</div></div><span class="btn">修改</span></div>
+  <div class="sec" style="margin-left:0;margin-top:26px">外观</div>
+  <div class="row"><div class="t"><div>主题</div><div>跟随系统（沿用 DSH 的浅色 / 深色）</div></div><span class="btn">浅色</span><span class="btn">深色</span><span class="btn p">跟随系统</span></div>
+  <div class="sec" style="margin-left:0;margin-top:26px">数据</div>
+  <div class="row"><div class="t"><div>钥匙串里存着的 Key</div><div>3 个：DeepSeek、腾讯云搜索、高德（只在这台电脑上）</div></div><span class="btn">管理</span></div>
+  <div class="row"><div class="t"><div>任务和对话记录</div><div>存放在 ~/超级助手/ · 占用 48 MB</div></div><span class="btn">打开文件夹</span></div>
+ </div></div>
+ <div class="note">15 设置·通用</div>
+</div>
+
+<!-- 16 设置·定时任务 -->
+<div class="screen" id="s16" data-nav="auto" data-sess="" data-set="1">
+ <div class="snav"><div class="t">设置</div><div class="i">业务流程</div><div class="hint">能力卡串成的流程</div><div class="i">能力层</div><div class="hint">一件件能办的事</div><div class="i">积木库</div><div class="hint">零件：大脑、订阅工具、工具</div><div class="i cur">定时任务</div><div class="hint">持续运行的流程</div><div class="i">通用</div><div class="hint">超级助手的大模型、花费、外观</div></div>
+ <div class="main"><div class="page">
+  <div style="display:flex;justify-content:space-between;align-items:flex-start"><div><h2>定时任务 <span class="tag">持续运行的流程</span></h2><div class="dim s" style="margin-top:6px">让某条流程按时间自己跑。每次跑完都会生成一张任务卡，在左栏“任务”里看结果。</div></div><div class="btn p">＋ 跟超级助手说一个新的</div></div>
+  <div class="row" style="margin-top:18px"><div class="ic">价</div><div class="t"><div>盯竞品价格 <span class="pill g">运行中</span></div><div>每小时查一次，降价超过 10% 才提醒你 · 上次 09:00，没降价 · 今天已查 9 次，提醒过 1 次</div></div><span class="btn">暂停</span><span class="btn">看任务卡</span></div>
+  <div class="row"><div class="ic">周</div><div class="t"><div>每周一选题会 <span class="pill">已暂停</span></div><div>每周一 9:00 · 流程：写公众号选题 · 上次 11-10</div></div><span class="btn">继续</span><span class="btn">看任务卡</span></div>
+  <div class="box" style="margin-top:22px"><h3>设一条定时任务时，超级助手会问你这几件事</h3>
+   <table>
+    <tr><td style="width:170px">多久跑一次</td><td class="dim">每小时 / 每天几点 / 每周几</td></tr>
+    <tr><td>出什么情况才打扰你</td><td class="dim">只在有变化时提醒，免得天天一堆消息</td></tr>
+    <tr><td>同一件事不要重复处理</td><td class="dim">已经处理过的价格变化，下次不再提醒</td></tr>
+    <tr><td>电脑关了怎么办</td><td class="warn">现在要电脑开着才能跑；关机期间错过的，开机后补跑一次</td></tr>
+    <tr><td>最多花多少</td><td class="dim">每天最多 ¥ 2，超了先暂停并告诉你</td></tr>
+   </table></div>
+ </div></div>
+ <div class="note">16 设置·定时任务</div>
+</div>
+
+<!-- 17 任务标签空状态 -->
+<div class="screen" id="s17" data-nav="" data-sess="" data-tab="task" data-empty="1">
+ <div class="main">
+  <div class="body" style="display:flex;flex-direction:column;justify-content:center;align-items:center">
+   <div style="text-align:center;width:420px">
+    <div style="font-size:40px;color:var(--tx3)">▤</div>
+    <div style="font-size:18px;font-weight:600;margin:10px 0 8px">还没有任务</div>
+    <div class="dim" style="line-height:1.8">和超级助手聊清楚一件事，点“确认”，它就变成一张任务卡出现在这里。只是聊聊想法不会出现在这里。</div>
+    <div class="btns" style="justify-content:center"><span class="btn p">去找超级助手聊</span></div>
+   </div>
+  </div>
+ </div>
+ <div class="note">17 任务标签：还没有任务时</div>
+</div>
+
+<!-- 18 超级助手拿不准：给几个按钮让你选 -->
+<div class="screen" id="s18" data-nav="" data-sess="">
+ <div class="main">
+  <div class="head"><h1>把小红书弄进来 <span class="tag">超级助手</span></h1></div>
+  <div class="body"><div class="col">
+   <div class="user">帮我把小红书弄进来。</div>
+   <div class="ai">这句话可以有几种意思，我不想猜错。你是想要哪一种？</div>
+   <div style="width:560px">
+    <div style="border:1px solid #3a3a3e;border-radius:10px;padding:12px 14px;margin-bottom:8px;cursor:pointer"><b>接入小红书的命令行工具</b><div class="dim s" style="margin-top:4px">以后超级助手和调度员能查笔记、看热门　· 接零件</div></div>
+    <div style="border:1px solid #3a3a3e;border-radius:10px;padding:12px 14px;margin-bottom:8px;cursor:pointer"><b>做一个“写小红书笔记”的能力</b><div class="dim s" style="margin-top:4px">给个主题，按小红书的风格写出一篇　· 造能力</div></div>
+    <div style="border:1px solid #3a3a3e;border-radius:10px;padding:12px 14px;margin-bottom:8px;cursor:pointer"><b>就是聊聊小红书</b><div class="dim s" style="margin-top:4px">不建任务，只讨论</div></div>
+    <div class="s" style="color:var(--blue);margin-top:6px">都不是，我再说说</div>
+   </div>
+  </div></div>
+  <div class="compose"><div class="ph">回复超级助手…</div><div class="crow"><span>＋</span><span class="send">↑</span></div></div>
+ </div>
+ <div class="note">18 拿不准时不硬猜：给两三个选项让你点，选完再出确认卡</div>
+</div>
+
+<!-- 19 确认卡上“不对，改成…”展开 -->
+<div class="screen" id="s19" data-nav="" data-sess="s6">
+ <div class="main">
+  <div class="head"><h1>接上高德，做个查路线的能力 <span class="tag">超级助手</span></h1></div>
+  <div class="body"><div class="col" style="position:relative">
+   <div class="user">帮我接上高德地图，再做一个“查两地路线和耗时”的能力。</div>
+   <div class="ai">这是两件事，先帮你接高德；接好了我再跟你说做能力的事。</div>
+   <div class="box" style="width:560px"><h3><span>接入零件 · 高德地图　<span class="pill" style="color:var(--tx)">搭建 · 接零件 · 命令行</span> <span class="s" style="color:var(--blue);font-weight:400;text-decoration:underline">不对，改成… ▾</span></span><span class="pill b">等你确认</span></h3>
+    <table>
+     <tr><th style="width:110px">是什么</th><td>高德官方命令行工具：查路线、地点、天气　<span class="ok">官方</span></td></tr>
+     <tr><th>怎么接</th><td>没有现成的接入插件，照 DSH 的做法写一个</td></tr>
+     <tr><th>要做的事</th><td>装到这台电脑 → 你填 Key → 写接入插件 → 试用 → 复查 → 你确认启用</td></tr>
+    </table>
+    <div class="btns"><span class="btn p">确认，开始接入</span><span class="btn">我要改</span></div>
+   </div>
+   <div style="position:absolute;top:118px;left:575px;width:340px;background:#232326;border:1px solid #44444a;border-radius:10px;padding:8px;box-shadow:0 10px 30px rgba(0,0,0,.5);font-size:13px">
+    <div style="padding:8px 12px;border-radius:6px;display:flex;justify-content:space-between;gap:16px"><span>只是聊聊</span><span class="dim s">不建任务</span></div>
+    <div style="padding:8px 12px;border-radius:6px;display:flex;justify-content:space-between;gap:16px"><span>干活</span><span class="dim s">用现成流程做一件事</span></div>
+    <div style="padding:8px 12px;border-radius:6px;display:flex;justify-content:space-between;gap:16px"><span>接零件</span><span class="dim s">往积木库里加东西</span></div>
+    <div style="padding:8px 12px;border-radius:6px;background:#2a3550;padding-left:30px;display:flex;justify-content:space-between;gap:16px"><span>命令行工具 ✓</span><span class="dim s">如高德、小红书</span></div>
+    <div style="padding:8px 12px;border-radius:6px;padding-left:30px;display:flex;justify-content:space-between;gap:16px"><span>大模型（按量接口）</span><span class="dim s">如千问、豆包</span></div>
+    <div style="padding:8px 12px;border-radius:6px;padding-left:30px;display:flex;justify-content:space-between;gap:16px"><span>调度员（订阅命令行）</span><span class="dim s">如 Codex</span></div>
+    <div style="padding:8px 12px;border-radius:6px;padding-left:30px;display:flex;justify-content:space-between;gap:16px"><span>MCP</span><span class="dim s">别人做好的工具接口</span></div>
+    <div style="padding:8px 12px;border-radius:6px;display:flex;justify-content:space-between;gap:16px"><span>造能力</span><span class="dim s">做一张能力卡</span></div>
+    <div style="padding:8px 12px;border-radius:6px;display:flex;justify-content:space-between;gap:16px"><span>搭流程</span><span class="dim s">把能力卡串成流程</span></div>
+    <div class="s" style="color:var(--tx3);padding:8px 12px 4px;border-top:1px solid #3a3a3e;margin-top:6px">选了别的，超级助手按新类型重写这张卡</div>
+   </div>
+  </div></div>
+  <div class="compose"><div class="ph">回复超级助手…</div><div class="crow"><span>＋</span><span class="send">↑</span></div></div>
+ </div>
+ <div class="note">19 判断错了：点“不对，改成…”换类型，卡按新类型重写</div>
+</div>
+
+<!-- 09 任务总览 -->
+<div class="screen" id="s09" data-nav="" data-sess="" data-tab="task" data-stop73="1" data-wait74="1" data-allwait="1">
+ <div class="main"><div class="page">
+  <div style="display:flex;justify-content:space-between;align-items:flex-start"><div><h2>任务</h2><div class="dim s" style="margin-top:6px">每次在对话里点“确认”都会生成一张任务卡。聊天归聊天，干活的事都在这里。</div></div><div></div></div>
+  <div style="display:flex;gap:12px;margin:22px 0 8px">
+   <div class="stat"><span class="dim s">今年完成</span><b>71</b></div>
+   <div class="stat"><span class="dim s">进行中</span><b style="color:var(--blue)">0</b></div>
+   <div class="stat"><span class="dim s">等你处理</span><b class="warn">3</b></div>
+   <div class="stat"><span class="dim s">一次就验收通过</span><b>58 / 71</b></div>
+  </div>
+  <div style="display:flex;justify-content:space-between;align-items:center;margin:18px 0 6px">
+   <div class="tabs" style="margin:0"><span class="cur">全部</span><span>干活</span><span>造能力</span><span>接零件</span><span>已归档</span></div>
+   <div style="background:#232326;border:1px solid #36363a;border-radius:10px;padding:7px 14px;color:var(--tx3);width:300px">🔍 搜任务名、编号…</div>
+  </div>
+  <table>
+   <tr><th style="width:60px">编号</th><th>任务</th><th style="width:140px">流程 / 类型</th><th style="width:110px">状态</th><th style="width:110px">复查轮次</th><th style="width:110px">用时</th></tr>
+   <tr><td>72</td><td>积木库一键检测全部</td><td class="dim">开发软件</td><td class="warn">等你验收</td><td class="dim">2 轮</td><td class="dim">21 分</td></tr>
+   <tr><td>74</td><td>新能力：公众号选题</td><td class="dim">造能力</td><td class="warn">等你确认入库</td><td class="dim">—</td><td class="dim">4 分</td></tr>
+   <tr><td>73</td><td>能力卡复制一份</td><td class="dim">开发软件</td><td class="warn">停下 · 等你决定</td><td class="dim">3 轮</td><td class="dim">23 分</td></tr>
+   <tr><td>71</td><td>第一批修复卡 1</td><td class="dim">开发软件</td><td class="ok">已完成</td><td class="dim">3 轮</td><td class="dim">1 时 12 分</td></tr>
+   <tr><td>70</td><td>卡片右栏状态不自相矛盾</td><td class="dim">修一个问题</td><td class="ok">已完成</td><td class="dim">1 轮</td><td class="dim">34 分</td></tr>
+   <tr><td>69b</td><td>超级助手聊天行修复</td><td class="dim">修一个问题</td><td class="ok">已完成</td><td class="dim">2 轮</td><td class="dim">48 分</td></tr>
+  </table>
+ </div></div>
+ <div class="note">09 点“任务”标签时中间默认显示：搜索 + 全部任务卡</div>
+</div>
+
+<script>
+const tpl=document.getElementById('side').innerHTML;
+document.querySelectorAll('.screen').forEach(s=>{
+  s.insertAdjacentHTML('afterbegin',tpl);
+  const n=s.dataset.nav, k=s.dataset.sess, t=s.dataset.tab||'chat';
+  s.querySelector(`.stabs [data-t="${t}"]`).classList.add('cur');
+  s.querySelector(t==='task'?'.chatlist':'.tasklist').style.display='none';
+  
+  if(s.dataset.running){const el=s.querySelector('[data-k="t72"]');el.querySelector('span').innerHTML='<i class="spin"></i>';const gs=s.querySelectorAll('.tasklist .g');gs[0].style.display='none';gs[1].after(el);gs[1].textContent='进行中 3';s.querySelector('.stabs em').style.display='none';}
+  if(s.dataset.empty){s.querySelectorAll('.sess').forEach(x=>x.innerHTML='<div style="color:var(--tx3);padding:18px 10px;justify-content:center">'+((s.dataset.tab==='task')?'还没有任务':'还没有对话')+'</div>');const b=s.querySelector('.stabs em');if(b)b.remove();const nb=s.querySelector('.newbtn');if(!s.dataset.ready)nb.style.opacity='.45';}
+  if(s.dataset.extra){const g=s.querySelector('.tasklist .g');const d=document.createElement('div');d.dataset.k=s.dataset.extra;d.innerHTML='75 号 接入高德地图 <span><i class="adot"></i></span>';g.after(d);g.textContent='等你处理 2';}
+  if(s.dataset.stop73){const el=s.querySelector('[data-k="t73"]');if(el){el.querySelector('span').innerHTML='<i class="adot"></i>';const g=s.querySelector('.tasklist .g');g.after(el);g.textContent='等你处理 2';const gs=s.querySelectorAll('.tasklist .g');if(gs[1])gs[1].textContent='进行中 1';const b=s.querySelector('.stabs em');if(b)b.textContent='2';}}
+  if(s.dataset.wait74){const el=s.querySelector('[data-k="t74"]');if(el){el.querySelector('span').innerHTML='<i class="adot"></i>';const g=s.querySelector('.tasklist .g');g.after(el);g.textContent='等你处理 2';const gs=s.querySelectorAll('.tasklist .g');if(gs[1])gs[1].textContent='进行中 1';const b=s.querySelector('.stabs em');if(b)b.textContent='2';}}
+  if(s.dataset.allwait){const gs=s.querySelectorAll('.tasklist .g');gs[0].textContent='等你处理 3';gs[1].style.display='none';const b=s.querySelector('.stabs em');if(b)b.textContent='3';}
+  if(s.dataset.nobadge){const b=s.querySelector('.stabs em');if(b)b.remove();}
+  if(s.dataset.set){s.querySelector('.setbtn').classList.add('cur');}
+  if(k) s.querySelector(`.sess [data-k="${k}"]`).classList.add('cur');
+});
+function show(){const id=(location.hash||'#s01').slice(1);document.querySelectorAll('.screen').forEach(s=>s.classList.toggle('on',s.id===id));}
+addEventListener('hashchange',show);show();
+
+</script>
+</body></html>

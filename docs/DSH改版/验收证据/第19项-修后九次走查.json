@@ -1,0 +1,88 @@
+{
+  "card": "CARD-016",
+  "results": [
+    {
+      "entry": "shortcut",
+      "trial": 1,
+      "taskModeBefore": true,
+      "leftTask": true,
+      "anyTaskStrip": 0,
+      "chatMode": true,
+      "title": "超级助手"
+    },
+    {
+      "entry": "shortcut",
+      "trial": 2,
+      "taskModeBefore": true,
+      "leftTask": true,
+      "anyTaskStrip": 0,
+      "chatMode": true,
+      "title": "超级助手"
+    },
+    {
+      "entry": "shortcut",
+      "trial": 3,
+      "taskModeBefore": true,
+      "leftTask": true,
+      "anyTaskStrip": 0,
+      "chatMode": true,
+      "title": "超级助手"
+    },
+    {
+      "entry": "brand",
+      "trial": 1,
+      "taskModeBefore": true,
+      "leftTask": true,
+      "anyTaskStrip": 0,
+      "chatMode": true,
+      "title": "超级助手"
+    },
+    {
+      "entry": "brand",
+      "trial": 2,
+      "taskModeBefore": true,
+      "leftTask": true,
+      "anyTaskStrip": 0,
+      "chatMode": true,
+      "title": "超级助手"
+    },
+    {
+      "entry": "brand",
+      "trial": 3,
+      "taskModeBefore": true,
+      "leftTask": true,
+      "anyTaskStrip": 0,
+      "chatMode": true,
+      "title": "超级助手"
+    },
+    {
+      "entry": "button",
+      "trial": 1,
+      "taskModeBefore": true,
+      "leftTask": true,
+      "anyTaskStrip": 0,
+      "chatMode": true,
+      "title": "超级助手"
+    },
+    {
+      "entry": "button",
+      "trial": 2,
+      "taskModeBefore": true,
+      "leftTask": true,
+      "anyTaskStrip": 0,
+      "chatMode": true,
+      "title": "超级助手"
+    },
+    {
+      "entry": "button",
+      "trial": 3,
+      "taskModeBefore": true,
+      "leftTask": true,
+      "anyTaskStrip": 0,
+      "chatMode": true,
+      "title": "超级助手"
+    }
+  ],
+  "extraOldCorruptCard015Safe": true,
+  "note": "不直接修改旧会话；各次未向任务发送消息"
+}

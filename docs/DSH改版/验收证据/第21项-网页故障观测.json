@@ -1,0 +1,41 @@
+{
+  "clean": {
+    "consoleErrors": 0,
+    "fileMissingErrors": 0,
+    "pageErrors": 0,
+    "httpFailures": 0
+  },
+  "hot": {
+    "firstSample404": 84,
+    "lastSample404": 390,
+    "lastConsoleErrors": 411,
+    "lastPageErrors": 3,
+    "missingModuleIds": [
+      "@deepseek-ai/dsh-api-terminal-controller/client.js",
+      "@deepseek-ai/dsh-api-workspace-files/client.js",
+      "@deepseek-ai/dsh-cordis-client-runner/client.js",
+      "@deepseek-ai/dsh-client-ui-plugin-manager/client.js",
+      "@deepseek-ai/dsh-client-ui-brand-official/client.js",
+      "@deepseek-ai/dsh-client-ui-commands/client.js",
+      "@deepseek-ai/dsh-client-ui-secret-mask/client.js",
+      "@deepseek-ai/dsh-client-ui-agent-preset/client.js",
+      "@deepseek-ai/dsh-client-ui-plan/client.js",
+      "@superagent/core/client.js",
+      "@deepseek-ai/dsh-api-gateway/client.js",
+      "@deepseek-ai/dsh-client-locale/client.js",
+      "@deepseek-ai/dsh-client-ui-tool/client.js",
+      "@deepseek-ai/dsh-client-ui-workspace/client.js",
+      "@deepseek-ai/dsh-client-ui-user-questions/client.js",
+      "@deepseek-ai/dsh-client-ui-sidebar-documentpreview/client.js",
+      "@deepseek-ai/dsh-client-ui-session/client.js",
+      "@deepseek-ai/dsh-client-ui-theme/client.js",
+      "@deepseek-ai/dsh-client-ui-renderer/client.js"
+    ]
+  },
+  "note": "构建期间的版本化组合资源404，非正常启动缺少物理插件文件；恢复结果另记。",
+  "recovery": {
+    "consoleErrors": 0,
+    "pageErrors": 0,
+    "httpFailures": 0
+  }
+}

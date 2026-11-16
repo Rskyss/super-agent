@@ -1,0 +1,81 @@
+diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
+index 9a84d64b..e6e7ee2e 100644
+--- a/pnpm-lock.yaml
++++ b/pnpm-lock.yaml
+@@ -17228,6 +17228,40 @@ importers:
+         specifier: workspace:*
+         version: link:../../util/error
+ 
++  packages/superagent/core:
++    dependencies:
++      '@deepseek-ai/dsh-typert-protocol':
++        specifier: workspace:*
++        version: link:../../typert/protocol
++      '@deepseek-ai/schemastery':
++        specifier: link:../../../vendor/schemastery
++        version: link:../../../vendor/schemastery
++    devDependencies:
++      '@deepseek-ai/cordis':
++        specifier: workspace:~
++        version: link:../../../vendor/cordis
++      '@deepseek-ai/dsh-api-remotes':
++        specifier: workspace:*
++        version: link:../../api/remotes
++      '@deepseek-ai/dsh-client-ui-layout':
++        specifier: workspace:*
++        version: link:../../client/ui-layout
++      '@deepseek-ai/dsh-client-ui-primitives':
++        specifier: workspace:*
++        version: link:../../client/ui-primitives
++      '@deepseek-ai/dsh-client-ui-renderer':
++        specifier: workspace:*
++        version: link:../../client/ui-renderer
++      '@deepseek-ai/dsh-client-ui-sidebar':
++        specifier: workspace:*
++        version: link:../../client/ui-sidebar
++      '@deepseek-ai/dsh-client-ui-slots':
++        specifier: workspace:*
++        version: link:../../client/ui-slots
++      react:
++        specifier: ^18.2.0
++        version: 18.3.1
++
+   packages/team/agent-team:
+     dependencies:
+       '@deepseek-ai/dsh-brand':
+diff --git a/tsconfig.base.json b/tsconfig.base.json
+index e657bf3f..fd0f42e2 100644
+--- a/tsconfig.base.json
++++ b/tsconfig.base.json
+@@ -28,6 +28,7 @@
+     // not declaration path aliases, keep each package/vendor source compiled
+     // under its own tsconfig boundary.
+     "paths": {
++      "@superagent/core": ["./packages/superagent/core/src"],
+       "@deepseek-ai/dsh-client-ui-file-actions": ["./packages/client/ui-file-actions/src/index.ts"],
+       "@deepseek-ai/dsh-client-ui-file-actions/client": ["./packages/client/ui-file-actions/src/client/index.ts"],
+       "@deepseek-ai/dsh-client-ui-file-actions/types": ["./packages/client/ui-file-actions/src/types.ts"],
+diff --git a/tsconfig.client.json b/tsconfig.client.json
+index f5159615..c4f70ad2 100644
+--- a/tsconfig.client.json
++++ b/tsconfig.client.json
+@@ -56,6 +56,7 @@
+     "packages/client/*/tests/**/*.host.ts"
+   ],
+   "references": [
++    { "path": "./packages/superagent/core/tsconfig.client.json" },
+     { "path": "./packages/experimental/client-ui-action-cards" },
+     { "path": "./packages/experimental/client-ui-creation-recommendations" },
+     { "path": "./packages/experimental/client-ui-plugin-recommendations" },
+diff --git a/tsconfig.host.json b/tsconfig.host.json
+index 31c80a81..6a6d3b43 100644
+--- a/tsconfig.host.json
++++ b/tsconfig.host.json
+@@ -283,6 +283,7 @@
+     "scripts/client-bundle-purity.spec.ts"
+   ],
+   "references": [
++    { "path": "./packages/superagent/core/tsconfig.host.json" },
+     { "path": "./packages/experimental/action-cards" },
+     { "path": "./packages/experimental/creation-recommendations" },
+     { "path": "./packages/experimental/plugin-recommendations" },

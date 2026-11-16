@@ -1,0 +1,81 @@
+{
+  "finished_at": "2026-11-16T11:59:28.685805+08:00",
+  "checks": {
+    "python": {
+      "completed_at": "2026-11-16T11:56:19.160408+08:00",
+      "log": "/tmp/superagent-r2-final-python.log"
+    },
+    "plugin": {
+      "completed_at": "2026-11-16T11:55:55.306731+08:00",
+      "log": "/tmp/superagent-r2-final-plugin.log"
+    },
+    "build": {
+      "completed_at": "2026-11-16T11:53:57.628866+08:00",
+      "log": "/tmp/superagent-r2-final-build.log"
+    }
+  },
+  "python": 2620,
+  "plugin": 216,
+  "plugin_files": 46,
+  "build_gates": 10,
+  "frozen_tests": 224,
+  "changed_frozen_tests": [],
+  "retained_cards": [
+    {
+      "id": "CARD-014",
+      "state": "待对齐",
+      "deferred_plan": true,
+      "attachments": 0
+    },
+    {
+      "id": "CARD-015",
+      "state": "待对齐",
+      "deferred_plan": true,
+      "attachments": 0
+    },
+    {
+      "id": "CARD-016",
+      "state": "待对齐",
+      "deferred_plan": true,
+      "attachments": 0
+    },
+    {
+      "id": "CARD-017",
+      "state": "待对齐",
+      "deferred_plan": true,
+      "attachments": 0
+    },
+    {
+      "id": "CARD-018",
+      "state": "待对齐",
+      "deferred_plan": true,
+      "attachments": 0
+    },
+    {
+      "id": "CARD-019",
+      "state": "待对齐",
+      "deferred_plan": true,
+      "attachments": 2
+    }
+  ],
+  "repo_head": "44d4170fa0bed1c689d08d86d8ea5a8177b618cf",
+  "test_project_head": "dc956c5c5014aba95badbca2ee2d7d07cda54c24",
+  "unchanged_sync_and_patches": {
+    "dsh-plugin/sync.sh": "bc49e453f6ea70cd98806c553f83d5d5a006f76004a9456998c78fc3c105127d",
+    "dsh-plugin/patches/local-desktop-placeholders.md": "263feaf973e395f0d1736fd10aee91f88ce930ab6dec6470e7a7e4d855539e79",
+    "dsh-plugin/patches/desktop-brand.md": "efd054b5fd347c05311662c5a0b48f5129d42fe62856d788db7f948441bd1531",
+    "dsh-plugin/patches/dsh-0.2.2-rc.3-root-config.patch": "63b5b409452769ca4f3cbe9c18b5e78ed885132316ba20713f38c11d0a8be396"
+  },
+  "process_checks": {
+    "own_web": [],
+    "own_image_server": [],
+    "fake_backends": [],
+    "fake_codex": [],
+    "python_backends": []
+  },
+  "port_listeners": {
+    "3092": [],
+    "58731": [],
+    "49182": []
+  }
+}

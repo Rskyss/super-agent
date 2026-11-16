@@ -1,0 +1,35 @@
+完整编译
+run-gates: start Client bundle
+run-gates: start client aggregate check
+run-gates: PASS host aggregate check (14.19s)
+run-gates: PASS client aggregate check (6.78s)
+run-gates: PASS Client bundle (7.53s)
+run-gates: start Web build
+run-gates: PASS Web build (4.73s)
+
+run-gates: 10 passed, 0 failed, 0 skipped in 29.33s.
+build: recorded 374 client artifact(s) with 4 public value(s)
+
+插件全量
+The plugin "vite-tsconfig-paths" is detected. Vite now supports tsconfig paths resolution natively via the resolve.tsconfigPaths option. You can remove the plugin and set resolve.tsconfigPaths: true in your Vite config instead.
+
+ RUN  v4.1.11 /Users/rs/Desktop/project/dsh-base
+
+
+ Test Files  46 passed (46)
+      Tests  216 passed (216)
+   Start at  11:55:42
+   Duration  12.66s (transform 3.39s, setup 662ms, import 17.01s, tests 15.80s, environment 10.13s)
+
+
+Python全量
+
+OK
+
+----------------------------------------------------------------------
+Ran 2620 tests in 165.966s
+
+OK
+
+FULLRUN_RESULT=过
+FULLRUN_EXIT=0

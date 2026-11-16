@@ -15,3 +15,7 @@ desktop/mac/.build/
 desktop/mac/build/
 # 超级助手的施工过程记录，只留在本机
 .collab/
+
+# 依赖目录（DSH 插件和根目录的 npm 依赖，本机安装，不进 git）
+node_modules/
+dsh-plugin/core/lib/

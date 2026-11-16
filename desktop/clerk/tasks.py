@@ -931,19 +931,97 @@ def decide(project: str, conversation: str, pid: str, decision: str) -> dict:
             _save(project, data)
             _notify_proposal_update(project, data)
             return {"ok": True, "state": "confirmed", "repeat": False, "kind": "ability", "card": "", "ability": data.get("ability")}
-        try:
-            card = new_card(project, data["title"], data["do"], data["not_do"], data["done_when"],
-                            conversation=conversation)
-        except TaskError:
-            raise
-        data["state"] = "confirmed"
-        data["card"] = card
-        _save(project, data)
-        try:
-            launch(project, "plan", card, ["plan", project, card])
-        except TaskBusy:
-            pass
+        def remember(card_id: str) -> None:
+            # 先记下“已确认、建的是哪张卡”，再开始写方案：写方案起不来也不会重复建卡。
+            data["state"] = "confirmed"
+            data["card"] = card_id
+            _save(project, data)
+
+        card = create_card(project, data["title"], data["do"], data["not_do"], data["done_when"],
+                           conversation=conversation, on_created=remember)["card"]
         return {"ok": True, "card": card, "state": "confirmed", "repeat": False, "kind": "task"}
+
+
+def create_card(project: str, title: str, do: str, not_do: str, done_when: str, conversation: str = "",
+                on_created=None, request_id: str = "", start_plan: bool = True) -> dict:
+    """建一张任务卡，默认立刻开始写方案；start_plan=False 时先建卡等待接好调度员再启动。
+    - 同类后台任务已在跑时卡照样建好，只是暂不写方案（planning=False）。
+    - on_created(卡号)：建好卡、开始写方案之前调用（行政用它先记下已确认，写方案起不来也不会重复建卡）。
+    - request_id：同一个请求再来（比如网络断了重试同一张确认卡）只建一张，返回 repeat=True。
+      请求号写进卡自己的 来源.json，卡在、记录就在，不单独记一份（复查第 3 项第 2 轮中等）。
+    - 写方案起不来（OSError）照原样抛出，卡已建好。"""
+    collab = _collab(project)
+    if request_id:
+        collab.mkdir(parents=True, exist_ok=True)
+        with open(collab / ".dsh请求锁", "a+", encoding="utf-8") as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            known = _card_of_request(collab, request_id)
+            if known:
+                return {"card": known, "planning": False, "repeat": True}
+            if start_plan:
+                card = new_card(project, title, do, not_do, done_when, conversation=conversation, request_id=request_id)
+            else:
+                card = new_card(project, title, do, not_do, done_when, conversation=conversation,
+                                request_id=request_id, deferred_plan=True)
+    else:
+        if start_plan:
+            card = new_card(project, title, do, not_do, done_when, conversation=conversation)
+        else:
+            card = new_card(project, title, do, not_do, done_when, conversation=conversation, deferred_plan=True)
+    if on_created is not None:
+        on_created(card)
+    if not start_plan:
+        return {"card": card, "planning": False, "repeat": False}
+    try:
+        launch(project, "plan", card, ["plan", str(project), card])
+        planning = True
+    except TaskBusy:
+        planning = False
+    return {"card": card, "planning": planning, "repeat": False}
+
+
+def _mark_deferred_plan(cdir: Path, deferred: bool) -> None:
+    """在来源.json 记下该卡是否正在等接调度员后再写方案，防止巡视线程抢跑。"""
+    src_path = cdir / "来源.json"
+    if not src_path.is_file():
+        return
+    try:
+        data = json.loads(src_path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return
+        if deferred:
+            data["deferred_plan"] = True
+        else:
+            data.pop("deferred_plan", None)
+        src_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    except (OSError, ValueError):
+        pass
+
+
+def _is_deferred_plan(cdir: Path) -> bool:
+    src_path = cdir / "来源.json"
+    if not src_path.is_file():
+        return False
+    try:
+        data = json.loads(src_path.read_text(encoding="utf-8"))
+        return isinstance(data, dict) and bool(data.get("deferred_plan"))
+    except (OSError, ValueError):
+        return False
+
+
+def _card_of_request(collab: Path, request_id: str) -> str:
+    """按请求号找已经建过的卡（看每张卡的 来源.json）。"""
+    cards = collab / "cards"
+    if not cards.is_dir():
+        return ""
+    for cdir in sorted(cards.iterdir()):
+        try:
+            source = json.loads((cdir / "来源.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(source, dict) and source.get("request_id") == request_id:
+            return cdir.name
+    return ""
 
 
 def event_from_proposal(data: dict) -> dict:
@@ -1111,21 +1189,29 @@ def end_drafting(project: str, card_id: str) -> bool:
     return True
 
 
-def apply_revise(project: str, card_id: str, text: str, files=None) -> None:
+def apply_revise(project: str, card_id: str, text: str, files=None,
+                 criteria_base=None, criteria_changes=None, attachments=None) -> None:
     """确认框和按钮都走这里：能改才改，施工中先确认没有别的卡在跑。"""
     words = (text or "").strip()
     if not words:
         raise RuntimeError("请写上要改什么")
-    try:  # 文件路径不合规矩时先退回，什么都不动（第三批 ㉟）
-        from collab.tasks import _clean_scope_files
+    try:  # 文件路径、结构化验收标准与图片附件不合规矩时先退回，什么都不动（第三批 ㉟ / 第15项 / 第14项）
+        from collab.tasks import _clean_scope_files, validate_card_attachments, validate_criteria_revision
         files = _clean_scope_files(files)
+        validate_criteria_revision(project, card_id, criteria_base=criteria_base, criteria_changes=criteria_changes)
+        validate_card_attachments(project, card_id, attachments)
     except TaskError as exc:
         raise RuntimeError(str(exc)) from exc
     phase = card_phase(project, card_id)
     if "revise" not in (phase.get("actions") or []):
         raise RuntimeError("现在不能修改")
     if phase.get("code") in ("plan_ready", "plan_waiting", "plan_failed", "planning"):
-        revise_card(project, card_id, words, files=files)
+        try:
+            revise_card(project, card_id, words, files=files,
+                        criteria_base=criteria_base, criteria_changes=criteria_changes,
+                        attachments=attachments)
+        except TaskError as exc:
+            raise RuntimeError(str(exc)) from exc
         try:
             launch(project, "plan", card_id, ["plan", project, card_id])
         except TaskBusy:
@@ -1147,7 +1233,12 @@ def apply_revise(project: str, card_id: str, text: str, files=None) -> None:
     if not command:
         raise RuntimeError("这张卡没有测试命令，没法接着改。可以点“放弃这个需求”，再提一张新卡。")
     sync_copy(project, card_id)  # 同步不成会抛错，这时什么都没改
-    revise_card(project, card_id, words, files=files)
+    try:
+        revise_card(project, card_id, words, files=files,
+                    criteria_base=criteria_base, criteria_changes=criteria_changes,
+                    attachments=attachments)
+    except TaskError as exc:
+        raise RuntimeError(str(exc)) from exc
     cdir = Path(project) / ".collab" / "cards" / card_id
     try:
         launch(project, "run", card_id, ["run", project, card_id, "--test-command", command])
@@ -1402,7 +1493,7 @@ class TaskWatcher:
         self._play_card_news(project, cdir, card_id)
         self._offer_saved_revise(project, cdir, card_id, phase)
 
-        if has_source and code == "plan_waiting" and running(project, "plan") is None:
+        if has_source and code == "plan_waiting" and not _is_deferred_plan(cdir) and running(project, "plan") is None:
             try:
                 launch(project, "plan", card_id, ["plan", project, card_id])
             except TaskBusy:

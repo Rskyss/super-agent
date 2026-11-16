@@ -71,6 +71,15 @@ from desktop.clerk.tasks import (  # noqa: E402
 )
 from desktop.preview import PreviewHub  # noqa: E402
 from collab.tasks import TaskError  # noqa: E402
+from desktop.dsh_dispatcher import (  # noqa: E402
+    DispatcherDetector,
+    DispatcherError,
+    build_dispatcher_proposal,
+    connect_dispatcher,
+    normalize_dispatcher_tool,
+    require_isolated_blocks_home,
+    validate_card_id,
+)
 from desktop.shell_path import adopt_terminal_path, merged_path, terminal_path  # noqa: E402
 from desktop.view import card_view, event_text, list_cards, set_archived  # noqa: E402
 
@@ -85,6 +94,7 @@ _TYPES = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8"
 _IMAGE_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif",
                 ".webp": "image/webp"}
 _MAX_BODY = 1024 * 1024  # 聊天消息最多 1MB，够用了
+_MAX_CARD_BODY = 64 * 1024 * 1024  # 任务卡片继续改可能带多张高清截图，放宽到 64MiB
 _CARD_ID = re.compile(r"^[A-Za-z0-9_-]+$")
 _BLOCK_KINDS = clerk_tasks._BLOCK_KINDS  # 只在 desktop/clerk/tasks.py 定义一次
 _JOB_LIMIT = 100         # 积木库做完的后台任务最多留这么多
@@ -160,7 +170,8 @@ class Handler(BaseHTTPRequestHandler):
     def _card_action_error(self, text: str) -> None:
         self._json({"error": text}, 409)
 
-    def _do_card_action(self, project: str, card_id: str, action: str, text: str = "", files=None) -> None:
+    def _do_card_action(self, project: str, card_id: str, action: str, text: str = "", files=None,
+                        criteria_base=None, criteria_changes=None, attachments=None) -> None:
         preview = getattr(self.server, "preview", None)
         if preview is not None:
             preview.stop()
@@ -192,7 +203,11 @@ class Handler(BaseHTTPRequestHandler):
 
         if action == "revise":
             try:
-                apply_revise(project, card_id, text, files=files)
+                apply_revise(
+                    project, card_id, text, files=files,
+                    criteria_base=criteria_base, criteria_changes=criteria_changes,
+                    attachments=attachments,
+                )
             except RuntimeError as exc:
                 self._card_action_error(str(exc))
                 return
@@ -1454,6 +1469,9 @@ class Handler(BaseHTTPRequestHandler):
             elif url.path.startswith("/api/team"):
                 if self._chat_allowed(query):
                     self._team_get(url.path, query)
+            elif url.path.startswith("/api/dsh/dispatcher/"):
+                if self._chat_allowed(query):
+                    self._dsh_dispatcher_get(url.path, query)
             else:
                 self._json({"error": "没有这个地址"}, 404)
         except (ValueError, OSError) as exc:
@@ -1780,7 +1798,26 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"error": "请写上要改什么"}, 400)
                 return
             files = body.get("files") if isinstance(body.get("files"), list) else []  # “继续改”加的文件（第三批 ㉟）
-            self._do_card_action(project, card_id, action, extra, [str(f) for f in files][:20])
+            criteria_base = body.get("criteria_base")
+            criteria_changes = body.get("criteria_changes")
+            attachments = body.get("attachments")
+            if criteria_base is not None and not isinstance(criteria_base, list):
+                self._json({"error": "验收标准基线格式不对"}, 400)
+                return
+            if criteria_changes is not None and not isinstance(criteria_changes, list):
+                self._json({"error": "验收标准修改明细格式不对"}, 400)
+                return
+            if attachments is not None and not isinstance(attachments, list):
+                self._json({"error": "图片附件格式不对"}, 400)
+                return
+            if action != "revise" and attachments:
+                self._json({"error": "只有继续改操作才能附带图片"}, 400)
+                return
+            self._do_card_action(
+                project, card_id, action, extra, [str(f) for f in files][:20],
+                criteria_base=criteria_base, criteria_changes=criteria_changes,
+                attachments=attachments,
+            )
             return
         if path == "/api/clerk/setting":
             if not project or not Path(project).is_dir():
@@ -1820,21 +1857,206 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._json({"error": "没有这个地址"}, 404)
 
+    def _isolated_dsh_blocks_home(self) -> str:
+        """只允许使用网关注入的显式隔离积木库目录，拒绝未配置或真实默认目录。"""
+        env_home = os.environ.get("SUPER_AGENT_BLOCKS_HOME", "")
+        return str(require_isolated_blocks_home(env_home))
+
+    def _dsh_dispatcher_get(self, path: str, query: dict) -> None:
+        if path == "/api/dsh/dispatcher/status":
+            project = str(query.get("project") or "")
+            if not project or not Path(project).is_dir():
+                self._json({"status": "missing", "tool": "", "model": "", "reason": "项目文件夹不存在", "verified": False})
+                return
+            try:
+                home = self._isolated_dsh_blocks_home()
+            except ValueError as exc:
+                self._json({"status": "missing", "tool": "", "model": "", "reason": str(exc), "verified": False})
+                return
+            state = self.server.dispatcher_detector.status(project, home)
+            self._json(state)
+            return
+        if path == "/api/dsh/dispatcher/job":
+            job_id = str(query.get("job") or "").strip()
+            with self.server.dispatcher_lock:
+                job = dict(self.server.dispatcher_jobs.get(job_id) or {})
+            if not job:
+                self._json({"error": "找不到这次检测任务"}, 404)
+                return
+            self._json({"ok": True, **job})
+            return
+        self._json({"error": "没有这个地址"}, 404)
+
+    def _dsh_dispatcher_post(self, path: str, body: dict) -> None:
+        if path == "/api/dsh/dispatcher/propose":
+            tool = str(body.get("tool") or "codex")
+            card_id = str(body.get("card") or "")
+            try:
+                proposal = build_dispatcher_proposal(tool, card_id)
+            except (DispatcherError, ValueError) as exc:
+                self._json({"error": str(exc)}, 400)
+                return
+            self._json({"ok": True, "proposal": proposal})
+            return
+        if path == "/api/dsh/dispatcher/connect":
+            project = str(body.get("project") or "")
+            tool = str(body.get("tool") or "")
+            card_id = str(body.get("card") or "")
+            if not project or not Path(project).is_dir():
+                self._json({"error": "项目文件夹不存在"}, 400)
+                return
+            try:
+                clean_tool = normalize_dispatcher_tool(tool)
+                clean_card = validate_card_id(card_id)
+                home = self._isolated_dsh_blocks_home()
+            except (DispatcherError, ValueError) as exc:
+                self._json({"error": str(exc)}, 400)
+                return
+            self._blocks_path()
+            detector = self.server.dispatcher_detector
+            is_async = bool(body.get("async"))
+            project_key = str(Path(project).resolve())
+            done_event = threading.Event()
+            existing_job_id = None
+            wait_event = None
+            with self.server.dispatcher_lock:
+                active = self.server.dispatcher_active_connects.get(project_key)
+                if active and not (self.server.dispatcher_jobs.get(active["job_id"]) or {}).get("done"):
+                    if active["tool"] == clean_tool and active["card"] == clean_card:
+                        if is_async:
+                            self._json({"ok": True, "job": active["job_id"], "done": False, "reused": True})
+                            return
+                        existing_job_id = active["job_id"]
+                        wait_event = active["done_event"]
+                    else:
+                        self._json({"error": "当前已有另一项调度员接入正在进行，请稍后再试"}, 409)
+                        return
+                else:
+                    job_id = uuid.uuid4().hex
+                    if len(self.server.dispatcher_jobs) >= _JOB_LIMIT:
+                        oldest = next((k for k, v in self.server.dispatcher_jobs.items() if v.get("done")), None)
+                        if oldest:
+                            self.server.dispatcher_jobs.pop(oldest, None)
+                    self.server.dispatcher_jobs[job_id] = {"done": False, "result": None, "error": ""}
+                    self.server.dispatcher_active_connects[project_key] = {
+                        "tool": clean_tool,
+                        "card": clean_card,
+                        "job_id": job_id,
+                        "done_event": done_event,
+                    }
+
+            if existing_job_id is not None and wait_event is not None:
+                wait_event.wait(210.0)
+                with self.server.dispatcher_lock:
+                    job_state = self.server.dispatcher_jobs.get(existing_job_id) or {}
+                if not job_state.get("done"):
+                    self._json({"error": "当前接入检测仍在进行中，请稍后再试"}, 409)
+                    return
+                if job_state.get("error"):
+                    self._json({"error": str(job_state["error"])}, 400)
+                    return
+                self._json(job_state.get("result") or {})
+                return
+
+            def execute_connect():
+                try:
+                    res = connect_dispatcher(project, home, clean_tool, card_id=clean_card, detector=detector)
+                    with self.server.dispatcher_lock:
+                        self.server.dispatcher_jobs[job_id] = {"done": True, "result": res, "error": ""}
+                    return res, ""
+                except (DispatcherError, ValueError, ConfigError, BlockError, TaskError, OSError) as exc:
+                    err = str(exc)
+                    with self.server.dispatcher_lock:
+                        self.server.dispatcher_jobs[job_id] = {"done": True, "result": None, "error": err}
+                    return None, err
+                finally:
+                    with self.server.dispatcher_lock:
+                        if not (self.server.dispatcher_jobs.get(job_id) or {}).get("done"):
+                            self.server.dispatcher_jobs[job_id] = {"done": True, "result": None, "error": "调度员接入检测意外中断"}
+                        cur = self.server.dispatcher_active_connects.get(project_key)
+                        if cur and cur.get("job_id") == job_id:
+                            self.server.dispatcher_active_connects.pop(project_key, None)
+                    done_event.set()
+
+            if is_async:
+                threading.Thread(target=execute_connect, daemon=True).start()
+                self._json({"ok": True, "job": job_id, "done": False})
+                return
+
+            res, err = execute_connect()
+            if err:
+                self._json({"error": err}, 400)
+                return
+            self._json(res or {})
+            return
+        self._json({"error": "没有这个地址"}, 404)
+
+    _CARD_FIELDS = (("title", "标题"), ("do", "要做什么"), ("not_do", "不做什么"), ("done_when", "验收标准"))
+
+    def _card_new(self, body: dict):
+        """DSH 改版第 3 项：新界面的确认卡点“确认，建任务”。和行政点确认共用 create_card。"""
+        project = str(body.get("project") or "")
+        if not project or not Path(project).is_dir():
+            self._json({"error": "项目文件夹不存在"}, 400)
+            return
+        values = {key: str(body.get(key) or "").strip() for key, _ in self._CARD_FIELDS}
+        missing = [name for key, name in self._CARD_FIELDS if not values[key]]
+        if missing:
+            self._json({"error": "还缺：" + "、".join(missing)}, 400)
+            return
+        created = []
+        defer_plan = bool(body.get("defer_plan"))
+        try:
+            result = clerk_tasks.create_card(project, values["title"], values["do"], values["not_do"],
+                                             values["done_when"], conversation=str(body.get("conversation") or "dsh"),
+                                             on_created=created.append, request_id=str(body.get("request_id") or ""),
+                                             start_plan=not defer_plan)
+        except TaskError as exc:
+            self._json({"error": str(exc)}, 409)
+            return
+        except OSError as exc:
+            if not created:
+                raise
+            # 卡已建好，只是写方案没起来：照实告诉界面，卡片上可以“重写方案”。
+            self._json({"ok": True, "card": created[0], "planning": False, "repeat": False,
+                        "message": f"卡已建好，但写方案没能启动：{exc}"})
+            return
+        self._json({"ok": True, "message": "", **result})
+
     def do_POST(self):  # noqa: N802
         url = urlparse(self.path)
-        if not url.path.startswith(("/api/chat/", "/api/team/", "/api/clerk/", "/api/blocks/", "/api/abilities/")):
+        if not url.path.startswith(("/api/chat/", "/api/team/", "/api/clerk/", "/api/blocks/", "/api/abilities/", "/api/cards/", "/api/dsh/dispatcher/")):
             self._json({"error": "没有这个地址"}, 404)
             return
         if not self._chat_allowed():  # 没口令：已经回了 403
             return
-        length = int(self.headers.get("Content-Length") or 0)
-        if length > _MAX_BODY:
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            self._json({"error": "请求长度格式不对"}, 400)
+            return
+        if length < 0:
+            self._json({"error": "请求长度格式不对"}, 400)
+            return
+        max_body = _MAX_CARD_BODY if url.path == "/api/clerk/card" else _MAX_BODY
+        if length > max_body:
+            # 温和越界请求先按块排空请求体再回 413，避免本机回环因未读数据关闭连接而触发 RST
+            if length <= 4 * 1024 * 1024:
+                remaining = length
+                while remaining > 0:
+                    chunk = self.rfile.read(min(remaining, 65536))
+                    if not chunk:
+                        break
+                    remaining -= len(chunk)
             self._json({"error": "消息太长"}, 413)
             return
         try:
             body = json.loads(self.rfile.read(length) or b"{}")
         except ValueError:
             self._json({"error": "看不懂的请求"}, 400)
+            return
+        if url.path.startswith("/api/dsh/dispatcher/"):
+            self._dsh_dispatcher_post(url.path, body)
             return
         if url.path.startswith("/api/team/"):
             self._team_post(url.path, body)
@@ -1849,6 +2071,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if url.path.startswith("/api/clerk/"):
             self._clerk_post(url.path, body)
+            return
+        if url.path == "/api/cards/new":
+            self._card_new(body)
             return
         hub, project = self.server.hub, body.get("project", "")
         try:
@@ -1940,6 +2165,10 @@ def make_server(port: int = 0, token=None, hub=None) -> ThreadingHTTPServer:
     server.abilities_codex_images = None
     server.abilities_jobs = {}
     server.blocks_open = None
+    server.dispatcher_detector = DispatcherDetector()
+    server.dispatcher_jobs = {}
+    server.dispatcher_active_connects = {}
+    server.dispatcher_lock = threading.Lock()
     return server
 
 

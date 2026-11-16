@@ -12,6 +12,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 from typing import Optional, Tuple
 
+from collab.card_attachments import attachment_prompt
 from collab.config import load_models, models_for
 from collab.flow import record as flow_record
 from collab.state import Card
@@ -252,7 +253,7 @@ def _build_prompt(card_dir: Path, requirement_text: str, need_profile: bool, pro
     lines.append("")
     lines.append("任务卡片原文：")
     lines.append(requirement_text.strip())
-    return "\n".join(lines)
+    return "\n".join(lines) + attachment_prompt(card_dir)
 
 
 def _fail(card_dir: Path, summary: str, text: Optional[str] = None) -> int:

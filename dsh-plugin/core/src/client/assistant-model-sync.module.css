@@ -1,0 +1,21 @@
+.banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 12px;
+  margin-bottom: 6px;
+  border-radius: 8px;
+  border: 1px solid var(--color-danger-border, #cf222e);
+  background: var(--color-danger-subtle, rgba(207, 34, 46, 0.08));
+  color: var(--color-danger-fg, #cf222e);
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}

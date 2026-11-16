@@ -1,0 +1,16 @@
+import {mkdtempSync,mkdirSync,rmSync} from 'node:fs'
+import {tmpdir} from 'node:os'
+import {join} from 'node:path'
+import {afterEach,expect,it} from 'vitest'
+import Gateway from '../src/index.ts'
+import {bindTaskSession} from '../src/task-session.ts'
+const dirs:string[]=[]
+afterEach(()=>dirs.splice(0).forEach(p=>rmSync(p,{recursive:true,force:true})))
+function setup(){const project=mkdtempSync(join(tmpdir(),'sa-preview-safe-'));dirs.push(project);mkdirSync(join(project,'.collab/cards/CARD-001'),{recursive:true});bindTaskSession(project,'CARD-001','own-session');const gateway=Object.create(Gateway.prototype) as any;gateway.config={project};return gateway}
+it('读不到状态时不能谎报进程已退出',async()=>{const g=setup();g.get=async()=>{throw Error('服务断开')};await expect(g.previewStatus('CARD-001')).rejects.toThrow('服务断开')})
+it('预览地址不可信时也必须关闭刚启动的后台',async()=>{const g=setup();const calls:string[]=[];g.request=async(_p:any,_q:any,b:any)=>{calls.push(b.action);return b.action==='start'?{ok:true,mode:'web',url:'http://evil.invalid/'}:{ok:true}};expect((await g.preview('CARD-001','start')).ok).toBe(false);expect(calls).toEqual(['start','stop'])})
+it('任务登记失败而且后台关不掉，不能写已停止',async()=>{const g=setup();g.request=async(_p:any,_q:any,b:any)=>b.action==='start'?{ok:true,mode:'web',url:'http://localhost:4321/'}:{ok:false,reason:'关不掉'};const r=await g.preview('CARD-001','start');expect(r.ok).toBe(false);expect(r.reason).toContain('关不掉');expect(r.reason).not.toContain('已停止预览')})
+it('重复打开同一预览不能先启动新的再用旧任务把新的关掉',async()=>{const g=setup();const calls:string[]=[];g.ctx={jobs:{start:()=> 'preview-1'}};g.get=async()=>({running:true,url:'http://localhost:4321/'});g.request=async(_p:any,_q:any,b:any)=>{calls.push(b.action);return b.action==='start'?{ok:true,mode:'web',url:'http://localhost:4321/'}:{ok:true}};await g.preview('CARD-001','start');calls.length=0;await g.preview('CARD-001','start');expect(calls.join(',')).not.toMatch(/start,stop/)})
+it('停止等待超时仍在运行时不冒充已经停止',async()=>{const g=setup();g.ctx={jobs:{start:()=> 'preview-timeout',kill:()=> 'requested',wait:async()=>({status:'stopping'})}};g.get=async()=>({running:true,url:'http://localhost:4321/'});g.request=async(_p:any,_q:any,b:any)=>b.action==='start'?{ok:true,mode:'web',url:'http://localhost:4321/'}:{ok:false,reason:'进程还在退出'};await g.preview('CARD-001','start');const r=await g.preview('CARD-001','stop');expect(r.ok).toBe(false)})
+it('框架拒绝未声明的任务服务访问时也要回滚预览并给出失败结果',async()=>{const g=setup();g.ctx={get jobs(){throw Error('cannot get property jobs without inject')}};const calls:string[]=[];g.request=async(_p:any,_q:any,b:any)=>{calls.push(b.action);return b.action==='start'?{ok:true,mode:'web',url:'http://localhost:4321/'}:{ok:true}};const r=await g.preview('CARD-001','start');expect(r.ok).toBe(false);expect(calls).toEqual(['start','stop'])})
+it('框架为每次远程调用派生服务视图时，共享同一个预览登记和停止控制',async()=>{const g=setup();let killed=0;g.ctx={jobs:{start:()=> 'preview-shared',kill:()=>{killed++;return'requested'},wait:async()=>({status:'killed'})}};g.request=async(_p:any,_q:any,b:any)=>b.action==='start'?{ok:true,mode:'web',url:'http://localhost:4321/'}:{ok:true};await Object.create(g).preview('CARD-001','start');await Object.create(g).preview('CARD-001','stop');expect(killed).toBe(1)})

@@ -135,7 +135,9 @@ class ViewTest(unittest.TestCase):
         cdir = self._card(state="待对齐")
         record(cdir, "需求", src="你", dst="调度员", summary="粘贴链接后显示处理进度")
         view = card_view(self.project)
-        self.assertEqual(_station(view, "disp")["state"], "active")
+        # 第18项：这里只记了需求，没有真的启动写方案，必须诚实显示等待。
+        self.assertEqual(_station(view, "disp")["state"], "wait")
+        self.assertIn("排队", _station(view, "disp")["detail"])
         self.assertIn("方案", view["now"]["text"])
 
     def test_old_card_without_flow_records_still_shows(self):

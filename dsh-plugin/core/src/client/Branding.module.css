@@ -1,0 +1,33 @@
+.markWrap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  line-height: 0;
+}
+
+.markImg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  user-select: none;
+  /* 原图为纯白线稿，浅色主题下反转为深炭色以确保清晰可见 */
+  filter: brightness(0) saturate(100%) opacity(0.88);
+}
+
+:global(body[data-ds-dark-theme]) .markImg {
+  /* 深色主题下保留原始反白线稿 */
+  filter: none;
+  opacity: 0.94;
+}
+
+.brandTitle {
+  display: inline-block;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 24px;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  color: inherit;
+}

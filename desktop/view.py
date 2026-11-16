@@ -410,6 +410,30 @@ def _set(stations, key, state, detail="", **extra):
             s.update(extra)
 
 
+def _is_deferred_plan(cdir: Path) -> bool:
+    """检查卡是否在等待接入调度员后再开始写方案。"""
+    try:
+        data = json.loads((cdir / "来源.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(data, dict) and bool(data.get("deferred_plan"))
+
+
+def _apply_plan_disp_station(stations, cdir: Path, phase: dict) -> bool:
+    """按方案等待/失败阶段诚实更新调度员站位；未命中时返回 False。"""
+    code = phase.get("code")
+    if code == "plan_waiting":
+        detail = "等待接入调度员后开始写方案" if _is_deferred_plan(cdir) else "排队等待写方案"
+        _set(stations, "disp", "wait", detail)
+        return True
+    if code == "plan_failed":
+        reason = str(phase.get("detail") or "").strip()
+        detail = reason if reason.startswith("方案没写成") else (f"方案没写成：{reason}" if reason else "方案没写成")
+        _set(stations, "disp", "fail", detail)
+        return True
+    return False
+
+
 _FALLBACK_ACTIVE = {"待对齐": 1, "待派发": 1, "开发中": 3, "待测试": 4, "测试中": 4,
                     "待验收": 6, "已合并": 7, "需Claude介入": 1}
 
@@ -522,6 +546,8 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
     if not events:
         _fallback(stations, state)
         tone = {"待验收": "ok", "已合并": "ok", "需Claude介入": "bad"}.get(state, "run")
+        if _apply_plan_disp_station(stations, cdir, phase):
+            tone = "bad" if phase.get("code") == "plan_failed" else "wait"
         view["now"] = {"text": f"{state}（这张卡没有流转记录，只能看到大致状态）", "tone": tone}
         return view
 
@@ -569,7 +595,7 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
              quiet=int(_quiet_seconds(project, card_id, cdir, dict(plan_ev, live="后台输出.log"), now) or 0))
     elif phase.get("code") == "plan_ready":
         _set(stations, "disp", "wait", "方案写好了，等你批准")
-    else:
+    elif not _apply_plan_disp_station(stations, cdir, phase):
         _set(stations, "disp", *disp.get(state, ("done", "派活后盯进度，有人卡住会叫你")))
 
     quiet = None

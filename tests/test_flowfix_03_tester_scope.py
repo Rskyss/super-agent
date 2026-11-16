@@ -127,5 +127,79 @@ class OnlyCardTests(Base):
             self.assertIn("不要跑全部测试", prompt)
 
 
+
+class ReviseMayUpdateConflictingTests(Base):
+    """Claude 最终验收（第 14–21 项）真卡 CARD-020：继续改把 count 从“只输出数字”改成截图里的文字，
+    测试员按“已有测试不要重写”保留了旧的纯数字用例，开发员不许改测试，两套互斥、返工 3 次后停下。
+    规矩改成：和追加要求冲突的旧用例按追加要求改掉；其余已有测试仍不要重写（保留提速的本意）。"""
+
+    def test_revise_tester_may_fix_old_tests_that_conflict(self):
+        self.run_with(lambda wt: (wt / "tests" / "test_x.py").write_text("# t\n", encoding="utf-8"))
+        revise_card(self.project, "CARD-001", "输出改成文字摘要")
+        self.prompts.clear()
+        card = Card.load(self.cdir / "状态.json")
+        self.run_with(lambda wt: (wt / "tests" / "test_y.py").write_text("# 补\n", encoding="utf-8"), card=card)
+        tester_prompt = self.prompts[0]
+        self.assertIn("和追加要求冲突", tester_prompt)
+        self.assertIn("按追加要求改", tester_prompt)
+        self.assertIn("其余已有的测试不要重写", tester_prompt)
+        self.assertNotIn("已有的测试不要重写；", tester_prompt, "不能再无条件禁止改旧测试")
+
+    def test_reviewer_is_told_which_old_tests_were_changed(self):
+        """复查第 1 轮（Codex）：放宽后要有护栏——测试员改了/删了哪些已有测试，复查员要拿到清单逐个核对。"""
+        self.run_with(lambda wt: (wt / "tests" / "test_x.py").write_text("# t\n", encoding="utf-8"))
+        revise_card(self.project, "CARD-001", "输出改成文字摘要")
+        self.prompts.clear()
+        card = Card.load(self.cdir / "状态.json")
+        self.run_with(lambda wt: (wt / "tests" / "test_x.py").write_text("# 改掉了冲突用例\n", encoding="utf-8"), card=card)
+        review_prompt = next(p for p in self.prompts if "只读复查" in p)
+        self.assertIn("改动了已有的测试", review_prompt)
+        self.assertIn("tests/test_x.py", review_prompt)
+        self.assertIn("测试前备份", review_prompt)
+
+    def test_reviewer_not_warned_when_old_tests_untouched(self):
+        self.run_with(lambda wt: (wt / "tests" / "test_x.py").write_text("# t\n", encoding="utf-8"))
+        revise_card(self.project, "CARD-001", "再加一个按钮")
+        self.prompts.clear()
+        card = Card.load(self.cdir / "状态.json")
+        self.run_with(lambda wt: (wt / "tests" / "test_y.py").write_text("# 只追加\n", encoding="utf-8"), card=card)
+        review_prompt = next(p for p in self.prompts if "只读复查" in p)
+        self.assertNotIn("改动了已有的测试", review_prompt)
+
+
+    def test_reviewer_told_when_committed_old_test_is_loosened_or_deleted(self):
+        """复查第 2 轮（Codex）：项目里早就提交好的旧测试（派测试员前没改动、不在备份里）被放松或整个删掉，也要告诉复查员。"""
+        (self.project / "tests" / "test_keep.py").write_text("# keep\n", encoding="utf-8")
+        git(self.project, "add", ".")
+        git(self.project, "commit", "-qm", "more tests")
+        self.run_with(lambda wt: (wt / "tests" / "test_x.py").write_text("# t\n", encoding="utf-8"))
+        revise_card(self.project, "CARD-001", "输出改成文字摘要")
+        self.prompts.clear()
+        card = Card.load(self.cdir / "状态.json")
+
+        def tester(wt):
+            (wt / "tests" / "test_old.py").write_text("# 放松了\n", encoding="utf-8")
+            (wt / "tests" / "test_keep.py").unlink()
+        self.run_with(tester, card=card)
+        review_prompt = next(p for p in self.prompts if "只读复查" in p)
+        self.assertIn("tests/test_old.py", review_prompt)
+        self.assertIn("tests/test_keep.py（整个删了）", review_prompt)
+
+
+    def test_chinese_named_old_test_is_reported(self):
+        """复查第 3 轮（Codex）：git 默认把中文文件名转义，中文名的旧测试被改会漏报。"""
+        (self.project / "tests" / "test_中文.py").write_text("# 中文\n", encoding="utf-8")
+        git(self.project, "add", ".")
+        git(self.project, "commit", "-qm", "zh test")
+        self.run_with(lambda wt: (wt / "tests" / "test_x.py").write_text("# t\n", encoding="utf-8"))
+        revise_card(self.project, "CARD-001", "输出改成文字摘要")
+        self.prompts.clear()
+        card = Card.load(self.cdir / "状态.json")
+        self.run_with(lambda wt: (wt / "tests" / "test_中文.py").write_text("# 放松\n", encoding="utf-8"), card=card)
+        review_prompt = next(p for p in self.prompts if "只读复查" in p)
+        self.assertIn("tests/test_中文.py", review_prompt)
+        self.assertIn("git show HEAD:", review_prompt, "备份里没有的旧测试，要告诉复查员去看提交时的样子")
+
+
 if __name__ == "__main__":
     unittest.main()

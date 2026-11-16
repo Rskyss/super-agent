@@ -1,0 +1,38 @@
+{
+  "card": "CARD-019",
+  "cancel_requirement_byte_equal": true,
+  "cancel_kept_draft_and_image": true,
+  "cancel_created_no_card_attachment": true,
+  "initial_proxy_image_loss_reproduced": true,
+  "proxy_fix_actual_verified": true,
+  "confirmed_images": 2,
+  "all_saved_images_byte_equal_source": true,
+  "source_bytes": 257296,
+  "source_sha256": "5722569cb7f4dee9b23f785914401710c3143c0964c0f8fb5922fb5ce569c16f",
+  "saved_files": [
+    "20261116_114404_174234_1.png",
+    "20261116_114448_663715_1.png"
+  ],
+  "structured_confirm_kept_image": true,
+  "empty_split_fallback_kept_image": true,
+  "fallback_criteria_unchanged": true,
+  "viewer_natural_size": [
+    1440,
+    1000
+  ],
+  "viewer_closed": true,
+  "over_10MiB_rejected": true,
+  "GIF_rejected": true,
+  "invalid_prepare_requests": 0,
+  "invalid_kept_draft_and_image": true,
+  "worktree_image_copies": 0,
+  "ordinary_task_turns": 1,
+  "actual_construction": false,
+  "upload_method": "CDP path upload denied; served only chosen screenshot on temporary loopback endpoint then memory FilePayload to original native file input; original bytes preserved",
+  "final_generated_markdown_hidden": true,
+  "final_restarted_viewer_verified": true,
+  "independent_review_rounds": 3,
+  "final_review": "通过",
+  "retained_state": "待对齐",
+  "own_worktree_removed": true
+}

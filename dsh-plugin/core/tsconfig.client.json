@@ -1,0 +1,22 @@
+{
+  "extends": "../../../tsconfig.base.client.json",
+  "compilerOptions": { "rootDir": "src", "outDir": "lib/types", "tsBuildInfoFile": "lib/tsconfig.client.tsbuildinfo" },
+  "references": [
+    { "path": "../../../vendor/cordis" },
+    { "path": "../../api/remotes/tsconfig.client.json" },
+    { "path": "../../client/ui-layout" },
+    { "path": "../../client/ui-primitives" },
+    { "path": "../../client/ui-renderer" },
+    { "path": "../../api/session-controller/tsconfig.client.json" },
+    { "path": "../../client/ui-workspace" },
+    { "path": "../../core/session" },
+    { "path": "../../api/workspace-controller/tsconfig.client.json" },
+    { "path": "../../workspace/workspace" },
+    { "path": "../../client/ui-conversation/tsconfig.client.json" },
+    { "path": "../../client/ui-sidebar" },
+    { "path": "../../client/ui-sidebar-right" },
+    { "path": "../../client/ui-settings/tsconfig.client.json" },
+    { "path": "../../client/ui-slots" }
+  ],
+  "include": ["src/client", "src/css-modules.d.ts", "src/confirm-state.ts", "src/progress-model.ts", "src/work-duration.ts", "src/types.ts", "src/onboarding.ts"]
+}

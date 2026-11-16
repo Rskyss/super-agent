@@ -1,0 +1,35 @@
+{
+  "layout": {
+    "root": "/private/tmp/superagent-desktop-20261116",
+    "rootHash": "e6f156216e8a",
+    "bundle": "/private/tmp/superagent-desktop-20261116/超级助手.app",
+    "bundleId": "com.aisoup.superagent.local.e6f156216e8a",
+    "executable": "/private/tmp/superagent-desktop-20261116/超级助手.app/Contents/MacOS/SuperAgentLocal",
+    "home": "/private/tmp/superagent-desktop-20261116/home",
+    "agentsHome": "/private/tmp/superagent-desktop-20261116/home/agents",
+    "workspace": "/private/tmp/superagent-desktop-20261116/home/workspaces",
+    "userData": "/private/tmp/superagent-desktop-20261116/user-data",
+    "blocksHome": "/private/tmp/superagent-desktop-20261116/blocks-home",
+    "logs": "/private/tmp/superagent-desktop-20261116/logs",
+    "runtimeProject": "/private/tmp/superagent-desktop-20261116/runtime-project",
+    "profileDir": "/private/tmp/superagent-desktop-20261116/home/profiles/desktop",
+    "bootstrapDir": "/private/tmp/superagent-desktop-20261116/app-bootstrap",
+    "readmePath": "/private/tmp/superagent-desktop-20261116/LOCAL_BUNDLE_README.txt",
+    "project": "/private/tmp/superagent-desktop-20261116/home/workspaces",
+    "dshRoot": "/Users/rs/Desktop/project/dsh-base",
+    "dshDesktopDir": "/Users/rs/Desktop/project/dsh-base/apps/desktop",
+    "pnpmEntry": "/Users/rs/Desktop/project/dsh-base/apps/desktop/node_modules/pnpm/bin/pnpm.mjs",
+    "primaryRuntimeDir": "/Users/rs/Desktop/project/dsh-base/apps/desktop/.desktop-build/targets/mac-arm64/runtime/primary-runtime",
+    "sourceDevelopmentProject": "/Users/rs/Desktop/project/dsh-base/apps/desktop/.desktop-build/development/project",
+    "keychainService": "com.aisoup.superagent.test.local.e6f156216e8a",
+    "keychainTestRef": "SUPERAGENT_TEST_LOCAL_E6F156216E8A",
+    "mainInspectPort": 39121,
+    "rendererDebugPort": 39122,
+    "hostInspectPort": 39123
+  },
+  "pluginDir": "/Users/rs/Desktop/project/dsh-base/packages/superagent/core",
+  "launchCommands": {
+    "executable": "'/private/tmp/superagent-desktop-20261116/超级助手.app/Contents/MacOS/SuperAgentLocal'",
+    "open": "open -n '/private/tmp/superagent-desktop-20261116/超级助手.app'"
+  }
+}

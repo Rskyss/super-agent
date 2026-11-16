@@ -18,6 +18,7 @@ from datetime import datetime
 from pathlib import Path
 
 from collab.agents import QUIET_LIMIT, agy_error, ask as default_ask, readable
+from collab.card_attachments import attachment_prompt
 from collab.flow import (TEST_PROBLEM, _numbered_items, plain_issues, read_flow, record, reply_summary, rework_words,
                          text_of)
 from collab.judge import Verdict, ENV_ERROR, FAIL, PASS, TIMEOUT, judge as default_judge
@@ -501,6 +502,46 @@ def conflict_names(cdir) -> list:
     return [str(name) for name in files] if isinstance(files, list) else []
 
 
+def _old_tests_changed_note(cdir: Path, worktree) -> str:
+    """继续改那一轮，测试员改了或删了已有的测试：告诉复查员是哪些、备份在哪，逐个核对（Claude 最终验收复查第 1 轮）。
+    备份是这一轮派测试员前存的（测试前备份/），只认测试文件。"""
+    backup = Path(cdir) / _TEST_BACKUP
+    root = Path(worktree)
+    changed = []
+    for b in (sorted(backup.rglob("*")) if backup.is_dir() else []):
+        if not b.is_file() or b.is_symlink():
+            continue
+        rel = b.relative_to(backup).as_posix()
+        if not is_test_path(rel):
+            continue
+        cur = root / rel
+        if not cur.is_file():
+            changed.append(f"{rel}（整个删了）")
+        elif cur.read_bytes() != b.read_bytes():
+            changed.append(rel)
+    # 项目里早就提交好、派测试员前没改动的旧测试不在备份里：和提交时比（复查第 2 轮）
+    before = _load_before_map(cdir)
+    # -z：不转义中文文件名（复查第 3 轮）；输出是“状态\0路径\0”交替
+    out = subprocess.run(["git", "diff", "--name-status", "--no-renames", "-z", "HEAD"], cwd=str(root),
+                         capture_output=True, text=True, encoding="utf-8", errors="replace")
+    fields = out.stdout.split("\0")
+    from_head = []
+    for status, rel in zip(fields[0::2], fields[1::2]):
+        if status not in ("M", "D") or not rel or rel in before or not is_test_path(rel):
+            continue
+        item = f"{rel}（整个删了）" if status == "D" else rel
+        if item not in changed:
+            changed.append(item)
+            from_head.append(rel)
+    if not changed:
+        return ""
+    where = f"改之前的样子：{backup} 下同名文件"
+    if from_head:
+        where += f"；{'、'.join(from_head)} 不在备份里，用 git show HEAD:<路径> 看提交时的样子"
+    return (f"注意：这一轮测试员改动了已有的测试：{'、'.join(changed)}。{where}。"
+            f"请逐个对照：被删改的用例必须确实是被追加要求推翻的；删掉或放松了和追加要求无关的旧用例、削弱了防回归，判不通过。")
+
+
 def _tester_conflict_note(cdir) -> str:
     names = conflict_names(cdir)
     if not names:
@@ -635,7 +676,7 @@ def _dispatch(ask_fn, cdir: Path, role: str, adapter: str, step: str, prompt: st
               worktree, models, round_no: int, test_command=None):
     """派一次活：开始时记“派活”（含原文、预留实时输出），干完记“回复”（含全文、用时）。"""
     models = dict(models or {}, no_plugins=True)  # 派活不带用户配的插件（Codex 能关；agy 关不了，靠交代，㉘ ㊶）
-    prompt = prompt + _NO_PLUGINS_NOTE + (_CURSOR_SANDBOX_NOTE if adapter == "cursor" else "")
+    prompt = prompt + _NO_PLUGINS_NOTE + (_CURSOR_SANDBOX_NOTE if adapter == "cursor" else "") + attachment_prompt(cdir)
     restore = cursor_permissions(worktree, test_command) if adapter == "cursor" else None
     sent = record(cdir, "派活", src="调度员", dst=role, tool=adapter, step=step, round=round_no,
                   summary=_STEP_SUMMARY[step], text=prompt, live=True)
@@ -1329,8 +1370,9 @@ def _run_card(card, collab_dir, worktree, test_command, dev_adapter, test_adapte
         if revise_note and old_tests:
             # 继续改：只为追加要求补测试，不整个重写（68b 里重写一遍 15 分钟，⑭）
             tester_prompt = (f"{_READ_RULES}任务卡 {needs} 的测试之前已经写好：{'、'.join(old_tests)}。"
-                             f"现在有追加要求，只为追加要求补测试（可以在原测试文件里追加，或新建测试文件），"
-                             f"已有的测试不要重写；追加要求不需要新测试就直接说明。"
+                             f"现在有追加要求，只为追加要求补测试（可以在原测试文件里追加，或新建测试文件）。"
+                             f"已有测试里和追加要求冲突的用例（追加要求改掉了原来的行为），按追加要求改掉或删掉，"
+                             f"并在汇报里列出改了哪些；其余已有的测试不要重写。追加要求不需要新测试就直接说明。"
                              f"只改测试文件，不改产品代码，改了也会被撤掉。{revise_bit}{run_hint}{_tester_conflict_note(cdir)}")
         else:
             tester_prompt = (f"{_READ_RULES}按任务卡 {needs} 的验收标准编写自动化测试，放进项目的测试目录。"
@@ -1543,6 +1585,7 @@ def _run_card(card, collab_dir, worktree, test_command, dev_adapter, test_adapte
                                f"{_READ_RULES}只读复查：对照任务卡 {needs} 检查本次改动是否符合需求和验收标准。"
                                f"{plan_hint}{run_hint}"
                                f"{_tester_files_hint(cdir)}"
+                               f"{_old_tests_changed_note(cdir, worktree) if revise_note else ''}"
                                f"台账、归档这些流程记录由程序在施工结束后补写，现在没有不算问题。"
                                f"第一行写“结论：通过”或“结论：不通过”，之后按 1. 2. 编号列出问题；"
                                f"每条开头标级别【严重】【中等】【轻微】，第一句用大白话写用户能看到的现象（不带文件名、代码名），"

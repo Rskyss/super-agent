@@ -1,0 +1,70 @@
+{
+  "card": "CARD-015",
+  "taskSession": "task-72796920-CARD-015",
+  "condition": "新卡空任务对话未发过消息；每次重开该卡再触发新建入口",
+  "results": [
+    {
+      "entry": "快捷键 Alt+Meta+N",
+      "trial": 1,
+      "leftTask": false,
+      "chatMode": true,
+      "taskTitleStillPresent": true
+    },
+    {
+      "entry": "快捷键 Alt+Meta+N",
+      "trial": 2,
+      "leftTask": false,
+      "chatMode": true,
+      "taskTitleStillPresent": true
+    },
+    {
+      "entry": "快捷键 Alt+Meta+N",
+      "trial": 3,
+      "leftTask": false,
+      "chatMode": true,
+      "taskTitleStillPresent": true
+    },
+    {
+      "entry": "左上品牌区 新建会话",
+      "trial": 1,
+      "leftTask": false,
+      "chatMode": true,
+      "taskTitleStillPresent": true
+    },
+    {
+      "entry": "左上品牌区 新建会话",
+      "trial": 2,
+      "leftTask": false,
+      "chatMode": true,
+      "taskTitleStillPresent": true
+    },
+    {
+      "entry": "左上品牌区 新建会话",
+      "trial": 3,
+      "leftTask": false,
+      "chatMode": true,
+      "taskTitleStillPresent": true
+    },
+    {
+      "entry": "主按钮 新会话",
+      "trial": 1,
+      "leftTask": true,
+      "chatMode": true,
+      "taskTitleStillPresent": false
+    },
+    {
+      "entry": "主按钮 新会话",
+      "trial": 2,
+      "leftTask": true,
+      "chatMode": true,
+      "taskTitleStillPresent": false
+    },
+    {
+      "entry": "主按钮 新会话",
+      "trial": 3,
+      "leftTask": true,
+      "chatMode": true,
+      "taskTitleStillPresent": false
+    }
+  ]
+}

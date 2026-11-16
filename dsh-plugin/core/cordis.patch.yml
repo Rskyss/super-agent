@@ -1,0 +1,121 @@
+# 超级助手插件：后台网关 + 两种工作模式（聊天 / 任务）。
+# 说明书改写自原“行政”规矩（desktop/clerk/desk.py ROLE）和 11-15 页面对齐定下的规矩。
+- insert:
+    - id: superagent
+      name: '@superagent/core'
+
+    # 11（00a-e）：凭据提供方二选一工厂（SUPERAGENT_KEYCHAIN=1 时挂载 macOS 钥匙串提供方，未开时保持兼容文件提供方）。
+    - id: superagent-credentials
+      name: '@superagent/core/credentials'
+
+    - id: preset-superagent-chat
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: superagent-chat
+        name: 超级助手 · 聊天
+        description: 和你聊需求、判断要不要干活、出确认卡
+        order: 0
+        plugins:
+          - id: persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              prefix: |-
+                你是“超级助手”，用户的前台。你由 {{model}} 驱动。用户是产品经理，不写代码：用大白话简短回答，不说技术术语。
+
+                你能做的：
+                - 和用户聊需求、聊想法。
+                - 用户明确要干一件活（改产品、写代码、做一件具体的事）时，先把要做什么、不做什么、怎么算做完问清楚，再调用 propose_task 出一张确认卡。确认卡贴在输入框上面，用户点“确认，建任务”才建卡，之后由调度员写方案给用户批。
+                - 用户要接或换调度员时（只支持订阅工具 Codex 或 agy，不要提其他工具），先简短说明，再调用 propose_dispatcher 在输入框上方出示接入确认卡；绝不替用户直接确认、保存配置、安装软件或跑命令。
+                - 用户问进度、问有哪些任务时，先调用 list_tasks 查，不能凭记忆答。
+
+                规矩：
+                - 一次只出一张确认卡。只是聊聊想法、问进度时不要出卡。
+                - 拿不准的地方写进确认卡的问题里，每条带建议答案；用户不答也能直接确认，按建议走。不清楚时一次只问一个问题，给推荐答案和一句话理由。
+                - 出卡后只说一句“点确认就建任务卡，之后调度员写方案给你批”，不追问开工、复查这类事（调度员按流程安排）。
+                - 你不能改代码、运行命令、推送或把改动放进项目；也不能说“已经建好卡”“已经做好了”，用户点了确认才算。
+                - 任务卡建好后，关于那张卡的事请用户到那张卡的对话里聊；这里可以接着聊别的。
+                - 不知道就直说，不编造。
+          - id: time-context
+            name: '@deepseek-ai/dsh-time-context'
+          - id: superagent-chat-tools
+            name: '@superagent/core/chat-tools'
+          - id: compaction
+            name: cordis:group
+            group: true
+            isolate:
+              compaction: true
+              toolResultPruner: true
+            config:
+              - id: compaction-basic
+                name: '@deepseek-ai/dsh-compaction-basic'
+              - id: tool-result-pruner
+                name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+
+    - id: preset-superagent-task
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: superagent-task
+        name: 超级助手 · 任务
+        description: 一张任务卡自己的对话：只谈这张卡
+        order: 1
+        plugins:
+          - id: persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              prefix: |-
+                你是“超级助手”，现在在一张任务卡自己的对话里。你由 {{model}} 驱动。用户是产品经理，不写代码：用大白话简短回答。
+
+                这张卡的活由后台的调度员和执行者在做（写方案、写测试、写代码、复查），你不亲自干活。你能做的：
+                - 用户问进度、问细节、问某一步交回了什么：先调用 card_status 读真实进度再答，不能凭记忆或猜。
+                - 用户要改这张卡的要求（改验收标准、改做法、补一条）：调用 card_change 出一条确认条，用户点“确认改”才转给调度员。没点之前不能说已经改了。
+                - 调度员还没接好、或用户想接/换调度员时（只支持 Codex 或 agy）：调用 propose_dispatcher 在输入框上方出示接入确认卡，等用户点确认；绝不替用户确认、保存角色、安装软件或跑命令。
+                - 批方案、验收、停下来要用户决定时，对应的卡会贴在输入框上面，提醒用户看那张卡、点按钮。
+
+                规矩：
+                - 只谈这张卡。用户聊别的事，请他回到“对话”里找你。
+                - 你不能改代码、运行命令、推送或把改动放进项目。
+                - 不知道就直说，不编造。
+          - id: time-context
+            name: '@deepseek-ai/dsh-time-context'
+          - id: superagent-task-tools
+            name: '@superagent/core/task-tools'
+          - id: compaction
+            name: cordis:group
+            group: true
+            isolate:
+              compaction: true
+              toolResultPruner: true
+            config:
+              - id: compaction-basic
+                name: '@deepseek-ai/dsh-compaction-basic'
+              - id: tool-result-pruner
+                name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+
+# 新会话默认用“超级助手 · 聊天”（整行重述，Loader 不做深合并）。
+- id: agent-preset-registry
+  name: '@deepseek-ai/dsh-agent-preset-registry'
+  config:
+    default: superagent-chat
+
+# 11（00a-e）：关闭原文件凭据提供方（applyPatches 要求同名才能匹配），由上方 superagent-credentials 唯一挂载。
+- id: credentials
+  name: '@deepseek-ai/dsh-credentials-local'
+  disabled: true
+
+# 11（00a-e）：默认工作区收口到独立 DSH_HOME/workspaces，不再落到用户原 Documents。
+- id: workspace-controller
+  name: '@deepseek-ai/dsh-api-workspace-controller'
+  config:
+    documentsDirectory: !!js dshHomePath('workspaces')
+
+# 11（00a-e）：关闭 DSH 原生重复首次引导，保留原生“模型”设置页与手动编辑能力。
+- id: ui-settings-models
+  name: '@deepseek-ai/dsh-client-ui-settings-models'
+  config:
+    credentialOnboarding: false
+
+# 11（00a-e）：通过公开配置抑制浏览器端重复“预览版说明”弹窗压住首次引导（锁定 DSH 0.2.2-rc.3 版本值 '2026-09-28.1'，随 DSH 升级需复核）。
+- id: ui-settings-general
+  name: '@deepseek-ai/dsh-client-ui-settings-general'
+  config:
+    welcomeNoticeVersion: '2026-09-28.1'

@@ -1,0 +1,33 @@
+{
+  "card": "CARD-017",
+  "cancel_file_byte_equal": true,
+  "cancel_draft_retained": true,
+  "confirmed_criteria": [
+    "标题使用黑色",
+    "双击保存",
+    "保存成功后显示提示"
+  ],
+  "confirmed_original_text_retained": true,
+  "phenomenon_fallback": "点了以后没有反应",
+  "fallback_criteria_unchanged": true,
+  "fresh_card_first_open": "CARD-018",
+  "fresh_open_unknown_session": false,
+  "actual_development": false,
+  "note": "受控场景，真实UI/真实已配置模型/正式HTTP写回；启动原施工入口因未配置允许范围明确停下，不实际施工或提交",
+  "final_criteria": [
+    "标题使用黑色",
+    "双击后才保存",
+    "保存成功后显示绿色提示"
+  ],
+  "durable_criteria_changes": [
+    {
+      "replaceNth": 2,
+      "text": "双击后才保存"
+    },
+    {
+      "replaceNth": 3,
+      "text": "保存成功后显示绿色提示"
+    }
+  ],
+  "final_current_criteria_label": true
+}

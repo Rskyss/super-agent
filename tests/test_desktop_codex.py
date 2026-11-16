@@ -187,14 +187,26 @@ class CodexDispatcherTest(unittest.TestCase):
     def test_waits_for_previous_writer_to_release_before_resuming(self):
         d1, got1 = self._open(opening="第一轮")
         got1.turn_done()
-        # 模拟终端稍后才松手：0.15 秒后关掉 d1
-        threading.Timer(0.15, d1.close).start()
-
+        # 第二个解释器忙时可能启动超过0.15秒。等真实收到“被占用”状态再松手，
+        # 确保本例始终测到等待/重试，而不靠电脑必须在定时器之前启动进程。
         got2 = Collector()
-        d2 = CodexDispatcher(self.project, got2, background="你是调度员", marker=MARK, command=FAKE,
+        closers = []
+
+        def collect_and_release(event):
+            got2(event)
+            if event.get("type") == "status" and event.get("text") == "正在等对话让出来…" and not closers:
+                closer = threading.Thread(target=d1.close, daemon=True)
+                closers.append(closer)
+                closer.start()
+
+        d2 = CodexDispatcher(self.project, collect_and_release, background="你是调度员", marker=MARK, command=FAKE,
                              writer_wait=2.0, writer_poll=0.05)
         self.opened.append(d2)
-        d2.start("", resume=True)
+        try:
+            d2.start("", resume=True)
+        finally:
+            for closer in closers:
+                closer.join(3)
         self.assertEqual(d2.thread_id, d1.thread_id)
         statuses = [e["text"] for e in got2.events if e["type"] == "status"]
         self.assertIn("正在等对话让出来…", statuses)

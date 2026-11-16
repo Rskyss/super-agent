@@ -1,0 +1,334 @@
+/* 任务轨迹视图，严格使用 DSH 语义主题令牌以适配深浅色模式。 */
+.root {
+  height: 100%;
+  overflow-y: auto;
+  /* 不加输入框区高度：DSH 的滚动区已给输入框留位，再加会在底部多出一大段空白（Claude 验收实测）。 */
+  padding: 16px 20px calc(24px + var(--dsh-trajectory-bottom-clearance, 0px));
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  color: var(--dsw-alias-label-primary);
+  font-size: 13px;
+}
+
+.notice {
+  padding: 20px;
+  border-radius: var(--dsw-radius-md);
+  border: 1px dashed var(--dsw-alias-border-l1);
+  background: var(--dsw-alias-fill-quaternary);
+  color: var(--dsw-alias-label-secondary);
+  text-align: center;
+  line-height: 1.6;
+}
+
+.error {
+  padding: 10px 14px;
+  border-radius: var(--dsw-radius-md);
+  border: 1px solid var(--dsw-alias-state-error-primary);
+  background: var(--dsw-alias-state-error-secondary, transparent);
+  color: var(--dsw-alias-state-error-primary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.card {
+  border-radius: var(--dsw-radius-md);
+  border: 1px solid var(--dsw-alias-border-l1);
+  background: var(--dsw-alias-bg-elevated, var(--dsw-specific-card, transparent));
+  padding: 14px 16px;
+}
+
+.sectionHeader {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.sectionTitle {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--dsw-alias-label-primary);
+}
+
+.sectionMeta {
+  font-size: 12px;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.distTrack {
+  height: 12px;
+  width: 100%;
+  border-radius: 999px;
+  overflow: hidden;
+  display: flex;
+  gap: 2px;
+  background: var(--dsw-alias-fill-quaternary);
+}
+
+.distSegment {
+  height: 100%;
+  min-width: 4px;
+  transition: width 160ms ease;
+}
+
+.distLegend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  margin-top: 10px;
+}
+
+.legendItem {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.legendDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.mutedHint {
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  margin: 0;
+}
+
+.tableWrap {
+  width: 100%;
+  container-type: inline-size;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 12.5px;
+}
+
+.table th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--dsw-alias-label-secondary);
+  border-bottom: 1px solid var(--dsw-alias-border-l1);
+  padding: 8px;
+  white-space: nowrap;
+}
+
+.table td {
+  border-bottom: 1px solid var(--dsw-alias-border-l1);
+  padding: 9px 8px;
+  vertical-align: top;
+  word-break: break-word;
+  color: var(--dsw-alias-label-primary);
+}
+
+.colTime {
+  width: 64px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.colActor {
+  width: 72px;
+  font-weight: 500;
+}
+
+.colSummary {
+  width: auto;
+}
+
+.colSeconds {
+  width: 64px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.colUsage {
+  width: 64px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.rawBtn {
+  margin-left: 6px;
+  padding: 1px 6px;
+  font-size: 12px;
+  white-space: nowrap;
+  border-radius: var(--dsw-radius-sm, 6px);
+  border: 1px solid var(--dsw-alias-border-l2, var(--dsw-alias-border-l1));
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  cursor: pointer;
+}
+
+.rawBtn:hover {
+  background: var(--dsw-alias-fill-hover);
+}
+
+.rawRow td {
+  padding: 0 10px 12px;
+  background: var(--dsw-alias-fill-quaternary);
+}
+
+.rawPre {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: var(--dsw-radius-sm, 6px);
+  background: var(--dsw-alias-bg-elevated, var(--dsw-alias-fill-secondary, transparent));
+  border: 1px solid var(--dsw-alias-border-l1);
+  color: var(--dsw-alias-label-primary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 360px;
+  overflow-y: auto;
+}
+
+/* 中间栏窄（右栏开着时常见）：每条记录改成上下两行——几点 · 谁 · 用时 · 用量 / 做了什么，避免文字被挤成一字一行。 */
+@container (max-width: 560px) {
+  .table,
+  .table tbody {
+    display: block;
+  }
+
+  .table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+
+  .table tbody tr {
+    display: grid;
+    grid-template-columns: auto 1fr auto auto;
+    grid-template-areas:
+      "time actor seconds usage"
+      "summary summary summary summary";
+    column-gap: 10px;
+    row-gap: 4px;
+    padding: 9px 4px;
+    border-bottom: 1px solid var(--dsw-alias-border-l1);
+  }
+
+  .table tbody td {
+    width: auto;
+    padding: 0;
+    border-bottom: 0;
+  }
+
+  .table tbody td.colTime { grid-area: time; }
+  .table tbody td.colActor { grid-area: actor; }
+  .table tbody td.colSeconds { grid-area: seconds; }
+  .table tbody td.colSummary { grid-area: summary; }
+  .table tbody td.colUsage { grid-area: usage; }
+  .table tbody td.colUsage::before { content: '用量 '; }
+
+  .table tbody tr.rawRow {
+    display: block;
+    padding: 0 0 10px;
+  }
+
+  .table tbody tr.rawRow td {
+    display: block;
+    padding: 0;
+  }
+}
+
+.attachmentError {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+  padding: 8px 12px;
+  border-radius: var(--dsw-radius-sm, 6px);
+  border: 1px solid var(--dsw-alias-state-error-primary);
+  background: var(--dsw-alias-state-error-secondary, transparent);
+  color: var(--dsw-alias-state-error-primary);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.imageOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  box-sizing: border-box;
+}
+
+.imageMask {
+  position: absolute;
+  inset: 0;
+  background: var(--dsw-alias-bg-mask-1, rgba(0, 0, 0, 0.6));
+  backdrop-filter: var(--dsw-mask-blur, none);
+}
+
+.imageDialog {
+  position: relative;
+  z-index: 1;
+  box-sizing: border-box;
+  width: fit-content;
+  max-width: min(92vw, 1120px);
+  max-height: 90vh;
+  padding: 14px 16px;
+  border-radius: var(--dsw-radius-lg, 12px);
+  border: 1px solid var(--dsw-alias-border-l1);
+  background: var(--dsw-specific-menu, var(--dsw-alias-bg-elevated, #1e1e1e));
+  box-shadow: var(--dsw-elevation-prominent, 0 12px 32px rgba(0, 0, 0, 0.35));
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.imageDialogHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.imageDialogTitle {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--dsw-alias-label-primary);
+  white-space: nowrap;
+}
+
+.imageStage {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: auto;
+  max-height: calc(90vh - 80px);
+}
+
+.imagePreview {
+  display: block;
+  max-width: min(88vw, 1080px);
+  max-height: calc(90vh - 88px);
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  border-radius: var(--dsw-radius-md, 8px);
+}
