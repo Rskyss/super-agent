@@ -1997,7 +1997,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
                                        ("打开终端（高级）", #selector(showTerminalView(_:)), "2")]))
         main.addItem(submenu("面板", [("刷新右栏", #selector(reloadPanel(_:)), "R"),
                                        ("收起或展开右栏", #selector(toggleRight(_:)), "\\")]))
-        main.addItem(submenu("窗口", [("最小化", #selector(NSWindow.performMiniaturize(_:)), "m"), ("积木库", #selector(openBlocks(_:)), ""), ("项目窗口", #selector(showProjectWindow(_:)), "")]))
+        main.addItem(submenu("窗口", [("最小化", #selector(NSWindow.performMiniaturize(_:)), "m"), ("项目窗口", #selector(showProjectWindow(_:)), "")]))
         NSApp.mainMenu = main
     }
 

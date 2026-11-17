@@ -66,8 +66,6 @@ body { overflow: hidden; }
 
 .foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 8px 10px 18px; }
 .proj { font-size: var(--fs-base); color: var(--dim); min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.gear { width: 30px; height: 30px; display: grid; place-items: center; flex: none; color: var(--dim); background: none; border: 0; border-radius: var(--r-md); cursor: default; transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease); }
+.gear { margin-left: auto; height: 30px; padding: 0 10px; font-size: var(--fs-base); flex: none; color: var(--dim); background: none; border: 0; border-radius: var(--r-md); cursor: default; transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease); }
 .gear:hover { background: rgba(255, 255, 255, .07); color: var(--text); }
 .gear.on { background: rgba(255, 255, 255, .1); color: var(--text); }
-.blocks-btn { flex: none; margin-left: auto; height: 30px; padding: 0 10px; font-size: var(--fs-base); color: var(--dim); background: none; border: 0; border-radius: var(--r-md); cursor: default; transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease); }
-.blocks-btn:hover { background: rgba(255, 255, 255, .07); color: var(--text); }

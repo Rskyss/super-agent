@@ -44,19 +44,11 @@ class EntryTest(unittest.TestCase):
         main = read(MAIN)
         menu = body_of(main, "func buildMenu()")
         line = next(l for l in menu.splitlines() if 'submenu("窗口"' in l or "submenu(\"窗口\"" in l)
-        self.assertIn('"积木库"', line, "窗口菜单里要有“积木库”")
+        # 11-17 开发助手精简：积木库入口去掉（用户：“积木库就不用了”），见 test_dev_assistant_lite.py
         self.assertIn('"项目窗口"', line, "窗口菜单里要有“项目窗口”，把藏起来的项目窗口叫回来")
-        self.assertIn("openBlocks(_:)", line)
         self.assertIn("showProjectWindow(_:)", line)
 
-    def test_nav_footer_has_blocks_entry(self):
-        html = read(STATIC / "nav.html")
-        foot = html[html.index('<footer class="foot">'):html.index("</footer>")]
-        self.assertIn('id="blocksBtn"', foot, "左栏底部要有积木库入口")
-        self.assertIn("积木库", foot)
-        nav = read(STATIC / "nav.js")
-        self.assertRegex(nav, r'\$\("blocksBtn"\)\.addEventListener\("click"[^;]*superagent://blocks')
-        self.assertIn('case "blocks"', read(MAIN), "窗口要接住 superagent://blocks")
+    # test_nav_footer_has_blocks_entry：11-17 开发助手精简去掉了左栏积木库入口，改由 test_dev_assistant_lite.py 反向检查
 
     def test_nav_rules_unchanged(self):
         if not shutil.which("node"):

@@ -63,8 +63,9 @@ class ProjectWindowKept(unittest.TestCase):
 class NavButtonStyled(unittest.TestCase):
     def test_css(self):
         css = read(STATIC / "nav.css")
-        self.assertIn(".blocks-btn", css)
-        rules = "\n".join(l for l in css.splitlines() if ".blocks-btn" in l)
+        # 11-17 开发助手精简：积木库按钮去掉，同样的规矩改查底部“团队”按钮
+        self.assertIn(".gear", css)
+        rules = "\n".join(l for l in css.splitlines() if ".gear" in l)
         self.assertIn("var(--dim)", rules)
         self.assertIn("flex: none", rules, "项目名过长时按钮不被挤掉")
         self.assertNotRegex(rules, r"#[0-9a-fA-F]{3,6}\b", "不写死色值")
