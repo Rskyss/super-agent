@@ -161,3 +161,205 @@
   gap: 8px;
   padding-top: 4px;
 }
+
+/* 首次配置整页（presentation="page"）：使用真实 DSH tokens，不设浅色兜底色 */
+.pageWrap {
+  width: 100%;
+  max-width: 640px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  color: var(--dsw-alias-label-primary);
+}
+
+.pageHeader {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pageTitle {
+  margin: 0;
+  font: var(--dsw-font-markdown-h1);
+  color: var(--dsw-alias-label-primary);
+}
+
+.pageSubtitle {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.pageCard {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 20px;
+  border-radius: var(--dsw-radius-lg);
+  border: 1px solid var(--dsw-alias-border-l1);
+  background: var(--dsw-alias-bg-layer-2);
+  box-shadow: var(--dsw-elevation-panel);
+}
+
+.pageField {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pageProviderGroup {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.pageProviderBtn {
+  flex: 0 0 auto;
+}
+
+.pageProviderBtnActive {
+  font-weight: 600;
+}
+
+.pageLabelRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.pageLabel {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--dsw-alias-label-primary);
+}
+
+.pageHelpLink {
+  font-size: 13px;
+  color: var(--dsw-alias-state-business-primary);
+  text-decoration: none;
+}
+
+.pageHelpLink:hover {
+  text-decoration: underline;
+}
+
+.pageHelpLinkDisabled {
+  font-size: 13px;
+  color: var(--dsw-alias-label-dimmed);
+  cursor: not-allowed;
+  user-select: none;
+}
+
+.pageInputWrap {
+  box-sizing: border-box;
+  width: 100%;
+}
+
+.pageKeyInputRow {
+  position: relative;
+  width: 100%;
+}
+
+.pageInputWithBadge {
+  padding-right: 76px;
+}
+
+.pageKeyBadge {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  gap: 4px;
+  pointer-events: none;
+}
+
+.pageHint {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.pageKeychainHint {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.pageErrorBox {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 0;
+}
+
+.pageErrorLine {
+  max-width: 100%;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--dsw-alias-state-error-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pageSwitchProviderBtn {
+  align-self: flex-start;
+}
+
+.pageErrorActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+.pageStatusText {
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.pageModelList {
+  max-height: 200px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px;
+  border-radius: var(--dsw-radius-md);
+  border: 1px solid var(--dsw-alias-border-l1);
+  background: var(--dsw-alias-bg-layer-1);
+}
+
+.pageModelOption {
+  width: 100%;
+  justify-content: flex-start;
+  text-align: left;
+}
+
+.pageModelOptionActive {
+  font-weight: 600;
+}
+
+.pageModelName {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pageFooter {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 4px;
+}
+
+.pageConfirmHint {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--dsw-alias-label-secondary);
+}

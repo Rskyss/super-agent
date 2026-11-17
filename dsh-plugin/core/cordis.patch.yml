@@ -12,7 +12,7 @@
       name: '@deepseek-ai/dsh-agent-preset'
       config:
         id: superagent-chat
-        name: 超级助手 · 聊天
+        name: 超级玩家 · 聊天
         description: 和你聊需求、判断要不要干活、出确认卡
         order: 0
         plugins:
@@ -20,7 +20,7 @@
             name: '@deepseek-ai/dsh-persona'
             config:
               prefix: |-
-                你是“超级助手”，用户的前台。你由 {{model}} 驱动。用户是产品经理，不写代码：用大白话简短回答，不说技术术语。
+                你是“超级玩家”，用户的前台。你由 {{model}} 驱动。用户是产品经理，不写代码：用大白话简短回答，不说技术术语。
 
                 你能做的：
                 - 和用户聊需求、聊想法。
@@ -55,7 +55,7 @@
       name: '@deepseek-ai/dsh-agent-preset'
       config:
         id: superagent-task
-        name: 超级助手 · 任务
+        name: 超级玩家 · 任务
         description: 一张任务卡自己的对话：只谈这张卡
         order: 1
         plugins:
@@ -63,7 +63,7 @@
             name: '@deepseek-ai/dsh-persona'
             config:
               prefix: |-
-                你是“超级助手”，现在在一张任务卡自己的对话里。你由 {{model}} 驱动。用户是产品经理，不写代码：用大白话简短回答。
+                你是“超级玩家”，现在在一张任务卡自己的对话里。你由 {{model}} 驱动。用户是产品经理，不写代码：用大白话简短回答。
 
                 这张卡的活由后台的调度员和执行者在做（写方案、写测试、写代码、复查），你不亲自干活。你能做的：
                 - 用户问进度、问细节、问某一步交回了什么：先调用 card_status 读真实进度再答，不能凭记忆或猜。
@@ -119,3 +119,37 @@
   name: '@deepseek-ai/dsh-client-ui-settings-general'
   config:
     welcomeNoticeVersion: '2026-09-28.1'
+
+# ── 页面对齐改版 1-1：关闭设计图上没有的 DSH 界面插件（删掉对应条目即可恢复） ──
+
+# 藏的是 DSH 原生左栏（含工作区树、左上“插件”“自动化任务”“更多”面板入口）；由我们的 TaskSidebar 独占 sidebar 槽位接替。放回来删掉此条即可。
+- id: ui-sidebar
+  name: '@deepseek-ai/dsh-client-ui-sidebar'
+  disabled: true
+
+# 藏的是输入框右下角模型选择与 /model 入口（模型统一在设置→积木库管理）。放回来删掉此条即可。
+- id: ui-model-selection
+  name: '@deepseek-ai/dsh-client-ui-model-selection'
+  disabled: true
+
+# 藏的是输入框下方“工作区内修改”权限预设选择器。放回来删掉此条即可。
+- id: ui-permission
+  name: '@deepseek-ai/dsh-client-ui-permission-presets'
+  disabled: true
+
+# 藏的是每条助手消息下方的点赞、点踩与反馈弹窗。放回来删掉此条即可。
+- id: ui-message-feedback
+  name: '@deepseek-ai/dsh-client-ui-message-feedback'
+  disabled: true
+
+# 藏的是会话统计投影（每秒字数、全会话轮次统计等）。放回来删掉此条即可。
+- id: session-stats
+  name: '@deepseek-ai/dsh-session-stats'
+  disabled: true
+
+# 藏的是 DSH 官方品牌插件（首页背景像素鲸鱼与 official 构建下原左栏官方标志；经查无其他插件依赖它）。放回来删掉此条即可。
+- id: ui-brand-official
+  name: '@deepseek-ai/dsh-client-ui-brand-official'
+  disabled: true
+
+# 注：ui-sidebar-right 绝不能关闭（ui-chat 强制依赖其 sidebarRight 服务，关闭会导致应用无法启动）。

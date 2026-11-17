@@ -22,6 +22,7 @@ from collab.merge import merge_unfinished, sync_copy
 from collab.phase import card_phase, process_is_alive, process_start
 from collab.tasks import TaskError, new_card, revise_card
 from collab.workspace import PROFILE_TEMPLATE, has_blanks, profile_path
+from desktop.clerk.revision import prepare_revision, read_card_criteria
 import hashlib
 import math
 import re
@@ -45,7 +46,7 @@ _lock = threading.Lock()
 
 # 行政在卡片对话里播报的记录（起草：第四轮 56 甲，停下后替你起草“继续改”）
 _NEWS_KINDS = {"方案", "方案失败", "开跑", "判定", "转人工", "结束", "停下", "合并失败", "合并", "提醒", "退回", "接着走",
-               "起草", "升级提醒"}   # 升级提醒单独一类：几家都升级时各说各的，不像“没动静”那样合成一条
+               "起草", "升级提醒", "改要求排队", "改要求生效", "改要求没生效"}   # 升级提醒单独一类：几家都升级时各说各的，不像“没动静”那样合成一条
 
 
 class ReviseNotStarted(RuntimeError):
@@ -782,29 +783,111 @@ def _append_pending(project: str, card_id: str, text: str) -> None:
         handle.write(line + "\n")
 
 
-def _show_revise_box(conv, card_id: str, text: str, pending: int = 0) -> str:
-    with _lock:
-        for old in _open_in_conversation(conv.project, conv.id):
-            if old.get("kind") == "revise":
-                old["state"] = "replaced"
-                _save(conv.project, old)
-                conv.emit({"type": "proposal_done", "id": old["id"], "state": "replaced", "card": old.get("card") or ""})
-                if int(old.get("pending") or 0) > 0:  # 记下的话不能被新框挤掉
-                    pending += int(old["pending"])
+def _publish_revise_box_locked(
+    conv,
+    card_id: str,
+    text: str,
+    pending: int = 0,
+    criteria_base=None,
+    criteria_changes=None,
+    summary: str = "",
+    merged_ids=None,
+) -> str:
+    merged_set = set(merged_ids or ())
+    for old in _open_in_conversation(conv.project, conv.id):
+        if old.get("kind") == "revise":
+            old["state"] = "replaced"
+            _save(conv.project, old)
+            conv.emit({"type": "proposal_done", "id": old["id"], "state": "replaced", "card": old.get("card") or ""})
+            if int(old.get("pending") or 0) > 0:  # 记下的话不能被新框挤掉
+                pending += int(old["pending"])
+                if old["id"] not in merged_set:
                     text = str(old.get("text") or "") + "\n" + text
-        pid = uuid.uuid4().hex
-        data = {
-            "id": pid, "conversation": conv.id, "kind": "revise",
-            "card": card_id, "text": text, "state": "open", "time": time.time(), "pending": pending,
-        }
-        _save(conv.project, data)
-        _append_proposal_line(conv, pid)
-        conv.emit(event_from_proposal(data))
+    pid = uuid.uuid4().hex
+    data: dict[str, Any] = {
+        "id": pid, "conversation": conv.id, "kind": "revise",
+        "card": card_id, "text": text, "state": "open", "time": time.time(), "pending": pending,
+    }
+    if criteria_base is not None:
+        data["criteria_base"] = list(criteria_base)
+    if criteria_changes is not None:
+        data["criteria_changes"] = list(criteria_changes)
+    if summary:
+        data["summary"] = str(summary)
+    _save(conv.project, data)
+    _append_proposal_line(conv, pid)
+    conv.emit(event_from_proposal(data))
     return "已向用户出示确认框，等用户点确认或先不做。"
 
 
-def propose_revise(conv, arguments: dict) -> str:
-    """改需求：能改就出确认框，施工中只记下，这一轮结束后再问。"""
+def _show_revise_box(
+    conv,
+    card_id: str,
+    text: str,
+    pending: int = 0,
+    criteria_base=None,
+    criteria_changes=None,
+    summary: str = "",
+    merged_ids=None,
+    only_if_no_open: bool = False,
+) -> str:
+    expected = getattr(conv, "turn_expected", None)
+    cond = getattr(conv, "cond", None)
+    with _lock, (cond if expected is not None and cond is not None else _NO_WAIT):
+        if expected is not None and getattr(conv, "turn", expected) != expected:
+            return "没有出提议：用户已经停止了这一轮。"
+        if only_if_no_open:
+            for old in _open_in_conversation(conv.project, conv.id):
+                if old.get("kind") == "revise":
+                    return ""
+        return _publish_revise_box_locked(
+            conv,
+            card_id,
+            text,
+            pending=pending,
+            criteria_base=criteria_base,
+            criteria_changes=criteria_changes,
+            summary=summary,
+            merged_ids=merged_ids,
+        )
+
+
+def _try_show_user_revise_box(
+    conv,
+    card_id: str,
+    text: str,
+    criteria_base,
+    criteria_changes,
+    summary: str,
+    expected_pending_ids: set[str],
+) -> tuple[str, bool]:
+    expected = getattr(conv, "turn_expected", None)
+    cond = getattr(conv, "cond", None)
+    with _lock, (cond if expected is not None and cond is not None else _NO_WAIT):
+        if expected is not None and getattr(conv, "turn", expected) != expected:
+            return "没有出提议：用户已经停止了这一轮。", False
+        current_pending_ids = {
+            str(old["id"])
+            for old in _open_in_conversation(conv.project, conv.id)
+            if old.get("kind") == "revise" and int(old.get("pending") or 0) > 0
+        }
+        if current_pending_ids != expected_pending_ids:
+            return "", True
+        msg = _publish_revise_box_locked(
+            conv,
+            card_id,
+            text,
+            pending=0,
+            criteria_base=criteria_base,
+            criteria_changes=criteria_changes,
+            summary=summary,
+            merged_ids=expected_pending_ids,
+        )
+        return msg, False
+
+
+def propose_revise(conv, arguments: dict, client=None) -> str:
+    """改需求：能改就用旧版行政模型先拆分再出确认框，施工中只记下，这一轮结束后再问。"""
     text = str((arguments or {}).get("text") or "").strip()
     if not text:
         return "请写上要改什么"
@@ -821,15 +904,57 @@ def propose_revise(conv, arguments: dict) -> str:
         return "没有这个工具"
     phase = card_phase(conv.project, card_id)
     if "revise" in (phase.get("actions") or []):
-        return _show_revise_box(conv, card_id, text)
+        for _attempt in range(3):
+            merged_ids: set[str] = set()
+            effective_text = text
+            with _lock:
+                for old in _open_in_conversation(conv.project, conv.id):
+                    if old.get("kind") == "revise" and int(old.get("pending") or 0) > 0:
+                        old_words = str(old.get("text") or "").strip()
+                        if old_words:
+                            effective_text = f"{old_words}\n{effective_text}"
+                        merged_ids.add(str(old["id"]))
+            try:
+                prepared = prepare_revision(conv.project, card_id, effective_text, client)
+            except RuntimeError as exc:
+                return f"没有出提议：{exc}"
+            msg, conflict = _try_show_user_revise_box(
+                conv,
+                card_id,
+                effective_text,
+                criteria_base=prepared["criteria_base"],
+                criteria_changes=prepared["criteria_changes"],
+                summary=prepared["summary"],
+                expected_pending_ids=merged_ids,
+            )
+            if not conflict:
+                return msg
+        return "没有出提议：修改期间有新的待转达意见到达，请再说一次重试。"
     if phase.get("code") in ("done", "dropped"):
         return "这张卡已经结束了，不能再改。告诉用户：新要求请回主对话提一张新卡。"
     _append_pending(conv.project, card_id, text)
     return "已记下，这一轮结束后给用户确认"
 
 
-def show_saved_revise(conv, card_id: str, text: str, pending: int) -> None:
-    _show_revise_box(conv, card_id, text, pending)
+def show_saved_revise(
+    conv,
+    card_id: str,
+    text: str,
+    pending: int,
+    criteria_base=None,
+    criteria_changes=None,
+    summary: str = "",
+) -> None:
+    _show_revise_box(
+        conv,
+        card_id,
+        text,
+        pending,
+        criteria_base=criteria_base,
+        criteria_changes=criteria_changes,
+        summary=summary,
+        only_if_no_open=True,
+    )
 
 
 def _save_profile(project: str, text: str) -> None:
@@ -869,6 +994,8 @@ def decide(project: str, conversation: str, pid: str, decision: str) -> dict:
                     return {"ok": True, "card": "", "state": "confirmed", "repeat": True, "kind": data["kind"]}
                 if data.get("kind") in _BLOCK_KINDS:
                     return _block_result(data, repeat=True)
+                if data.get("kind") == "revise":
+                    return {"ok": True, "card": data.get("card") or "", "state": "confirmed", "repeat": True, "kind": "revise"}
                 if data.get("card"):
                     return {"ok": True, "card": data["card"], "state": "confirmed", "repeat": True, "kind": "task"}
             raise RuntimeError("这个提议已经处理过了")
@@ -897,7 +1024,15 @@ def decide(project: str, conversation: str, pid: str, decision: str) -> dict:
             planish = phase_now.get("code") in ("plan_ready", "plan_waiting", "plan_failed", "planning")
             reply = "已让 Codex 重写方案。" if planish else "已交给开发，做完再告诉你。"
             try:
-                apply_revise(project, card_id, str(data.get("text") or ""))
+                note = apply_revise(
+                    project,
+                    card_id,
+                    str(data.get("text") or ""),
+                    criteria_base=data.get("criteria_base"),
+                    criteria_changes=data.get("criteria_changes"),
+                )
+                if isinstance(note, str) and note:
+                    reply = note + "。"   # 第七批 7-1：卡正在跑，排队到停顿点生效
             except ReviseNotStarted as exc:
                 reply = str(exc)
             data["state"] = "confirmed"
@@ -1035,6 +1170,12 @@ def event_from_proposal(data: dict) -> dict:
     elif kind == "revise":
         base["text"] = data.get("text") or ""
         base["card"] = data.get("card") or ""
+        if "summary" in data:
+            base["summary"] = data.get("summary") or ""
+        if "criteria_base" in data:
+            base["criteria_base"] = data["criteria_base"]
+        if "criteria_changes" in data:
+            base["criteria_changes"] = data["criteria_changes"]
     elif kind == "team":
         base["role"] = data.get("role") or ""
         base["tool"] = data.get("tool") or ""
@@ -1195,56 +1336,132 @@ def apply_revise(project: str, card_id: str, text: str, files=None,
     words = (text or "").strip()
     if not words:
         raise RuntimeError("请写上要改什么")
-    try:  # 文件路径、结构化验收标准与图片附件不合规矩时先退回，什么都不动（第三批 ㉟ / 第15项 / 第14项）
-        from collab.tasks import _clean_scope_files, validate_card_attachments, validate_criteria_revision
-        files = _clean_scope_files(files)
-        validate_criteria_revision(project, card_id, criteria_base=criteria_base, criteria_changes=criteria_changes)
-        validate_card_attachments(project, card_id, attachments)
-    except TaskError as exc:
-        raise RuntimeError(str(exc)) from exc
-    phase = card_phase(project, card_id)
-    if "revise" not in (phase.get("actions") or []):
-        raise RuntimeError("现在不能修改")
-    if phase.get("code") in ("plan_ready", "plan_waiting", "plan_failed", "planning"):
+    queue_phase = card_phase(project, card_id)
+    rec = running(project, "run") if "revise" not in (queue_phase.get("actions") or []) else None
+    if rec is not None and str(rec.get("card") or "") == str(card_id):
+        # 第七批 7-1：这张卡正在跑（本来不能直接改）——先排队，调度员在停顿点（回去写代码前 / 交你验收前）取走生效。
+        # 停下后在起草“继续改”的不算在跑：phase 里有 revise，走下面原来的路，先停掉起草
+        if attachments:
+            raise RuntimeError("跑着的时候带截图的修改先存不下，等这一轮停下再改，或者先只用文字说")
+        try:
+            from collab.tasks import queue_revision, validate_criteria_revision
+            validate_criteria_revision(project, card_id, criteria_base=criteria_base, criteria_changes=criteria_changes)
+            queue_revision(project, card_id, words, criteria_base=criteria_base, criteria_changes=criteria_changes)
+        except TaskError as exc:
+            raise RuntimeError(str(exc)) from exc
+        return "已确认，这一轮跑完生效"
+    # 直接生效这一段（判断阶段、核对验收标准基线、记追加要求、开工）整段加卡片生效锁，
+    # 和停下后的自动生效、调度员停顿点共用一把，免得同时写同一份文件互相覆盖（复查第 3 轮严重）
+    from collab.tasks import card_apply_lock
+    with card_apply_lock(Path(project) / ".collab" / "cards" / str(card_id)):
+        try:  # 文件路径、结构化验收标准与图片附件不合规矩时先退回，什么都不动（第三批 ㉟ / 第15项 / 第14项）
+            from collab.tasks import _clean_scope_files, validate_card_attachments, validate_criteria_revision
+            files = _clean_scope_files(files)
+            validate_criteria_revision(project, card_id, criteria_base=criteria_base, criteria_changes=criteria_changes)
+            validate_card_attachments(project, card_id, attachments)
+        except TaskError as exc:
+            raise RuntimeError(str(exc)) from exc
+        phase = card_phase(project, card_id)
+        if "revise" not in (phase.get("actions") or []):
+            raise RuntimeError("现在不能修改")
+        if phase.get("code") in ("plan_ready", "plan_waiting", "plan_failed", "planning"):
+            try:
+                revise_card(project, card_id, words, files=files,
+                            criteria_base=criteria_base, criteria_changes=criteria_changes,
+                            attachments=attachments)
+            except TaskError as exc:
+                raise RuntimeError(str(exc)) from exc
+            try:
+                launch(project, "plan", card_id, ["plan", project, card_id])
+            except TaskBusy:
+                pass
+            return
+        if phase.get("code") == "blocked":
+            end_drafting(project, card_id)   # 停下后还在起草的先停掉（按钮、行政确认都走这里，第四轮复查第 2 轮）
+        if running(project, "run") is not None:
+            raise RuntimeError("已有一张卡在施工，等它做完再改")
+        if running(project, "merge") is not None or merge_unfinished(project):
+            raise RuntimeError("另一张卡还在放进项目，等它结束再改")
+        start = Path(project) / ".collab" / "cards" / card_id / "开工.json"
+        command = ""
+        if start.is_file():
+            try:
+                command = str(json.loads(start.read_text(encoding="utf-8")).get("test_command") or "").strip()
+            except (OSError, ValueError, TypeError):
+                command = ""
+        if not command:
+            raise RuntimeError("这张卡没有测试命令，没法接着改。可以点“放弃这个需求”，再提一张新卡。")
+        sync_copy(project, card_id)  # 同步不成会抛错，这时什么都没改
         try:
             revise_card(project, card_id, words, files=files,
                         criteria_base=criteria_base, criteria_changes=criteria_changes,
                         attachments=attachments)
         except TaskError as exc:
             raise RuntimeError(str(exc)) from exc
+        cdir = Path(project) / ".collab" / "cards" / card_id
         try:
-            launch(project, "plan", card_id, ["plan", project, card_id])
-        except TaskBusy:
-            pass
-        return
+            launch(project, "run", card_id, ["run", project, card_id, "--test-command", command])
+        except (TaskBusy, OSError) as exc:
+            flow_record(cdir, "开工失败", src="程序", dst="你", summary="这次没能开工", text=str(exc))
+            raise ReviseNotStarted("要求已经记下，但这次没能开工，可以点“接着跑”。") from exc
+
+
+
+def flush_queued_if_idle(project: str, card_id: str) -> bool:
+    """第七批 7-1：卡已经停下（等你验收、停下要你决定、环境出错），排着的修改还没被调度员取走——
+    这里自动生效并接着开工，不用你再点一次（复查中等 4）。正在跑、正在放进项目、不能改的阶段都不动。
+    任务页轮询、常驻巡视都会来，整段加卡片锁，同时来只有一个在做（复查第 2 轮严重 1）。返回是否处理了。"""
+    from collab.tasks import QUEUED_REVISIONS, card_apply_lock
+    if not isinstance(card_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", card_id):
+        return False
+    cdir = Path(project) / ".collab" / "cards" / card_id
+    if not (cdir / QUEUED_REVISIONS).is_file():
+        return False
+    with card_apply_lock(cdir):
+        return _flush_queued_locked(project, card_id, cdir)
+
+
+def _flush_queued_locked(project: str, card_id: str, cdir: Path) -> bool:
+    """第七批 7-1：卡已经停下（等你验收、停下要你决定、环境出错），排着的修改还没被调度员取走——
+    这里自动生效并接着开工，不用你再点一次（复查中等 4）。正在跑、正在放进项目、不能改的阶段都不动。
+    返回是否处理了。"""
+    from collab.tasks import QUEUED_REVISIONS, apply_queued_items, take_queued_revisions
+    if not (cdir / QUEUED_REVISIONS).is_file():
+        return False
+    if running(project, "run") is not None or running(project, "merge") is not None or merge_unfinished(project):
+        return False
+    phase = card_phase(project, card_id)
+    if "revise" not in (phase.get("actions") or []):
+        return False
     if phase.get("code") == "blocked":
-        end_drafting(project, card_id)   # 停下后还在起草的先停掉（按钮、行政确认都走这里，第四轮复查第 2 轮）
-    if running(project, "run") is not None:
-        raise RuntimeError("已有一张卡在施工，等它做完再改")
-    if running(project, "merge") is not None or merge_unfinished(project):
-        raise RuntimeError("另一张卡还在放进项目，等它结束再改")
-    start = Path(project) / ".collab" / "cards" / card_id / "开工.json"
+        end_drafting(project, card_id)
     command = ""
+    start = cdir / "开工.json"
     if start.is_file():
         try:
             command = str(json.loads(start.read_text(encoding="utf-8")).get("test_command") or "").strip()
         except (OSError, ValueError, TypeError):
             command = ""
     if not command:
-        raise RuntimeError("这张卡没有测试命令，没法接着改。可以点“放弃这个需求”，再提一张新卡。")
-    sync_copy(project, card_id)  # 同步不成会抛错，这时什么都没改
+        return False
     try:
-        revise_card(project, card_id, words, files=files,
-                    criteria_base=criteria_base, criteria_changes=criteria_changes,
-                    attachments=attachments)
-    except TaskError as exc:
-        raise RuntimeError(str(exc)) from exc
-    cdir = Path(project) / ".collab" / "cards" / card_id
-    try:
-        launch(project, "run", card_id, ["run", project, card_id, "--test-command", command])
-    except (TaskBusy, OSError) as exc:
-        flow_record(cdir, "开工失败", src="程序", dst="你", summary="这次没能开工", text=str(exc))
-        raise ReviseNotStarted("要求已经记下，但这次没能开工，可以点“接着跑”。") from exc
+        sync_copy(project, card_id)
+    except Exception:  # noqa: BLE001 — 同步不成就先不动，下次再试
+        return False
+    items = take_queued_revisions(project, card_id)
+    applied, failed = apply_queued_items(project, card_id, items)
+    for words, why in failed:
+        flow_record(cdir, "改要求没生效", src="程序", dst="你", summary=f"你确认的修改没能生效：{why}",
+                    say=f"你确认的修改没能生效：{why}。可以再说一次。", text=words)
+    for words in applied:
+        flow_record(cdir, "改要求生效", src="程序", dst="你", summary=f"你的修改已生效：{words[:60]}",
+                    say=f"你的修改已生效：{words[:60]}。按新要求再走一轮：补测试 → 写代码 → 跑测试 → 复查。")
+    if applied:
+        try:
+            launch(project, "run", card_id, ["run", project, card_id, "--test-command", command])
+        except (TaskBusy, OSError) as exc:
+            flow_record(cdir, "开工失败", src="程序", dst="你", summary="修改生效了，但这次没能开工", text=str(exc))
+    return True
 
 
 def launch(project: str, kind: str, card_id: str, args: list) -> int:
@@ -1446,6 +1663,9 @@ class TaskWatcher:
         self._tick_lock = threading.Lock()
         self._started = set()
         self._projects_lock = threading.Lock()
+        self._revise_lock = threading.Lock()
+        self._revise_inflight: set[tuple[str, str]] = set()
+        self._revise_failed_sig: dict[tuple[str, str], str] = {}
 
     def ensure_watching(self, project: str) -> None:
         p = str(project)
@@ -1492,6 +1712,12 @@ class TaskWatcher:
         code = str(phase.get("code") or "")
         self._play_card_news(project, cdir, card_id)
         self._offer_saved_revise(project, cdir, card_id, phase)
+        try:   # 排着的修改：卡停下了就生效并接着开工，不用等你回到任务页（复查第 2 轮中等 2）
+            if flush_queued_if_idle(project, card_id):
+                phase = card_phase(project, card_id)
+                code = str(phase.get("code") or "")
+        except Exception:  # noqa: BLE001 — 接不上下次巡视再试
+            pass
 
         if has_source and code == "plan_waiting" and not _is_deferred_plan(cdir) and running(project, "plan") is None:
             try:
@@ -1607,4 +1833,64 @@ class TaskWatcher:
         conv = self._desk._conversation(project, cid, create=False)  # noqa: SLF001
         if conv is None:
             return
-        show_saved_revise(conv, card_id, "\n".join(texts), len(texts))
+        try:
+            current_criteria = read_card_criteria(project, card_id)
+        except Exception:
+            current_criteria = []
+        sig = hashlib.sha256(
+            json.dumps({"card": card_id, "texts": texts, "criteria": current_criteria}, ensure_ascii=False).encode("utf-8")
+        ).hexdigest()
+        key = (str(project), str(card_id))
+        with self._revise_lock:
+            if key in self._revise_inflight:
+                return
+            if self._revise_failed_sig.get(key) == sig:
+                return
+            self._revise_inflight.add(key)
+        threading.Thread(
+            target=self._prepare_saved_revise,
+            args=(project, card_id, cid, texts, sig),
+            daemon=True,
+        ).start()
+
+    def _prepare_saved_revise(self, project: str, card_id: str, cid: str, texts: list[str], sig: str) -> None:
+        key = (str(project), str(card_id))
+        combined = "\n".join(texts)
+        try:
+            getter = getattr(self._desk, "_client", None)
+            client = getter() if callable(getter) else None
+            try:
+                prepared = prepare_revision(project, card_id, combined, client)
+            except RuntimeError as exc:
+                with self._revise_lock:
+                    self._revise_failed_sig[key] = sig
+                self._desk.notify(
+                    project,
+                    cid,
+                    f"之前记下的修改意见没能整理成逐条确认（{exc}）。原话已保留：{combined}",
+                )
+                return
+            with self._revise_lock:
+                self._revise_failed_sig.pop(key, None)
+            phase_now = card_phase(project, card_id)
+            if "revise" not in (phase_now.get("actions") or []):
+                return
+            conv = self._desk._conversation(project, cid, create=False)  # noqa: SLF001
+            if conv is None:
+                return
+            with _lock:
+                for old in _open_in_conversation(project, cid):
+                    if old.get("kind") == "revise" and old.get("state") == "open":
+                        return
+            show_saved_revise(
+                conv,
+                card_id,
+                combined,
+                len(texts),
+                criteria_base=prepared["criteria_base"],
+                criteria_changes=prepared["criteria_changes"],
+                summary=prepared["summary"],
+            )
+        finally:
+            with self._revise_lock:
+                self._revise_inflight.discard(key)

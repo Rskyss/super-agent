@@ -133,6 +133,59 @@ function invokeFresh(
 }
 
 /**
+ * 合并并发的新建聊天请求：仅共享当前仍在途的 Promise，
+ * 并在成功、异步拒绝或同步抛错后立即清空，确保后续显式新建仍可再次创建。
+ */
+export function coalesceChatStart(run: () => Promise<void>): () => Promise<void> {
+  let inflight: Promise<void> | null = null
+  return () => {
+    if (inflight !== null) {
+      return inflight
+    }
+    let next: Promise<void>
+    try {
+      next = Promise.resolve(run())
+    } catch (error: unknown) {
+      inflight = null
+      return Promise.reject(error)
+    }
+    const clear = () => {
+      if (inflight === tracked) {
+        inflight = null
+      }
+    }
+    const tracked = next.then(
+      (value) => {
+        clear()
+        return value
+      },
+      (error: unknown) => {
+        clear()
+        throw error
+      },
+    )
+    inflight = tracked
+    return tracked
+  }
+}
+
+/**
+ * 在当前视图导航信号未中止时创建并打开新会话；
+ * 若创建过程中用户已切走或面板被销毁（signal.aborted），则放弃打开会话以免抢占导航，
+ * 创建过程中的异常原样向上抛出。
+ */
+export async function createChatForCurrentView<T>(
+  signal: AbortSignal,
+  create: () => Promise<T>,
+  open: (id: T) => void,
+): Promise<void> {
+  const id = await create()
+  if (!signal.aborted) {
+    open(id)
+  }
+}
+
+/**
  * 为原生工作区导航安装“新会话默认走聊天模式”的可逆边界包装。
  * @param navigation - 工作区导航服务或等效对象。
  * @param fresh - 可选的明确新建聊天回调；传入时原生无参调用直接走该回调，绕过空会话复用。
@@ -234,8 +287,11 @@ export function formatChatNavigationError(error: unknown): string {
   if (TRANSPORT_FAILURE_RE.test(raw)) {
     return '没建上新对话：暂时连不上助手，请稍后再试'
   }
-  if (raw.includes('请先完成超级助手首次模型配置')) {
-    return '没建上新对话：请先完成超级助手首次模型配置'
+  if (
+    raw.includes('请先完成超级玩家首次模型配置')
+    || raw.includes('请先完成超级助手首次模型配置')
+  ) {
+    return '没建上新对话：请先完成超级玩家首次模型配置'
   }
   if (raw.includes('默认工作区尚未就绪，请先选择项目文件夹')) {
     return '没建上新对话：默认工作区尚未就绪，请先选择项目文件夹'
@@ -244,11 +300,16 @@ export function formatChatNavigationError(error: unknown): string {
     return '没建上新对话：还没有配置当前项目文件夹'
   }
   if (
-    raw.includes('读取超级助手配置状态失败')
+    raw.includes('读取超级玩家配置状态失败')
+    || raw.includes('读取超级助手配置状态失败')
+    || raw.includes('暂时无法确认超级玩家配置状态')
+    || raw.includes('暂时无法确认超级助手配置状态')
+    || raw.includes('请先完成超级玩家模型配置与钥匙串验证')
+    || raw.includes('请先完成超级助手模型配置与钥匙串验证')
     || raw.includes('未能确认配置是否生效')
     || raw.includes('默认模型或钥匙串未就绪')
   ) {
-    return '没建上新对话：超级助手模型配置尚未就绪，请先完成配置或点重试'
+    return '没建上新对话：超级玩家模型配置尚未就绪，请先完成配置或点重试'
   }
   return '没建上新对话：请检查当前项目设置或稍后再试'
 }

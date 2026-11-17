@@ -1,0 +1,28 @@
+
+ RUN  v4.1.11 /Users/rs/Desktop/project/super-agent/dsh-plugin/core
+
+ ❯ tests/alignment-overview-refresh.client.spec.tsx (6 tests | 2 failed) 78ms
+   × a later refresh failure must be visible: empty=true thrown=false 19ms
+   × a later refresh failure must be visible: empty=true thrown=true 2ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  tests/alignment-overview-refresh.client.spec.tsx > a later refresh failure must be visible: empty=true thrown=false
+ FAIL  tests/alignment-overview-refresh.client.spec.tsx > a later refresh failure must be visible: empty=true thrown=true
+AssertionError: expected null not to be null
+ ❯ tests/alignment-overview-refresh.client.spec.tsx:19:42
+     17|  else expect(screen.getByText('真实卡',{exact:true})).toBeTruthy()
+     18|  await act(async()=>{await vi.advanceTimersByTimeAsync(3000)})
+     19|  expect(screen.queryByRole('alert')).not.toBeNull()
+       |                                          ^
+     20|  expect(screen.getByRole('alert').textContent).toContain('服务暂时不可用')
+     21| })
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  2 failed | 4 passed (6)
+   Start at  03:40:22
+   Duration  1.09s (transform 318ms, setup 0ms, import 674ms, tests 78ms, environment 264ms)
+

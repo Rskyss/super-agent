@@ -685,7 +685,7 @@ class PendingWords(ChatCase):
         self.to_state(cdir, "待验收")
         record(cdir, "结束", src="程序", dst="你", state="待验收", summary="做完了")
         TaskWatcher(self.desk).tick(self.project)
-        box = self.boxes(self.events(cid), "revise")[0]
+        box = wait_until(lambda: self.boxes(self.events(cid), "revise"), 5, "等不到拆分后的改要求确认框")[0]
         self.to_state(cdir, "开发中")
         record(cdir, "开跑", src="调度员", dst="程序", summary="接着跑", pid=__import__("os").getpid())
         self.propose_revise("第二条")

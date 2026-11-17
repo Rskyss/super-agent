@@ -38,7 +38,14 @@ declare module '@deepseek-ai/dsh-llm' {
   }
 }
 
-const REVISION_ALLOWED_PHASES = new Set(['review', 'blocked'])
+const REVISION_ALLOWED_PHASES = new Set([
+  'plan_ready',
+  'plan_waiting',
+  'plan_failed',
+  'planning',
+  'review',
+  'blocked',
+])
 const SUPERSEDED_REASON = '__superagent_revision_superseded__'
 const TIMEOUT_REASON = '__superagent_revision_timeout__'
 const OVERFLOW_REASON = '__superagent_revision_overflow__'

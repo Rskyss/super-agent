@@ -3,7 +3,7 @@
  * 成功立即隐藏且旧轮询不可复活；失败保留确认条可重试。
  */
 import { useEffect, useRef, useState, type ReactElement } from 'react'
-import { Button, Tag } from '@deepseek-ai/dsh-client-ui-primitives'
+import { Button } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { RemoteResult } from '@deepseek-ai/dsh-api-remotes/client'
 import { initialPoll, markHandled, receivePoll, type PollState } from '../confirm-state.ts'
 import type { CardActionResult, PendingChange } from '../types.ts'
@@ -43,7 +43,7 @@ function ChangeDockCard({ card, pendingChange, decideChange, onStatusChange, onD
   const [poll, setPoll] = useState<PollState<PendingChange>>(initialPoll)
   const [settled, setSettled] = useState(false)
   const [busy, setBusy] = useState(false)
-  const [collapsed, setCollapsed] = useState(false)
+  // 保留原折叠状态注释以便需要时恢复：const [collapsed, setCollapsed] = useState(false)
   const [note, setNote] = useState('')
 
   useEffect(() => {
@@ -73,12 +73,21 @@ function ChangeDockCard({ card, pendingChange, decideChange, onStatusChange, onD
   }, [card, refreshTick])
 
   useEffect(() => {
-    if (poll.current || note) {
+    // 只有还有确认条要你点（或正在提交）才占住输入框上方；确认后只剩一句“已确认……”时不占，
+    // 卡进了待验收等阶段，验收卡照常出来（复查第 1 轮严重 1）
+    if (poll.current || busy) {
       statusRef.current?.('active')
       return
     }
     statusRef.current?.(settled ? 'none' : 'loading')
-  }, [poll.current, note, settled])
+  }, [poll.current, busy, settled])
+
+  // “已确认，这一轮跑完生效”看过就行，8 秒后自己收起
+  useEffect(() => {
+    if (!note || poll.current || busy) return
+    const timer = setTimeout(() => { setNote('') }, 8000)
+    return () => { clearTimeout(timer) }
+  }, [note, poll.current, busy])
 
   const change = poll.current
   if (!change) {
@@ -116,7 +125,10 @@ function ChangeDockCard({ card, pendingChange, decideChange, onStatusChange, onD
         return
       }
       setPoll(state => markHandled(state, targetId))
-      if (isActive(targetCard, targetId)) setNote('')
+      // 第七批 7-1：跑着时确认，后台排队回“已确认，这一轮跑完生效”——留着这句给你看；平常交上了就清掉
+      const doneNote = confirm ? sanitizeProgressText(result.value.message).trim() : ''
+      if (doneNote) setNote(doneNote)
+      else if (isActive(targetCard, targetId)) setNote('')
       onDecidedRef.current?.(decidedChange, confirm)
     }).catch((error: unknown) => {
       if (!aliveRef.current || cardRef.current !== targetCard) return
@@ -129,36 +141,25 @@ function ChangeDockCard({ card, pendingChange, decideChange, onStatusChange, onD
   return (
     <div className={css.dock}>
       <div className={css.card} role="group" aria-label={`改要求确认：${card}`}>
+        {/* 旧版头部卡号与收起按钮注释保留：
         <div className={css.head}>
           <span className={css.title}>改要求</span>
           <Tag>{card}</Tag>
           <span className={css.headActions}>
             <span className={css.status}>等你确认</span>
-            <Button
-              size="sm"
-              variant="ghost"
-              aria-expanded={!collapsed}
-              onClick={() => { setCollapsed(value => !value) }}
-            >
+            <Button size="sm" variant="ghost" aria-expanded={!collapsed} onClick={() => { setCollapsed(value => !value) }}>
               {collapsed ? '展开' : '收起'}
             </Button>
           </span>
         </div>
-        {!collapsed ? (
-          <div className={css.rows}>
-            <span className={css.label}>改动内容</span>
-            <span className={css.value}>{sanitizeProgressText(change.summary)}</span>
-            {typeof change.attachmentCount === 'number' && change.attachmentCount > 0 ? (
-              <>
-                <span className={css.label}>附带截图</span>
-                <span className={css.value}>{`附带${change.attachmentCount}张截图`}</span>
-              </>
-            ) : null}
-          </div>
+        */}
+        <div className={css.changeSummary}>{sanitizeProgressText(change.summary)}</div>
+        {typeof change.attachmentCount === 'number' && change.attachmentCount > 0 ? (
+          <div className={css.changeAttachmentMeta}>{`附带${change.attachmentCount}张截图`}</div>
         ) : null}
         <div className={css.actions}>
           <Button size="sm" variant="primary" disabled={busy} onClick={() => { submit(true) }}>确认改</Button>
-          {!collapsed ? <Button size="sm" variant="outline" disabled={busy} onClick={() => { submit(false) }}>算了</Button> : null}
+          <Button size="sm" variant="outline" disabled={busy} onClick={() => { submit(false) }}>算了</Button>
         </div>
         {note ? <div className={css.note}>{note}</div> : null}
       </div>

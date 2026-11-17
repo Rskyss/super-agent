@@ -16,7 +16,13 @@
     { "path": "../../client/ui-sidebar" },
     { "path": "../../client/ui-sidebar-right" },
     { "path": "../../client/ui-settings/tsconfig.client.json" },
-    { "path": "../../client/ui-slots" }
+    { "path": "../../client/ui-slots" },
+    { "path": "../../client/store" },
+    { "path": "../../client/ui-chat/tsconfig.client.json" },
+    { "path": "../../client/ui-jobs" },
+    { "path": "../../client/ui-session" },
+    { "path": "../../preset/agent-preset-registry" },
+    { "path": "../../session/session-projection" }
   ],
-  "include": ["src/client", "src/css-modules.d.ts", "src/confirm-state.ts", "src/progress-model.ts", "src/work-duration.ts", "src/types.ts", "src/onboarding.ts"]
+  "include": ["src/client", "src/css-modules.d.ts", "src/confirm-state.ts", "src/progress-model.ts", "src/work-duration.ts", "src/types.ts", "src/onboarding.ts", "src/revision.ts", "src/receipt-anchor.ts"]
 }

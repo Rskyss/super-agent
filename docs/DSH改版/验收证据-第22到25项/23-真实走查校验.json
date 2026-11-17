@@ -1,0 +1,29 @@
+{
+  "card": "CARD-021",
+  "checks": {
+    "new_plan_cancel": {
+      "snapshot_sha256": "415b09fd4bd537f1bee11c2323fe2ec4d138026c683abbe79dbf403654c68856",
+      "observed_byte_equal": true
+    },
+    "admin_cancel": {
+      "snapshot_sha256": "c40194be260a28a9ea66c98319101eba59b91fcd7a0f40ac5e4a349f81745a24",
+      "observed_byte_equal": true
+    },
+    "panel_cancel": {
+      "snapshot_sha256": "b97630380c9ac4c1609eb436555e8c5f2aeacfaef2930106d605406293328b1f",
+      "observed_byte_equal": true
+    },
+    "new_plan_empty": {
+      "criteria_equal": true,
+      "text_added": true
+    },
+    "admin_empty": {
+      "criteria_equal": true,
+      "text_added": true
+    },
+    "panel_empty": {
+      "criteria_equal": true,
+      "text_added": true
+    }
+  }
+}

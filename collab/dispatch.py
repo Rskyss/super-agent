@@ -12,7 +12,9 @@ import json
 import re
 import shlex
 import shutil
+import os
 import subprocess
+import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
@@ -672,11 +674,91 @@ _NO_PLUGINS_NOTE = "不要打开浏览器，不要用搜索、数据库、设计
 _PROGRESS_ON: set = set()   # 哪些卡开了进度（只在真的施工时开，测试替身不开）
 
 
+_DIFF_STEPS = ("写测试", "改测试", "开发", "返工修改")   # 轨迹“看改动”：写测试、写代码（含返工）都存（第七批 7-2，对照 05t）
+_DIFF_DIR = "改动"
+_DIFF_LIMIT = 480 * 1024           # 一步的改动最多存 480KB（页面最多读 512KB），再多截掉并写明
+_SNAP_BIG = 5 * 1024 * 1024        # 没被 git 管的大文件（>5MB）不进快照，免得每步都整份塞进 git 对象库
+_GIT_TIMEOUT = 60
+# 不算谁的改动：协作区、依赖、运行缓存、派活前写给工具的放行设置（和 collab.scope.is_cache 同一套）
+_SNAP_EXCLUDES = (":(exclude).collab", ":(exclude,glob)**/node_modules/**", ":(exclude,glob)**/__pycache__/**",
+                  ":(exclude,glob)**/.pytest_cache/**", ":(exclude,glob)**/.mypy_cache/**",
+                  ":(exclude,glob)**/.ruff_cache/**", ":(exclude,glob)**/*.pyc", ":(exclude,literal).cursor/cli.json")
+
+
+# 上面排除规则的“正面写法”，用来把已经被暂存进来的这些路径从快照里去掉
+_SNAP_DROP = (".collab", ":(glob)**/node_modules/**", ":(glob)**/__pycache__/**", ":(glob)**/.pytest_cache/**",
+              ":(glob)**/.mypy_cache/**", ":(glob)**/.ruff_cache/**", ":(glob)**/*.pyc", ":(literal).cursor/cli.json")
+
+
+def _git(root, args, env=None, text=True):
+    return subprocess.run(["git", *args], cwd=str(root), env=env, check=True, capture_output=True, text=text,
+                          timeout=_GIT_TIMEOUT)
+
+
+def _tree_snapshot(worktree):
+    """给施工副本当前文件拍个快照，返回树编号；不是 git 文件夹或出错返回 None。
+    用真正暂存区的一份拷贝当起点（已跟踪又被忽略的文件也照样算，没改的文件不重算），
+    只写这份拷贝，不碰真正的暂存区和提交（复查第 1 轮中等 11、12、17）。"""
+    try:
+        root = Path(worktree)
+        if not (root / ".git").exists():
+            return None
+        index_rel = _git(root, ["rev-parse", "--git-path", "index"]).stdout.strip()
+        real_index = Path(index_rel) if Path(index_rel).is_absolute() else root / index_rel
+        untracked = _git(root, ["ls-files", "-o", "--exclude-standard", "-z"]).stdout.split("\0")
+        big = []
+        for rel in untracked:
+            try:
+                if rel and (root / rel).is_file() and (root / rel).stat().st_size > _SNAP_BIG:
+                    big.append(f":(exclude,literal){rel}")
+            except OSError:
+                continue
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_index = Path(tmp) / "index"
+            if real_index.is_file():
+                # 用 copy2 连时间一起拷：git 靠“暂存区文件的时间”判断哪些文件可能在同一秒里被改过（刚提交就改成同样长度），
+                # 只有这部分才重新读内容；拷成“现在”会让这个判断失效（漏记），拨成 24 小时前又会让近期文件每次都重读（大仓库慢约 18 倍，复查第 4 轮）
+                shutil.copy2(real_index, tmp_index)
+            env = dict(os.environ, GIT_INDEX_FILE=str(tmp_index))
+            _git(root, ["add", "-A", "--", ".", *_SNAP_EXCLUDES, *big], env=env)
+            # 工具自己 git add 过的缓存、协作区、依赖已经在拷贝的暂存区里，排除规则只管这次 add，要另外从拷贝里去掉
+            _git(root, ["rm", "-r", "--cached", "-f", "--ignore-unmatch", "-q", "--", *_SNAP_DROP], env=env)
+            tree = _git(root, ["write-tree"], env=env).stdout.strip()
+        return tree or None
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return None
+
+
+def _save_step_diff(cdir: Path, worktree, before, seq) -> str:
+    """这一步前后两个快照比一比，有改动就存进卡片资料 改动/<序号>.diff，返回相对位置；没改动或比不了返回空。"""
+    if not before:
+        return ""
+    after = _tree_snapshot(worktree)
+    if not after or after == before:
+        return ""
+    try:
+        out = _git(worktree, ["-c", "core.quotepath=off", "diff", "--no-color", "--no-ext-diff", before, after], text=False)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return ""
+    data = out.stdout
+    if not data.strip():
+        return ""
+    if len(data) > _DIFF_LIMIT:
+        data = data[:_DIFF_LIMIT] + "\n…（改动太长，后面没存）\n".encode("utf-8")
+    rel = f"{_DIFF_DIR}/{seq}.diff"
+    target = Path(cdir) / rel
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(data)
+    return rel
+
+
 def _dispatch(ask_fn, cdir: Path, role: str, adapter: str, step: str, prompt: str,
               worktree, models, round_no: int, test_command=None):
     """派一次活：开始时记“派活”（含原文、预留实时输出），干完记“回复”（含全文、用时）。"""
     models = dict(models or {}, no_plugins=True)  # 派活不带用户配的插件（Codex 能关；agy 关不了，靠交代，㉘ ㊶）
     prompt = prompt + _NO_PLUGINS_NOTE + (_CURSOR_SANDBOX_NOTE if adapter == "cursor" else "") + attachment_prompt(cdir)
+    # 先拍快照，再给 Cursor 写临时放行设置（不然“看改动”里会多出一份删掉设置，复查中等 11）
+    before_tree = _tree_snapshot(worktree) if step in _DIFF_STEPS else None
     restore = cursor_permissions(worktree, test_command) if adapter == "cursor" else None
     sent = record(cdir, "派活", src="调度员", dst=role, tool=adapter, step=step, round=round_no,
                   summary=_STEP_SUMMARY[step], text=prompt, live=True)
@@ -706,9 +788,10 @@ def _dispatch(ask_fn, cdir: Path, role: str, adapter: str, step: str, prompt: st
         if restore:
             restore()
     text = reply_text(result)
+    diff_rel = _save_step_diff(cdir, worktree, before_tree, sent["seq"]) if before_tree else ""
     record(cdir, "回复", src=role, dst="调度员", tool=adapter, step=step, round=round_no,
            ok=bool(result.ok), seconds=round(time.time() - started), reply_to=sent["seq"],
-           summary=reply_summary(step, text, result.ok), text=text)
+           summary=reply_summary(step, text, result.ok), text=text, **({"diff": diff_rel} if diff_rel else {}))
     return result
 
 
@@ -1329,6 +1412,27 @@ def run_card(card: Card, collab_dir, worktree, test_command, dev_adapter, test_a
             _agents.allow_tools()
 
 
+def _apply_queued(collab: Path, cdir: Path, card) -> bool:
+    """第七批 7-1：取走跑着时确认的修改，走现成的“接着改”记成追加要求；有一条生效就返回 True（要再走一轮）。
+    生效的这一轮返工次数从 0 算（和原来“接着改”一样，复查中等 6）；生效不了的照实记下原因，不卡住这张卡。"""
+    from collab.tasks import apply_queued_items, card_apply_lock, take_queued_revisions
+    project = collab.parent
+    with card_apply_lock(cdir):   # 和任务页、巡视的“停下后自动生效”共用一把锁（复查第 2 轮严重 1）
+        items = take_queued_revisions(project, card.card_id)
+        if not items:
+            return False
+        applied, failed = apply_queued_items(project, card.card_id, items)
+    for words, why in failed:
+        record(cdir, "改要求没生效", src="程序", dst="你",
+               summary=f"你确认的修改没能生效：{why}", say=f"你确认的修改没能生效：{why}。可以再说一次。", text=words)
+    for words in applied:
+        record(cdir, "改要求生效", src="程序", dst="你", summary=f"你的修改已生效：{words[:60]}",
+               say=f"你的修改已生效：{words[:60]}。按新要求再走一轮：补测试 → 写代码 → 跑测试 → 复查。")
+    if applied:
+        card.rework = 0
+    return bool(applied)
+
+
 def _run_card(card, collab_dir, worktree, test_command, dev_adapter, test_adapter, ask_fn, judge_fn, models,
               allowed, changed_fn, page_command, reviewer_adapter, revert_fn, require_tests, role_models,
               notes_job, full=None, draft=False):
@@ -1462,6 +1566,15 @@ def _run_card(card, collab_dir, worktree, test_command, dev_adapter, test_adapte
                     if not has_fail_after:
                         # 复查没给结论时：跳过开发员，只重新复查
                         dev_already_done = True
+
+        # 第一次写代码之前收到你跑着时确认的修改：按“接着改”从补测试重新走。
+        # 测试没过返工、复查退回时不在这里取（会丢掉报错和复查意见，复查中等 5）——等复查过了交验收前再取
+        if rnd == 1 and not dev_already_done and review_round == 0 and "上一次复查不通过" not in dev_prompt \
+                and _apply_queued(collab, cdir, card):
+            # 回去写代码之前收到你跑着时确认的修改：按“接着改”从补测试重新走
+            return _run_card(card, collab_dir, worktree, test_command, dev_adapter, test_adapter, ask_fn, judge_fn,
+                             models, allowed, changed_fn, page_command, reviewer_adapter, revert_fn, require_tests,
+                             role_models, None, full, draft)
 
         if not dev_already_done:
             # 复查打回重改：返工次数不增加，步骤记为“开发”
@@ -1685,6 +1798,12 @@ def _run_card(card, collab_dir, worktree, test_command, dev_adapter, test_adapte
             if stop_reason:
                 _escalate(collab, cdir, card, stop_reason)
                 return card, verdict
+
+        if verdict.result == PASS and _apply_queued(collab, cdir, card):
+            # 复查都过了、要交你验收前收到修改：用户 11-16 定按新要求再走一轮
+            return _run_card(card, collab_dir, worktree, test_command, dev_adapter, test_adapter, ask_fn, judge_fn,
+                             models, allowed, changed_fn, page_command, reviewer_adapter, revert_fn, require_tests,
+                             role_models, None, full, draft)
 
         if verdict.result == PASS:
             card.transition("待验收")

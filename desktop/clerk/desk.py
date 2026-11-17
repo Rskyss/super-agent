@@ -797,7 +797,7 @@ class ClerkDesk:
                     elif name == "propose_profile":
                         result = clerk_tasks.propose_profile(conv, args)
                     elif name == "propose_revise":
-                        result = clerk_tasks.propose_revise(conv, args)
+                        result = clerk_tasks.propose_revise(_ThisTurn(conv, turn), args, client=client)
                     elif name == "propose_install":
                         result = clerk_tasks.propose_install(_ThisTurn(conv, turn), args)
                     elif name == "propose_connect_cli":

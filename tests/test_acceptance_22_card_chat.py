@@ -205,14 +205,14 @@ class AfterTheRound(ChatCase):
         _, cid = self.noted()
         self.watcher.tick(self.project)
         self.watcher.tick(self.project)
-        boxes = self.boxes(self.events(cid), "revise")
+        boxes = wait_until(lambda: self.boxes(self.events(cid), "revise"), 5, "等不到拆分后的改要求确认框")
         self.assertEqual(len(boxes), 1)
         self.assertEqual(boxes[0]["text"], "按钮再大一点")
 
     def test_confirm_starts_the_new_round(self):
         _, cid = self.noted()
         self.watcher.tick(self.project)
-        box = self.boxes(self.events(cid), "revise")[0]
+        box = wait_until(lambda: self.boxes(self.events(cid), "revise"), 5, "等不到拆分后的改要求确认框")[0]
         self.assertEqual(self.decide(cid, box["id"], "confirm")[0], 200)
         self.assertEqual(self.pending(), [])
         self.assertIn("按钮再大一点", (self.collab / "cards" / "CARD-001" / "需求卡.md").read_text(encoding="utf-8"))
@@ -222,7 +222,7 @@ class AfterTheRound(ChatCase):
     def test_cancel_clears_it(self):
         _, cid = self.noted()
         self.watcher.tick(self.project)
-        box = self.boxes(self.events(cid), "revise")[0]
+        box = wait_until(lambda: self.boxes(self.events(cid), "revise"), 5, "等不到拆分后的改要求确认框")[0]
         self.decide(cid, box["id"], "cancel")
         self.assertEqual(self.pending(), [])
         self.assertEqual(self.state(), "待验收")

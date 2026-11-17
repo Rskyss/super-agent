@@ -1,5 +1,22 @@
 /* 正式任务总览（09）与空态引导（17），严格使用 DSH 语义主题令牌。 */
+.frame {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.dragStrip {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 24px;
+}
+
 .root {
+  flex: 1 1 auto;
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -28,9 +45,9 @@
 
 .title {
   margin: 0;
-  font-size: 20px;
+  font-size: 22px;
   font-weight: 600;
-  line-height: 28px;
+  line-height: 30px;
   color: var(--dsw-alias-label-primary);
 }
 
@@ -69,9 +86,9 @@
   justify-content: space-between;
   gap: 10px;
   padding: 14px 16px;
-  border-radius: var(--dsw-radius-md);
+  border-radius: var(--dsw-radius-lg, var(--dsw-radius-md));
   border: 1px solid var(--dsw-alias-border-l1);
-  background: var(--dsw-alias-bg-elevated, var(--dsw-specific-card, transparent));
+  background: var(--dsw-alias-card-fill);
 }
 
 .statLabel {
@@ -102,10 +119,14 @@
   justify-content: space-between;
   flex-wrap: wrap;
   gap: 12px;
-  border-bottom: 1px solid var(--dsw-alias-border-l1);
-  padding-bottom: 8px;
 }
 
+.segmentedTabs {
+  flex: none;
+  min-width: 240px;
+}
+
+/* 旧自制分类标签样式保留注释，现由 DSH SegmentedTabs 承担：
 .tabs {
   display: flex;
   align-items: center;
@@ -146,10 +167,16 @@
   border-radius: 1px;
   background: var(--dsw-alias-state-business-primary);
 }
+*/
 
 .searchWrap {
-  width: 240px;
+  width: 280px;
   max-width: 100%;
+}
+
+.searchInput {
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .tableWrap {
@@ -186,12 +213,12 @@
 
 .tableRow:hover,
 .tableRow:focus-visible {
-  background: var(--dsw-alias-fill-hover);
+  background: var(--dsw-alias-interactive-bg-hover);
   outline: none;
 }
 
 .colId {
-  width: 104px;
+  width: 64px;
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
   color: var(--dsw-alias-label-secondary);
@@ -204,26 +231,32 @@
 }
 
 .colFlow {
-  width: 124px;
+  width: 132px;
   white-space: nowrap;
   color: var(--dsw-alias-label-secondary);
 }
 
 .colStatus {
-  width: 136px;
+  min-width: 148px;
   white-space: nowrap;
   font-weight: 500;
 }
 
+.statusCell {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .colRounds {
-  width: 92px;
+  width: 96px;
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
   color: var(--dsw-alias-label-secondary);
 }
 
 .colElapsed {
-  width: 104px;
+  width: 100px;
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
   color: var(--dsw-alias-label-secondary);
@@ -239,6 +272,10 @@
 
 .statusOngoing {
   color: var(--dsw-alias-state-business-primary);
+}
+
+.statusPaused {
+  color: var(--dsw-alias-label-tertiary, var(--dsw-alias-label-secondary));
 }
 
 .statusError {
@@ -261,10 +298,16 @@
   padding: 40px 24px;
 }
 
+.emptyIcon {
+  flex: none;
+  color: var(--dsw-alias-label-tertiary, var(--dsw-alias-label-secondary));
+}
+
 .emptyTitle {
   margin: 0;
-  font-size: 16px;
+  font-size: 18px;
   font-weight: 600;
+  line-height: 26px;
   color: var(--dsw-alias-label-primary);
 }
 
@@ -272,7 +315,7 @@
   margin: 0;
   max-width: 420px;
   font-size: 13px;
-  line-height: 20px;
+  line-height: 22px;
   color: var(--dsw-alias-label-secondary);
 }
 

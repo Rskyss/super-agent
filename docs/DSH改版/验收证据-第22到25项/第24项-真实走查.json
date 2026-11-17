@@ -1,0 +1,28 @@
+{
+  "item": 24,
+  "real_empty_chat_opened": true,
+  "sidebar_logo_size": [
+    24,
+    24
+  ],
+  "hero_logo_size": [
+    34,
+    34
+  ],
+  "same_actual_asset": "plugins/@superagent/core/assets/aisoup-bowl-366c8cfcb958.png",
+  "empty_chat_task_strip_count": 0,
+  "headline_after": "探索未至之境",
+  "preview_after": "预览版",
+  "headline_ownership": "查无覆盖现有conversation中文键的公开接口，按施工单交Claude补丁；本轮未改DSH/字典/补丁",
+  "own_empty_chat_archived": true,
+  "new_card_created": false,
+  "plugin_tests": 229,
+  "plugin_files": 51,
+  "build_gates": 10,
+  "build_gate_seconds": 25.05,
+  "build_sync_wall_seconds": 27.9,
+  "independent_review_rounds": 1,
+  "review_result": "通过（本单Codex/agy负责范围）",
+  "own_services_stopped": true,
+  "archive_verified_after_restart": true
+}

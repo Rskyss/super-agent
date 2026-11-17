@@ -1,0 +1,12 @@
+{
+  "hover": {
+    "branchDisplay": "none",
+    "effectiveOpacity": 1,
+    "pass": true,
+    "visibleUsage": 0
+  },
+  "idle": {
+    "idleOpacity": "0"
+  },
+  "pass": true
+}

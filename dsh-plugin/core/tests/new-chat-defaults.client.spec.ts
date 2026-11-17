@@ -38,5 +38,5 @@ it('新建失败提示用大白话，不把HTTP路径和传输错误原文直接
  const text=format(new Error('client API: superagent/status failed: transport failure for /api/superagent/status: HTTP 503'))
  expect(text).toMatch(/没建上新对话/);expect(text).toMatch(/连不上|连接/)
  expect(text).not.toMatch(/HTTP|client|transport|superagent\/status|\/api\//)
- expect(format(new Error('请先完成超级助手首次模型配置'))).toContain('请先完成超级助手首次模型配置')
+ expect(format(new Error('请先完成超级助手首次模型配置'))).toContain('请先完成超级玩家首次模型配置')
 })

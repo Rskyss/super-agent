@@ -126,8 +126,31 @@ export function parseFlowEvents(flowText: string | null | undefined): ParsedFlow
   return events
 }
 
+const NON_RUNNING_PHASE_CODES: ReadonlySet<string> = new Set([
+  'plan_waiting',
+  'plan_failed',
+  'plan_ready',
+  'start_failed',
+  'interrupted',
+  'blocked',
+  'merge_failed',
+  'copy_missing',
+  'review',
+  'awaiting_acceptance',
+  'unknown',
+])
+
+const NON_RUNNING_PHASE_TONES: ReadonlySet<string> = new Set([
+  'muted',
+  'bad',
+  'wait',
+  'ok',
+  'error',
+  'warning',
+])
+
 /**
- * 判断任务卡当前是否仍在主动干活（已放弃、已结束或等你处理时均不把当前墙钟继续算进施工时间）。
+ * 判断任务卡当前是否仍在主动干活（已放弃、已结束、等你处理、等待排队或失败中断时均不算施工中）。
  */
 export function isCardRunningNow(
   state: string,
@@ -137,7 +160,10 @@ export function isCardRunningNow(
 ): boolean {
   const isDiscarded = state === '已放弃' || phaseCode === 'dropped'
   const isFinished = !needsYou && (phaseTone === 'done' || FINISHED_PHASE_CODES.has(phaseCode) || FINISHED_CARD_STATES.has(state))
-  return !isDiscarded && !isFinished && !needsYou
+  if (isDiscarded || isFinished || needsYou) return false
+  if (NON_RUNNING_PHASE_CODES.has(phaseCode)) return false
+  if (typeof phaseTone === 'string' && NON_RUNNING_PHASE_TONES.has(phaseTone)) return false
+  return true
 }
 
 /**

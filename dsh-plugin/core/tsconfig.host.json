@@ -1,7 +1,7 @@
 {
   "extends": "../../../tsconfig.base.json",
   "compilerOptions": { "rootDir": "src", "outDir": "lib/types", "tsBuildInfoFile": "lib/tsconfig.host.tsbuildinfo" },
-  "files": ["src/index.ts", "src/types.ts", "src/backend.ts", "src/proposal.ts", "src/confirm-state.ts", "src/progress-model.ts", "src/work-duration.ts", "src/task-session.ts", "src/chat-tools.ts", "src/task-tools.ts", "src/trajectory.ts", "src/card-attachments.ts", "src/preview-jobs.ts", "src/keychain-store.ts", "src/credentials-provider.ts", "src/onboarding.ts", "src/onboarding-host.ts", "src/legacy-keys.ts", "src/revision.ts", "src/revision-host.ts"],
+  "files": ["src/index.ts", "src/types.ts", "src/backend.ts", "src/proposal.ts", "src/confirm-state.ts", "src/progress-model.ts", "src/work-duration.ts", "src/receipt-anchor.ts", "src/task-session.ts", "src/chat-tools.ts", "src/task-tools.ts", "src/trajectory.ts", "src/card-attachments.ts", "src/preview-jobs.ts", "src/keychain-store.ts", "src/credentials-provider.ts", "src/onboarding.ts", "src/onboarding-host.ts", "src/legacy-keys.ts", "src/revision.ts", "src/revision-host.ts", "src/workflow-info.ts", "src/settings-host.ts", "src/card-wait.ts", "src/run-summary.ts"],
   "references": [
     { "path": "../../../vendor/cordis" },
     { "path": "../../../vendor/schemastery" },

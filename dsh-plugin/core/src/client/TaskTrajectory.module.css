@@ -165,17 +165,12 @@
 .rawBtn {
   margin-left: 6px;
   padding: 1px 6px;
+  min-height: 22px;
+  height: auto;
   font-size: 12px;
+  line-height: 1.4;
   white-space: nowrap;
-  border-radius: var(--dsw-radius-sm, 6px);
-  border: 1px solid var(--dsw-alias-border-l2, var(--dsw-alias-border-l1));
-  background: transparent;
-  color: var(--dsw-alias-label-primary);
-  cursor: pointer;
-}
-
-.rawBtn:hover {
-  background: var(--dsw-alias-fill-hover);
+  vertical-align: baseline;
 }
 
 .rawRow td {

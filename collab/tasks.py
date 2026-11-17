@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import uuid
+from datetime import datetime
 from pathlib import Path
 
 from collab.card_attachments import (
@@ -257,6 +258,123 @@ def validate_card_attachments(project, card_id: str, attachments=None) -> list:
     except AttachmentError as exc:
         raise TaskError(str(exc)) from exc
     return validated
+
+
+QUEUED_REVISIONS = "待生效修改.jsonl"   # 第七批 7-1：跑着时确认的修改，等调度员在停顿点取走
+_QUEUE_LOCK = ".待生效修改.lock"
+
+
+class _QueueLock:
+    """排队和取走用同一把文件锁：取走时刚好有人追加，不会被一起删掉（复查第 1 轮严重 3）。"""
+
+    def __init__(self, cdir: Path):
+        self.path = Path(cdir) / _QUEUE_LOCK
+        self.handle = None
+
+    def __enter__(self):
+        self.handle = open(self.path, "a")
+        fcntl.flock(self.handle, fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, *exc):
+        try:
+            fcntl.flock(self.handle, fcntl.LOCK_UN)
+        finally:
+            self.handle.close()
+
+
+class card_apply_lock(_QueueLock):
+    """同一张卡“取走排队的修改并生效、再开工”整段只许一个在做：任务页轮询、巡视、调度员停顿点都可能同时来，
+    各拿一份旧内容改完互相覆盖（复查第 2 轮严重 1）。和排队锁是两把，先拿这把再拿排队锁，不会死锁。"""
+
+    def __init__(self, cdir: Path):
+        self.path = Path(cdir) / ".改要求生效.lock"
+        self.handle = None
+
+    def __enter__(self):
+        if not self.path.parent.is_dir():   # 卡片文件夹不存在：交给后面的检查去报“找不到这张卡片”，不在这里先炸
+            return self
+        return super().__enter__()
+
+    def __exit__(self, *exc):
+        if self.handle is None:
+            return None
+        return super().__exit__(*exc)
+
+
+def queue_revision(project, card_id: str, text: str, criteria_base=None, criteria_changes=None) -> None:
+    """卡正在跑时用户点了“确认改”：先排队，这一轮跑到停顿点再生效（排队时先不动任务卡片）。"""
+    cdir, _state_path, _card = _load_card_for_revise(Path(project), card_id)
+    words = (text or "").strip()
+    if not words:
+        raise TaskError("请写上要改什么")
+    item = {"text": words, "time": datetime.now().isoformat(timespec="seconds")}
+    if isinstance(criteria_changes, list) and criteria_changes:
+        item["criteria_changes"] = criteria_changes   # 生效时按当时最新的验收标准逐条套用，不存旧基线
+    with _QueueLock(cdir):
+        with (cdir / QUEUED_REVISIONS).open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(item, ensure_ascii=False) + "\n")
+    flow_record(cdir, "改要求排队", src="你", dst="调度员", summary=f"你确认了修改，这一轮跑完生效：{words[:60]}",
+                text=words)
+
+
+def _read_queue(path: Path) -> list:
+    if not path.is_file():
+        return []
+    out = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        try:
+            item = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(item, dict):
+            out.append(item)
+    return out
+
+
+def queued_revisions(project, card_id: str) -> list:
+    """排着队、还没生效的修改（读不出的行跳过）。"""
+    return _read_queue(Path(project) / ".collab" / "cards" / card_id / QUEUED_REVISIONS)
+
+
+def take_queued_revisions(project, card_id: str) -> list:
+    """取走排队的修改（取走即清空，免得重复生效）；和排队共用一把锁。"""
+    cdir = Path(project) / ".collab" / "cards" / card_id
+    if not (cdir / QUEUED_REVISIONS).exists():
+        return []
+    with _QueueLock(cdir):
+        items = _read_queue(cdir / QUEUED_REVISIONS)
+        path = cdir / QUEUED_REVISIONS
+        if path.exists():
+            path.unlink()
+    return items
+
+
+def current_criteria(project, card_id: str) -> list:
+    """任务卡片里现在的验收标准（逐条）。"""
+    req = Path(project) / ".collab" / "cards" / card_id / "需求卡.md"
+    body = req.read_text(encoding="utf-8") if req.is_file() else ""
+    try:
+        return _split_criteria_body(_locate_criteria_section(body)[2])
+    except TaskError:
+        return []
+
+
+def apply_queued_items(project, card_id: str, items: list) -> tuple:
+    """按顺序把排队的修改记成追加要求；每条都按当时最新的验收标准套用（连着两条改不同条目都能生效，复查严重 2）。
+    返回 (生效的话, 没生效的 (话, 原因))。"""
+    applied, failed = [], []
+    for item in items:
+        words = str(item.get("text") or "").strip()
+        changes = item.get("criteria_changes") if isinstance(item.get("criteria_changes"), list) else None
+        try:
+            revise_card(project, card_id, words, criteria_base=current_criteria(project, card_id) if changes else None,
+                        criteria_changes=changes)
+        except (TaskError, OSError, ValueError) as exc:
+            failed.append((words, str(exc)))
+            continue
+        applied.append(words)
+    return applied, failed
 
 
 def revise_card(project, card_id: str, text: str, files=None,

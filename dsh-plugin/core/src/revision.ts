@@ -155,7 +155,7 @@ export function buildCriteriaSummary(
   return lines.join('\n')
 }
 
-/** 只把当前完整验收标准与用户原话交给模型拆分，不附带无关上下文。 */
+/** 改一处同步另一处：与 desktop/clerk/revision.py 的 build_revision_prompt 保持逐字一致。 */
 export function buildRevisionPrompt(
   criteria: readonly string[],
   userText: string,

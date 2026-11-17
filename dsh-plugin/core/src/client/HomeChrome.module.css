@@ -1,0 +1,108 @@
+/* 超级玩家首页与对话局部裁剪样式：保持同树结构，仅隐藏目标元素、保留后台统计服务 */
+.frame {
+  display: contents;
+}
+
+.hero :global([class*='heroWorkspaceRow']) {
+  display: none;
+}
+
+.frame :global([data-composer-dock]) {
+  display: none;
+}
+
+/* 3-3 消息底部收敛：作用域上移至同时包含消息与 .frame 的 [data-conversation-content]（旧 .frame 前缀及 [data-actions-reveal] 限定可直接还原） */
+:global([data-conversation-content]):has(.frame) :global([data-chat-flow-kind='turn-tail']) :global([data-turn-tail]) :global([data-clock]) button:has(svg[data-icon*='branch-outline-regular']),
+:global([data-conversation-content]):has(.frame) :global(:is([data-chat-flow-kind='user'], [data-chat-flow-kind='steering'])) :global([data-clock]) button:has(svg[data-icon*='branch-outline-regular']) {
+  display: none;
+}
+
+:global([data-conversation-content]):has(.frame) :global([data-chat-flow-kind='turn-tail']) :global([data-turn-tail]) :global([data-clock]) :has(> button svg[data-icon*='database-outline-regular']),
+:global([data-conversation-content]):has(.frame) :global([data-chat-flow-kind='turn-tail']) :global([data-turn-tail]) :global([data-clock]) button:has(svg[data-icon*='database-outline-regular']) {
+  display: none;
+}
+
+:global([data-conversation-content]):has(.frame) :global(:is([data-chat-flow-kind='user'], [data-chat-flow-kind='steering'])) :global([data-clock='start']) > span:not(:has(button, svg)),
+:global([data-conversation-content]):has(.frame) :global([data-chat-flow-kind='turn-tail']) :global([data-turn-tail]) :global([data-clock='end']) span:not(:has(button, svg)):not(:has(*)) {
+  display: none;
+}
+
+/* 浏览器不支持嵌套 :has()，且复制按钮必须保留键盘可达，所以不用以下空 footer 优化：
+:global([data-conversation-content]):has(.frame) :global(:is([data-chat-flow-kind='user'], [data-chat-flow-kind='steering'])) :global([data-clock='start']):not(:has(button:not(:has(svg[data-icon*='branch-outline-regular'])))),
+:global([data-conversation-content]):has(.frame) :global([data-chat-flow-kind='turn-tail']) :global([data-turn-tail]) :global([data-clock='end']):not(:has(button:not(:has(svg[data-icon*='branch-outline-regular'], svg[data-icon*='database-outline-regular'])), a, [role='button'], [role='alert'])) {
+  display: none;
+}
+
+:global([data-conversation-content]):has(.frame) :global([data-chat-flow-kind='turn-tail']) :global([data-turn-tail]):not(:has(button:not(:has(svg[data-icon*='branch-outline-regular'], svg[data-icon*='database-outline-regular'])), a, [role='button'], [role='alert'], [data-turn-error])) {
+  min-height: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+}
+*/
+
+:global([data-conversation-content]):has(.frame) :global([data-chat-flow-kind='turn-tail']) :global([data-turn-tail]) :global([data-clock]) button:has(svg[data-icon*='copy-outline'], svg[data-icon*='check-outline']),
+:global([data-conversation-content]):has(.frame) :global(:is([data-chat-flow-kind='user'], [data-chat-flow-kind='steering'])) :global([data-clock]) button:has(svg[data-icon*='copy-outline'], svg[data-icon*='check-outline']) {
+  opacity: 0;
+  transition: opacity 80ms ease;
+}
+
+:global([data-conversation-content]):has(.frame) :global([data-chat-flow-kind='turn-tail']):hover :global([data-turn-tail]) :global([data-clock]) button:has(svg[data-icon*='copy-outline'], svg[data-icon*='check-outline']),
+:global([data-conversation-content]):has(.frame) :global([data-chat-flow-kind='turn-tail']):focus-within :global([data-turn-tail]) :global([data-clock]) button:has(svg[data-icon*='copy-outline'], svg[data-icon*='check-outline']),
+:global([data-conversation-content]):has(.frame) :global([data-chat-flow-kind='assistant-step']:hover) + :global([data-chat-flow-kind='turn-tail']) :global([data-turn-tail]) :global([data-clock]) button:has(svg[data-icon*='copy-outline'], svg[data-icon*='check-outline']),
+:global([data-conversation-content]):has(.frame) :global(:is([data-chat-flow-kind='user'], [data-chat-flow-kind='steering'])):hover :global([data-clock]) button:has(svg[data-icon*='copy-outline'], svg[data-icon*='check-outline']),
+:global([data-conversation-content]):has(.frame) :global(:is([data-chat-flow-kind='user'], [data-chat-flow-kind='steering'])):focus-within :global([data-clock]) button:has(svg[data-icon*='copy-outline'], svg[data-icon*='check-outline']) {
+  opacity: 1;
+}
+
+.composerWrap {
+  position: relative;
+}
+
+.attachmentMenu {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 6px);
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+}
+
+.attachmentOption {
+  justify-content: flex-start;
+  width: 100%;
+}
+
+.hiddenFileInput {
+  display: none;
+}
+/* 首页视觉草图上没有右侧轮次导航条，仅通过纯 CSS 隐藏其入口；后台对话历史、分页及跳转数据仍保留，移除此规则即可恢复 */
+:global([data-conversation-content]):has(.frame)
+  :global([data-slot='conversation.view'])
+  > div
+  > div:has(> nav) {
+  display: none;
+}
+
+/* 悬停或聚焦 assistant-step 时，同步显示紧邻 turn-tail 内默认隐藏的 [data-clock='end'] 父容器及对应复制按钮（此前仅设按钮 opacity 1 会被父容器 opacity 0 遮蔽），移除此规则可恢复 */
+:global([data-conversation-content]):has(.frame) :global([data-chat-flow-kind='assistant-step']:hover) + :global([data-chat-flow-kind='turn-tail']) :global([data-turn-tail]) :global([data-clock='end']),
+:global([data-conversation-content]):has(.frame) :global([data-chat-flow-kind='assistant-step']:focus-within) + :global([data-chat-flow-kind='turn-tail']) :global([data-turn-tail]) :global([data-clock='end']),
+:global([data-conversation-content]):has(.frame) :global([data-chat-flow-kind='assistant-step']:hover) + :global([data-chat-flow-kind='turn-tail']) :global([data-turn-tail]) :global([data-clock='end']) button:has(svg[data-icon*='copy-outline'], svg[data-icon*='check-outline']),
+:global([data-conversation-content]):has(.frame) :global([data-chat-flow-kind='assistant-step']:focus-within) + :global([data-chat-flow-kind='turn-tail']) :global([data-turn-tail]) :global([data-clock='end']) button:has(svg[data-icon*='copy-outline'], svg[data-icon*='check-outline']) {
+  opacity: 1;
+}
+
+/* 第七批 7-4（对照 01 / 05 / 14）：输入框左下的“+”旁边写上“附件 / 截图”，一眼看出能贴图。
+   只改样子：按钮仍是 DSH 原来那个（同一个菜单、同一个读屏名字）。 */
+.composerWrap button[aria-haspopup='listbox'] {
+  grid-auto-flow: column;
+  gap: 4px;
+  width: auto;
+  padding: 0 10px 0 8px;
+  font-size: 12px;
+  line-height: 28px;
+  white-space: nowrap;
+}
+
+.composerWrap button[aria-haspopup='listbox']::after {
+  content: '附件 / 截图';
+}

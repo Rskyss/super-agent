@@ -37,7 +37,7 @@ export function ModelSyncBanner(
 
   return (
     <div className={css.banner} role="alert">
-      <span>当前对话未能同步到最新超级助手模型：{errorText}</span>
+      <span>当前对话未能同步到最新超级玩家模型：{errorText}</span>
       <div className={css.actions}>
         <Button size="sm" variant="outline" disabled={retrying} onClick={() => { void handleRetry() }}>
           {retrying ? '同步中…' : '重试同步'}

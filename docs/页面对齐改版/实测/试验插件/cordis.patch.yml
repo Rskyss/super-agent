@@ -1,0 +1,14 @@
+- insert:
+    - id: sp-shell-probe
+      name: '@local/sp-shell-probe'
+# 实测：关掉 DSH 自己的左栏、右栏，以及图上没有的输入框选择器、点赞点踩
+- id: ui-sidebar
+  disabled: true
+- id: ui-model-selection
+  disabled: true
+- id: ui-permission
+  disabled: true
+- id: ui-message-feedback
+  disabled: true
+- id: session-stats
+  disabled: true

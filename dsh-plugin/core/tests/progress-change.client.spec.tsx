@@ -25,6 +25,7 @@ it('右栏用施工时长和总览相同格式，绝不把过夜等待当干活'
  expect(document.body.textContent).not.toContain('530')
 })
 const view = (code: string, active = 'test') => JSON.stringify({
+  isRunningNow: code === 'running' || code === 'ready',
   card: { id: 'CARD-011', title: '显示版本', state: code === 'plan_ready' ? '待对齐' : '开发中', phase: { code, label: code === 'plan_ready' ? '等你批准方案' : '进行中', actions: code === 'plan_ready' ? ['approve', 'revise', 'discard'] : ['stop'] } },
   stations: [
     { key: 'you', role: '提需求', who: '你', state: 'done' },
@@ -100,3 +101,41 @@ it('提交中两个按钮都锁定；提交失败保留确认条，可再次确�
 })
 
 it('未接调度员、尚未写方案时，不把你批方案显示成方案已写好',async()=>{const ProgressPanel=progress();render(<ProgressPanel card="CARD-012" view={vi.fn(async()=>ok(JSON.stringify({card:{id:'CARD-012',title:'等接入',state:'待对齐',phase:{code:'plan_waiting',label:'等待写方案',actions:['replan','discard']}},stations:[],elapsed:0})))} />);await screen.findByText('你批方案',{exact:true});expect(screen.queryAllByText(/方案已写好/)).toHaveLength(0)})
+
+// 第七批 7-1：任务跑着时点“确认改”，后台排队并回“已确认，这一轮跑完生效”——确认条换成这句话，不报错。
+it('跑着时确认改：确认条换成“已确认，这一轮跑完生效”', async () => {
+  const ChangeDock = changeDock()
+  const decideChange = vi.fn(async () => ok({ ok: true, message: '已确认，这一轮跑完生效' }))
+  let first = true
+  const pendingChange = vi.fn(async () => {
+    const value = first ? { id: 'c1', card: 'CARD-011', summary: '第3条：旧 → 新', text: '新要求', createdAt: 0 } : null
+    first = false
+    return ok(value)
+  })
+  render(<ChangeDock card="CARD-011" pendingChange={pendingChange} decideChange={decideChange} />)
+  fireEvent.click(await screen.findByRole('button', { name: '确认改' }))
+  await act(async () => { await Promise.resolve() })
+  expect(screen.getByText('已确认，这一轮跑完生效')).toBeTruthy()
+  expect(screen.queryByRole('button', { name: '确认改' })).toBeNull()
+})
+
+// 复查第 1 轮严重 1：确认后那句提示不能一直占住，卡进了待验收时验收卡要能出来。
+it('跑着时确认改之后，提示不占位、8 秒后收起', async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true })
+  const ChangeDock = changeDock()
+  const statuses: string[] = []
+  let first = true
+  const pendingChange = vi.fn(async () => {
+    const value = first ? { id: 'c1', card: 'CARD-011', summary: '第3条：旧 → 新', text: '新要求', createdAt: 0 } : null
+    first = false
+    return ok(value)
+  })
+  render(<ChangeDock card="CARD-011" pendingChange={pendingChange} onStatusChange={(s: string) => statuses.push(s)}
+    decideChange={vi.fn(async () => ok({ ok: true, message: '已确认，这一轮跑完生效' }))} />)
+  fireEvent.click(await screen.findByRole('button', { name: '确认改' }))
+  await act(async () => { await Promise.resolve() })
+  expect(screen.getByText('已确认，这一轮跑完生效')).toBeTruthy()
+  expect(statuses.at(-1)).toBe('none')
+  await act(async () => { await vi.advanceTimersByTimeAsync(8100) })
+  expect(screen.queryByText('已确认，这一轮跑完生效')).toBeNull()
+})

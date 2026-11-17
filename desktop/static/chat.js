@@ -126,6 +126,9 @@ var ChatCore = (function () {
           title: ev.title || "", do: ev.do || "", not_do: ev.not_do || "", done_when: ev.done_when || "",
           role: ev.role || "", tool: ev.tool || "", before: ev.before != null ? ev.before : "",
           profile: ev.profile || "", text: ev.text || "",
+          summary: ev.summary || "",
+          criteria_base: Array.isArray(ev.criteria_base) ? ev.criteria_base : null,
+          criteria_changes: Array.isArray(ev.criteria_changes) ? ev.criteria_changes : null,
           state: ev.state || "open", card: ev.card || "",
         };
         if (isBlockKind(pkind)) {
@@ -1266,9 +1269,34 @@ if (typeof document !== "undefined") (function () {
             "<button class=\"btn\" data-prop=\"cancel\">先不做</button></div>";
           if (isRevise) {
             el.querySelector("h3").textContent = "继续改？";
-            var note = document.createElement("p");
-            note.textContent = b.text || "";
-            el.querySelector(".rows").appendChild(note);
+            var rowsEl = el.querySelector(".rows");
+            var changes = Array.isArray(b.criteria_changes) ? b.criteria_changes : [];
+            if (changes.length > 0 && b.summary) {
+              var critRow = document.createElement("div");
+              var critLbl = document.createElement("span");
+              critLbl.textContent = "怎么算做完（改动）";
+              var critVal = document.createElement("p");
+              critVal.style.whiteSpace = "pre-wrap";
+              critVal.textContent = String(b.summary);
+              critRow.appendChild(critLbl);
+              critRow.appendChild(critVal);
+              rowsEl.appendChild(critRow);
+
+              var origRow = document.createElement("div");
+              var origLbl = document.createElement("span");
+              origLbl.textContent = "你的原话";
+              var origVal = document.createElement("p");
+              origVal.style.whiteSpace = "pre-wrap";
+              origVal.textContent = b.text || "";
+              origRow.appendChild(origLbl);
+              origRow.appendChild(origVal);
+              rowsEl.appendChild(origRow);
+            } else {
+              var note = document.createElement("p");
+              note.style.whiteSpace = "pre-wrap";
+              note.textContent = b.text || "";
+              rowsEl.appendChild(note);
+            }
           } else if (isProfile) {
             el.querySelector("h3").textContent = "保存项目说明？";
             var draft = document.createElement("div");

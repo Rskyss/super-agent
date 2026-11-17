@@ -1,6 +1,6 @@
 {
   "name": "@superagent/core",
-  "description": "超级助手：任务卡、确认卡、进度，接现有超级助手后台",
+  "description": "超级玩家：任务卡、确认卡、进度",
   "version": "0.2.2-rc.3",
   "private": true,
   "type": "module",
@@ -88,6 +88,7 @@
     "@deepseek-ai/dsh-client-ui-sidebar": "workspace:*",
     "@deepseek-ai/dsh-client-ui-sidebar-right": "workspace:*",
     "@deepseek-ai/dsh-client-ui-slots": "workspace:*",
+    "@deepseek-ai/dsh-client-store": "workspace:*",
     "@deepseek-ai/dsh-client-ui-primitives": "workspace:*",
     "react": "^18.2.0",
     "@deepseek-ai/dsh-client-ui-renderer": "workspace:*",
@@ -101,6 +102,11 @@
     "@deepseek-ai/dsh-home-paths": "workspace:*",
     "@deepseek-ai/dsh-session": "workspace:*",
     "@deepseek-ai/dsh-api-workspace-controller": "workspace:*",
+    "@deepseek-ai/dsh-agent-preset-registry": "workspace:*",
+    "@deepseek-ai/dsh-client-ui-chat": "workspace:*",
+    "@deepseek-ai/dsh-client-ui-jobs": "workspace:*",
+    "@deepseek-ai/dsh-client-ui-session": "workspace:*",
+    "@deepseek-ai/dsh-session-projection": "workspace:*",
     "@deepseek-ai/dsh-jobs": "workspace:*",
     "@deepseek-ai/dsh-workspace": "workspace:*"
   },

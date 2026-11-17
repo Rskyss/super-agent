@@ -91,11 +91,16 @@ if (typeof document !== "undefined") (function () {
     return h;
   }
 
-  function postCard(action, text, cardId, files) {
+  function postCard(action, text, cardId, files, extraFields) {
     var card = cardId || view.card.id;
     var body = { project: project, card: card, action: action };
-    if (text) body = { project: project, card: card, action: action, text: text };
+    if (text) body.text = text;
     if (files && files.length) body.files = files;   // “继续改”加的文件（第三批 ㉟）
+    if (extraFields && typeof extraFields === "object") {
+      Object.keys(extraFields).forEach(function (k) {
+        if (extraFields[k] !== undefined) body[k] = extraFields[k];
+      });
+    }
     return fetch("/api/clerk/card", { method: "POST", headers: cardHeaders(),
       body: JSON.stringify(body) })
       .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, status: r.status, d: d }; }); });
@@ -124,18 +129,48 @@ if (typeof document !== "undefined") (function () {
 
   $("reviseSend").addEventListener("click", function () {
     if (!view || !view.card || actionBusy) return;
-    var words = ($("reviseText").value || "").trim();
+    var rawText = $("reviseText").value || "";
+    var rawFiles = $("reviseFiles").value || "";
+    var words = rawText.trim();
     if (!words) return;
-    var files = ($("reviseFiles").value || "").split(/[,，、\n]/).map(function (x) { return x.trim(); })
+    var cardId = view.card.id;
+    var files = rawFiles.split(/[,，、\n]/).map(function (x) { return x.trim(); })
       .filter(Boolean);
     actionBusy = true;
     renderActions();
-    postCard("revise", words, undefined, files).then(function (res) {
-      if (!res.ok && res.d && res.d.error) alert(res.d.error);
-      else { $("reviseText").value = ""; $("reviseFiles").value = ""; $("reviseBox").hidden = true; }
-      actionBusy = false;
-      poll();
+    postCard("prepare_revise", words, cardId).then(function (res) {
+      if (!res.ok || !res.d || !res.d.ok) {
+        alert((res.d && res.d.error) || "拆分修改要求失败，请重试");
+        actionBusy = false;
+        renderActions();
+        return;
+      }
+      var criteriaBase = Array.isArray(res.d.criteria_base) ? res.d.criteria_base : [];
+      var criteriaChanges = Array.isArray(res.d.criteria_changes) ? res.d.criteria_changes : [];
+      var summary = String(res.d.summary || "").trim();
+      if (criteriaChanges.length > 0 && !window.confirm(summary || "确认按以上改动继续吗？")) {
+        actionBusy = false;
+        renderActions();
+        return;
+      }
+      return postCard("revise", words, cardId, files, {
+        criteria_base: criteriaBase,
+        criteria_changes: criteriaChanges,
+      }).then(function (res2) {
+        if (!res2.ok || (res2.d && res2.d.error)) {
+          alert((res2.d && res2.d.error) || "提交修改失败，请重试");
+        } else {
+          if (($("reviseText").value || "") === rawText) $("reviseText").value = "";
+          if (($("reviseFiles").value || "") === rawFiles) $("reviseFiles").value = "";
+          if (!($("reviseText").value || "").trim() && !($("reviseFiles").value || "").trim()) {
+            $("reviseBox").hidden = true;
+          }
+        }
+        actionBusy = false;
+        poll();
+      });
     }).catch(function () {
+      alert("操作失败，请检查服务后重试");
       actionBusy = false;
       renderActions();
     });

@@ -1,0 +1,134 @@
+
+ RUN  v4.1.11 /Users/rs/Desktop/project/super-agent/dsh-plugin/core
+
+ ❯ tests/alignment-overview.client.spec.tsx (4 tests | 4 failed) 96ms
+   × 09只出全部干活已归档三个标签，未来分类入口隐藏 74ms
+   × 09进行中只计真实运行，暂停不装转圈，等待及完成数字仍取真实状态 11ms
+   × 09编号简写为22仍能按完整编号搜索、键盘打开真实卡，归档只在归档页 7ms
+   × 17空任务时在标题前显示DSH任务图标，文案和主动作保留 4ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 4 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  tests/alignment-overview.client.spec.tsx > 09只出全部干活已归档三个标签，未来分类入口隐藏
+AssertionError: expected [ '全部', '干活', '造能力', '接零件', '已归档' ] to deeply equal [ '全部', '干活', '已归档' ]
+
+- Expected
++ Received
+
+  [
+    "全部",
+    "干活",
++   "造能力",
++   "接零件",
+    "已归档",
+  ]
+
+ ❯ tests/alignment-overview.client.spec.tsx:16:100
+
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/4]⎯
+
+ FAIL  tests/alignment-overview.client.spec.tsx > 09进行中只计真实运行，暂停不装转圈，等待及完成数字仍取真实状态
+TestingLibraryElementError: Unable to find an element with the text: 1. This could be because the text is broken up by multiple elements. In this case, you can provide a function for your text matcher to make your matcher more flexible.
+
+Ignored nodes: comments, script, style
+[36m<div[39m
+  [33mclass[39m=[32m"_statCard_33e390"[39m
+[36m>[39m
+  [36m<span[39m
+    [33mclass[39m=[32m"_statLabel_33e390"[39m
+  [36m>[39m
+    [0m进行中[0m
+  [36m</span>[39m
+  [36m<span[39m
+    [33mclass[39m=[32m"_statValue_33e390 _statValueOngoing_33e390"[39m
+  [36m>[39m
+    [0m2[0m
+  [36m</span>[39m
+[36m</div>[39m
+ ❯ Object.getElementError ../../../dsh-base/node_modules/.pnpm/@testing-library+dom@10.4.2/node_modules/@testing-library/dom/dist/config.js:37:19
+ ❯ ../../../dsh-base/node_modules/.pnpm/@testing-library+dom@10.4.2/node_modules/@testing-library/dom/dist/query-helpers.js:76:38
+ ❯ ../../../dsh-base/node_modules/.pnpm/@testing-library+dom@10.4.2/node_modules/@testing-library/dom/dist/query-helpers.js:52:17
+ ❯ ../../../dsh-base/node_modules/.pnpm/@testing-library+dom@10.4.2/node_modules/@testing-library/dom/dist/query-helpers.js:95:19
+ ❯ tests/alignment-overview.client.spec.tsx:21:76
+     19| it('09进行中只计真实运行，暂停不装转圈，等待及完成数字仍取真实状态',async()=>{
+     20|  setup();await screen.findByText('正在改问候');const stats=screen.getByRole…
+     21|  expect(within(within(stats).getByText('进行中',{exact:true}).parentEleme…
+       |                                                                            ^
+     22|  expect(within(stats).getByText('1 / 1',{exact:true})).toBeTruthy()
+     23|  const paused=screen.getByText('排队的卡').closest('tr')!;expect(within(pa…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/4]⎯
+
+ FAIL  tests/alignment-overview.client.spec.tsx > 09编号简写为22仍能按完整编号搜索、键盘打开真实卡，归档只在归档页
+TestingLibraryElementError: Unable to find an element with the text: 22. This could be because the text is broken up by multiple elements. In this case, you can provide a function for your text matcher to make your matcher more flexible.
+
+Ignored nodes: comments, script, style
+[36m<tr[39m
+  [33maria-disabled[39m=[32m"false"[39m
+  [33mclass[39m=[32m"_tableRow_33e390"[39m
+  [33mtabindex[39m=[32m"0"[39m
+[36m>[39m
+  [36m<td[39m
+    [33mclass[39m=[32m"_colId_33e390"[39m
+  [36m>[39m
+    [0mCARD-022[0m
+  [36m</td>[39m
+  [36m<td[39m
+    [33mclass[39m=[32m"_colTitle_33e390"[39m
+  [36m>[39m
+    [0m正在改问候[0m
+  [36m</td>[39m
+  [36m<td[39m
+    [33mclass[39m=[32m"_colFlow_33e390"[39m
+  [36m>[39m
+    [0m开发软件[0m
+  [36m</td>[39m
+  [36m<td[39m
+    [33mclass[39m=[32m"_colStatus_33e390 _statusOngoing_33e390"[39m
+  [36m>[39m
+    [0m写代码[0m
+  [36m</td>[39m
+  [36m<td[39m
+    [33mclass[39m=[32m"_colRounds_33e390"[39m
+  [36m>[39m
+    [0m1 轮[0m
+  [36m</td>[39m
+  [36m<td[39m
+    [33mclass[39m=[32m"_colElapsed_33e390"[39m
+  [36m>[39m
+    [0m30 秒[0m
+  [36m</td>[39m
+[36m</tr>[39m
+ ❯ Object.getElementError ../../../dsh-base/node_modules/.pnpm/@testing-library+dom@10.4.2/node_modules/@testing-library/dom/dist/config.js:37:19
+ ❯ ../../../dsh-base/node_modules/.pnpm/@testing-library+dom@10.4.2/node_modules/@testing-library/dom/dist/query-helpers.js:76:38
+ ❯ ../../../dsh-base/node_modules/.pnpm/@testing-library+dom@10.4.2/node_modules/@testing-library/dom/dist/query-helpers.js:52:17
+ ❯ ../../../dsh-base/node_modules/.pnpm/@testing-library+dom@10.4.2/node_modules/@testing-library/dom/dist/query-helpers.js:95:19
+ ❯ tests/alignment-overview.client.spec.tsx:28:21
+     26| it('09编号简写为22仍能按完整编号搜索、键盘打开真实卡，归档只在归档页',async()=>{
+     27|  const open=setup();await screen.findByText('正在改问候');const row=screen.…
+     28|  expect(within(row).getByText('22',{exact:true})).toBeTruthy();expect(…
+       |                     ^
+     29|  fireEvent.change(screen.getByRole('textbox',{name:'搜索任务'}),{target:{v…
+     30|  fireEvent.keyDown(screen.getByText('正在改问候').closest('tr')!,{key:'Ente…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/4]⎯
+
+ FAIL  tests/alignment-overview.client.spec.tsx > 17空任务时在标题前显示DSH任务图标，文案和主动作保留
+AssertionError: 17缺少标题前任务图标: expected null not to be null
+ ❯ tests/alignment-overview.client.spec.tsx:36:33
+     34|  render(<TasksProbe cards={async()=>({ok:true,value:[]})} openTask={as…
+     35|  const title=await screen.findByText('还没有任务',{exact:true});const icon=…
+     36|  expect(icon,'17缺少标题前任务图标').not.toBeNull();expect(icon!.compareDocumen…
+       |                                 ^
+     37|  expect(screen.getByRole('button',{name:'去找超级玩家聊'})).toBeTruthy()
+     38| })
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/4]⎯
+
+
+ Test Files  1 failed | 1 passed (2)
+      Tests  4 failed | 4 passed (8)
+   Start at  03:21:47
+   Duration  1.58s (transform 826ms, setup 0ms, import 1.85s, tests 208ms, environment 902ms)
+

@@ -24,8 +24,8 @@ const HOST_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0
 
 function optionOf(account: string): LegacyKeyOption | undefined {
   if (account === 'legacy:tencent') {
-    // 旧版接的是腾讯云 TokenHub（不是新版“腾讯云”预置的混元地址）
-    return { account, provider: 'tencent', label: '腾讯云 TokenHub', baseUrl: 'https://tokenhub.tencentmaas.com/v1' }
+    // 旧版接的是腾讯云 TokenHub（对应新版 tencent-tokenhub 预置）
+    return { account, provider: 'tencent-tokenhub', label: '腾讯云 TokenHub', baseUrl: 'https://tokenhub.tencentmaas.com/v1' }
   }
   if (account === 'legacy:bailian') {
     return { account, provider: 'dashscope', label: '阿里百炼', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1' }

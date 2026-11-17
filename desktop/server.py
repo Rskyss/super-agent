@@ -62,9 +62,11 @@ from collab import abilities, abilities_run, blocks, blocks_check, blocks_env, b
 from collab.abilities import AbilityError
 from collab.blocks import BlockError
 from desktop.clerk import blocks_tools, tasks as clerk_tasks
+from desktop import dsh_settings
 from desktop.clerk.client import DEFAULT_BASE_URL, DEFAULT_MODEL, ModelClient, ModelError  # noqa: E402
 from desktop.clerk.desk import ClerkDesk  # noqa: E402
 from desktop.clerk.providers import PROVIDERS, account_for, find as find_provider  # noqa: E402
+from desktop.clerk.revision import prepare_revision  # noqa: E402
 from desktop.clerk.tasks import (  # noqa: E402
     StopWrongCard, TaskBusy, TaskWatcher, apply_revise, launch, running, stop_construction,
     end_drafting as _end_drafting,
@@ -203,7 +205,7 @@ class Handler(BaseHTTPRequestHandler):
 
         if action == "revise":
             try:
-                apply_revise(
+                note = apply_revise(
                     project, card_id, text, files=files,
                     criteria_base=criteria_base, criteria_changes=criteria_changes,
                     attachments=attachments,
@@ -211,7 +213,7 @@ class Handler(BaseHTTPRequestHandler):
             except RuntimeError as exc:
                 self._card_action_error(str(exc))
                 return
-            self._json({"ok": True})
+            self._json({"ok": True, **({"message": note} if isinstance(note, str) and note else {})})
             return
 
         if action not in actions:
@@ -1434,6 +1436,11 @@ class Handler(BaseHTTPRequestHandler):
                 if not project or not Path(project).is_dir():
                     self._json({"error": "项目文件夹不存在"}, 400)
                     return
+                if query.get("card"):
+                    try:   # 第七批 7-1：卡停下了、排着的修改还没生效——任务页看进度时顺手接上
+                        clerk_tasks.flush_queued_if_idle(project, query.get("card") or "")
+                    except Exception:  # noqa: BLE001 — 接不上不挡看进度
+                        pass
                 session = getattr(self.server, "hub", None) and self.server.hub.get(project)
                 self._json(card_view(project, query.get("card") or None, dispatcher=query.get("dispatcher"),
                                      chat_session=session))
@@ -1472,6 +1479,9 @@ class Handler(BaseHTTPRequestHandler):
             elif url.path.startswith("/api/dsh/dispatcher/"):
                 if self._chat_allowed(query):
                     self._dsh_dispatcher_get(url.path, query)
+            elif url.path.startswith("/api/dsh/settings/"):
+                if self._chat_allowed(query):
+                    self._dsh_settings_get(url.path, query)
             else:
                 self._json({"error": "没有这个地址"}, 404)
         except (ValueError, OSError) as exc:
@@ -1794,7 +1804,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"error": "卡片编号不对"}, 400)
                 return
             extra = str(body.get("text") or "")
-            if action == "revise" and not extra.strip():
+            if action in ("revise", "prepare_revise") and not extra.strip():
                 self._json({"error": "请写上要改什么"}, 400)
                 return
             files = body.get("files") if isinstance(body.get("files"), list) else []  # “继续改”加的文件（第三批 ㉟）
@@ -1810,8 +1820,42 @@ class Handler(BaseHTTPRequestHandler):
             if attachments is not None and not isinstance(attachments, list):
                 self._json({"error": "图片附件格式不对"}, 400)
                 return
-            if action != "revise" and attachments:
+            if action not in ("revise", "prepare_revise") and attachments:
                 self._json({"error": "只有继续改操作才能附带图片"}, 400)
+                return
+            if action == "prepare_revise":
+                bound = getattr(self.server, "clerk_project", "") or ""
+                if bound and bound != project:
+                    self._card_action_error("当前旧版行政模型属于另一个项目，不能用于本项目。请先回到那个项目，或到设置里重新配置。")
+                    return
+                client = getattr(self.server, "clerk", None)
+                if client is None:
+                    desk_obj = getattr(self.server, "desk", None)
+                    getter = getattr(desk_obj, "_client", None)
+                    if callable(getter):
+                        client = getter()
+                if client is None:
+                    self._card_action_error("旧版行政还没配置模型，请先到设置里填写模型密钥。")
+                    return
+                if attachments:
+                    try:
+                        from collab.tasks import validate_card_attachments
+                        validate_card_attachments(project, card_id, attachments)
+                    except TaskError as exc:
+                        self._json({"error": str(exc)}, 400)
+                        return
+                try:
+                    prepared = prepare_revision(
+                        project,
+                        card_id,
+                        extra,
+                        client,
+                        attachment_count=len(attachments) if attachments else 0,
+                    )
+                except RuntimeError as exc:
+                    self._card_action_error(str(exc))
+                    return
+                self._json(prepared)
                 return
             self._do_card_action(
                 project, card_id, action, extra, [str(f) for f in files][:20],
@@ -1861,6 +1905,73 @@ class Handler(BaseHTTPRequestHandler):
         """只允许使用网关注入的显式隔离积木库目录，拒绝未配置或真实默认目录。"""
         env_home = os.environ.get("SUPER_AGENT_BLOCKS_HOME", "")
         return str(require_isolated_blocks_home(env_home))
+
+    def _dsh_settings_get(self, path: str, query: dict) -> None:
+        """新版设置整页的只读列表（第六批）：只读新版自己的积木库资料夹，不补预置卡。"""
+        try:
+            home = self._isolated_dsh_blocks_home()
+        except ValueError as exc:
+            self._json({"error": str(exc)}, 400)
+            return
+        try:
+            if path == "/api/dsh/settings/abilities":
+                self._json({"abilities": dsh_settings.ability_rows(home)})
+            elif path == "/api/dsh/settings/blocks":
+                self._json({"blocks": dsh_settings.block_rows(home)})
+            elif path == "/api/dsh/settings/team":
+                project = str(query.get("project") or "")
+                if not project or not Path(project).is_dir():
+                    self._json({"error": "项目文件夹不存在"}, 400)
+                    return
+                self._json(dsh_settings.team_rows(project))
+            else:
+                self._json({"error": "没有这个地址"}, 404)
+        except ValueError as exc:
+            self._json({"error": str(exc)}, 400)
+        except OSError:
+            self._json({"error": "积木库资料夹读写出错，请检查磁盘和权限"}, 500)
+
+    def _dsh_settings_post(self, path: str, body: dict) -> None:
+        if path == "/api/dsh/settings/team/save":
+            project = str(body.get("project") or "")
+            if not project or not Path(project).is_dir():
+                self._json({"error": "项目文件夹不存在"}, 400)
+                return
+            if not (Path(project) / ".git").exists():
+                self._json({"error": "这个文件夹不是 git 项目，超级玩家没法在里面干活，也就不能选谁来跑"}, 400)
+                return
+            # 还没建过任务卡的新项目（比如刚清空）：先把存设置的位置建好，允许先选好谁来跑
+            (Path(project) / ".collab").mkdir(exist_ok=True)
+            if clerk_tasks.running(project, "run") is not None:
+                self._json({"error": "有任务卡正在跑，等它停下再换，免得同一张卡中途换人"}, 409)
+                return
+            try:
+                dsh_settings.save_role(project, str(body.get("role") or ""), str(body.get("tool") or ""),
+                                       str(body.get("model") or ""), str(body.get("effort") or ""))
+            except ValueError as exc:
+                self._json({"error": str(exc)}, 400)
+                return
+            self._json({"ok": True, **dsh_settings.team_rows(project)})
+            return
+        if path != "/api/dsh/settings/recheck-dispatcher":
+            self._json({"error": "没有这个地址"}, 404)
+            return
+        project = str(body.get("project") or "")
+        if not project or not Path(project).is_dir():
+            self._json({"error": "项目文件夹不存在"}, 400)
+            return
+        try:
+            home = self._isolated_dsh_blocks_home()
+        except ValueError as exc:
+            self._json({"error": str(exc)}, 400)
+            return
+        self._blocks_path()
+        try:
+            state = self.server.dispatcher_detector.detect(project, home, force=True)
+        except (ValueError, ConfigError) as exc:
+            self._json({"status": "missing", "tool": "", "model": "", "reason": str(exc), "verified": False})
+            return
+        self._json(state)
 
     def _dsh_dispatcher_get(self, path: str, query: dict) -> None:
         if path == "/api/dsh/dispatcher/status":
@@ -2025,7 +2136,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):  # noqa: N802
         url = urlparse(self.path)
-        if not url.path.startswith(("/api/chat/", "/api/team/", "/api/clerk/", "/api/blocks/", "/api/abilities/", "/api/cards/", "/api/dsh/dispatcher/")):
+        if not url.path.startswith(("/api/chat/", "/api/team/", "/api/clerk/", "/api/blocks/", "/api/abilities/", "/api/cards/", "/api/dsh/dispatcher/", "/api/dsh/settings/")):
             self._json({"error": "没有这个地址"}, 404)
             return
         if not self._chat_allowed():  # 没口令：已经回了 403
@@ -2057,6 +2168,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if url.path.startswith("/api/dsh/dispatcher/"):
             self._dsh_dispatcher_post(url.path, body)
+            return
+        if url.path.startswith("/api/dsh/settings/"):
+            self._dsh_settings_post(url.path, body)
             return
         if url.path.startswith("/api/team/"):
             self._team_post(url.path, body)

@@ -22,8 +22,54 @@ import { readCardAttachmentOnHost, validateImagePayloads } from './card-attachme
 import { registerPreviewJob, type PreviewJobsPort } from './preview-jobs.ts'
 import { cardFieldsFromProposal } from './proposal.ts'
 import { bindTaskSession, cardOfTaskSession, cardsFromConversation, readTaskSessions, taskSessionIdFor, taskSessionOf } from './task-session.ts'
-import { readCardTrajectory, sanitizeTrajectoryText } from './trajectory.ts'
-import { FINISHED_CARD_STATES, FINISHED_PHASE_CODES, type BackendStatus, type CardActionOptions, type CardActionResult, type CardKind, type CardRow, type CardTrajectory, type CardViewPayload, type CreatedCard, type CriteriaChangeItem, type DispatcherConnectOptions, type DispatcherConnectResult, type DispatcherProposal, type DispatcherState, type DispatcherTool, type ImagePayload, type OnboardingModelItem, type OnboardingSetupPayload, type OnboardingSetupSummary, type OnboardingState, type PendingChange, type PrepareRevisionResult, type PreviewResult, type PreviewStatus, type Proposal, type RequestChangeOptions, type TaskSessionBind, type TaskSessionInfo } from './types.ts'
+import { readCardTrajectory, readSafeCardFile, resolveSafeCardDir, sanitizeTrajectoryText } from './trajectory.ts'
+import {
+  FINISHED_CARD_STATES,
+  FINISHED_PHASE_CODES,
+  type BackendStatus,
+  type CardActionOptions,
+  type CardActionResult,
+  type CardKind,
+  type CardRequirement,
+  type CardRow,
+  type CardTrajectory,
+  type CardViewPayload,
+  type CreatedCard,
+  type CriteriaChangeItem,
+  type DispatcherConnectOptions,
+  type DispatcherConnectResult,
+  type DispatcherProposal,
+  type DispatcherState,
+  type DispatcherTool,
+  type ImagePayload,
+  type OnboardingModelItem,
+  type OnboardingSetupPayload,
+  type OnboardingSetupSummary,
+  type OnboardingState,
+  type PendingChange,
+  type PrepareRevisionResult,
+  type PreviewResult,
+  type PreviewStatus,
+  type Proposal,
+  type ProposalQuestion,
+  type RequestChangeOptions,
+  type StopReviewRow,
+  type TaskSessionBind,
+  type TaskSessionInfo,
+  type ViewPlanningInfo,
+  type WorkflowInfo,
+  type AbilityRow,
+  type BlockRow,
+  type RecordsInfo,
+  type StoredKey,
+  type TeamInfo,
+  type TeamOption,
+} from './types.ts'
+import { cardWaitsForDispatcher, hasCardDeferredPlan } from './card-wait.ts'
+import { extractRunSummary } from './run-summary.ts'
+import { resolveAssistantKeyRef } from './credentials-provider.ts'
+import { checkAssistantModel, deleteStoredKey, listStoredKeys, openRecordsFolder, recordsInfo } from './settings-host.ts'
+import { readCurrentWorkFlow } from './workflow-info.ts'
 import { formatSafeOnboardingError } from './onboarding.ts'
 import { completeOnboardingOnHost, discoverOnboardingModelsOnHost, readOnboardingStateOnHost, resolveLegacyOnboardingRequestOnHost } from './onboarding-host.ts'
 import { readLegacyOptions, type LegacyKeyOption } from './legacy-keys.ts'
@@ -38,13 +84,15 @@ import {
   type ParsedFlowEvent,
 } from './work-duration.ts'
 
+export { cardWaitsForDispatcher } from './card-wait.ts'
 export type {
-  BackendStatus, CardActionOptions, CardActionResult, CardKind, CardPlanPayload, CardRow, CardTrajectory, CardViewPayload, CreatedCard, CriteriaChangeItem,
+  BackendStatus, CardActionOptions, CardActionResult, CardKind, CardPlanPayload, CardRequirement, CardRow, CardTrajectory, CardViewPayload, CreatedCard, CriteriaChangeItem,
   DispatcherConnectOptions, DispatcherConnectResult, DispatcherProposal, DispatcherState, DispatcherTool,
   ImageMediaType, ImagePayload, OnboardingModelItem, OnboardingSetupPayload, OnboardingSetupSummary, OnboardingState,
   ParsedCardProgress, PendingChange, PrepareRevisionResult, PreviewResult, PreviewStatus, ProgressStep, ProgressStepKey,
-  ProgressStepState, Proposal, ProposalQuestion, RequestChangeOptions, TaskSessionBind, TaskSessionInfo, TrajectoryAttachment, TrajectoryDistributionItem,
-  TrajectoryRow, ViewAcceptInfo, ViewCard, ViewPhase, ViewStation,
+  ProgressStepState, Proposal, ProposalQuestion, RequestChangeOptions, StopReviewRow, TaskSessionBind, TaskSessionInfo, TrajectoryAttachment, TrajectoryDistributionItem,
+  TrajectoryRow, ViewAcceptInfo, ViewCard, ViewHandoff, ViewPhase, ViewStation, WorkflowInfo,
+  AbilityRow, BlockRow, RecordsInfo, StoredKey, TeamInfo, TeamOption, TeamPick, TeamRole,
 } from './types.ts'
 
 declare module '@deepseek-ai/cordis' {
@@ -148,6 +196,157 @@ export default class SuperagentGateway extends TypertRemoteService {
     }
   }
 
+  /** @returns 当前默认工作流与真实复查上限（只读，不编造版本）。 */
+  @Remote('workflowInfo')
+  async workflowInfo(): Promise<WorkflowInfo> {
+    return readCurrentWorkFlow(this.config?.repoRoot ?? '')
+  }
+
+  // ---------- 设置整页（页面对齐改版第六批） ----------
+
+  /** @returns 能力层表格：新版自己积木库里的真实能力卡（不补预置卡）。 */
+  @Remote('settingsAbilities')
+  async settingsAbilities(): Promise<AbilityRow[]> {
+    const raw = await this.get('/api/dsh/settings/abilities', {}) as { abilities?: unknown }
+    return Array.isArray(raw.abilities) ? raw.abilities as AbilityRow[] : []
+  }
+
+  /** @returns 积木库：新版自己积木库里的真实零件。 */
+  @Remote('settingsBlocks')
+  async settingsBlocks(): Promise<BlockRow[]> {
+    const raw = await this.get('/api/dsh/settings/blocks', {}) as { blocks?: unknown }
+    if (!Array.isArray(raw.blocks)) return []
+    return raw.blocks.map((item: Record<string, unknown>) => ({
+      id: String(item.id ?? ''),
+      name: String(item.name ?? ''),
+      group: item.group === 'brain' || item.group === 'worker' ? item.group : 'tool',
+      kind: String(item.kind ?? ''),
+      status: item.status === 'ok' || item.status === 'fail' ? item.status : 'never',
+      reason: String(item.reason ?? ''),
+      usedBy: Number(item.used_by ?? 0) || 0,
+    }))
+  }
+
+  /** @returns 现在开发流程每个岗位谁来跑（读真实分工）。 */
+  @Remote('settingsTeam')
+  async settingsTeam(): Promise<TeamInfo> {
+    return toTeamInfo(await this.get('/api/dsh/settings/team', {}))
+  }
+
+  /** 过渡期：在业务流程页换某一步谁来跑（只改这一步，下一张任务卡起生效；有卡在跑时后台会拒绝）。 */
+  @Remote('saveTeamRole')
+  async saveTeamRole(role: string, tool: string, model: string, effort: string): Promise<TeamInfo> {
+    return toTeamInfo(await this.post('/api/dsh/settings/team/save', {
+      role: String(role ?? ''), tool: String(tool ?? ''), model: String(model ?? ''), effort: String(effort ?? ''),
+    }))
+  }
+
+  /** 一键检测：对现在的调度员做一次真实检测（不改分工）。 */
+  @Remote('recheckDispatcher')
+  async recheckDispatcher(): Promise<DispatcherState> {
+    const value = await this.post('/api/dsh/settings/recheck-dispatcher', {}) as Record<string, unknown>
+    const verified = value.verified === true
+    return {
+      status: value.status === 'ready' && verified ? 'ready' : 'missing',
+      tool: String(value.tool ?? ''),
+      label: String(value.label ?? value.tool ?? ''),
+      model: String(value.model ?? ''),
+      reason: String(value.reason ?? ''),
+      verified,
+    }
+  }
+
+  /** 一键检测：检测一块零件（走后台原有检测；要密钥的会照实回“要先填密钥”）。 */
+  @Remote('checkBlock')
+  async checkBlock(id: string): Promise<{ ok: boolean; reason: string }> {
+    const clean = String(id ?? '').trim()
+    if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(clean)) return { ok: false, reason: '编号不对' }
+    // 整个检测（含后台刚退出要重新启动的等待）一共最多 30 秒，到点就放弃（复查第 1、2 轮中等 10 / 3）
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const giveUp = new Promise<{ ok: boolean; reason: string }>((resolve) => {
+      timer = setTimeout(() => { resolve({ ok: false, reason: '等了 30 秒还没结果，先跳过' }) }, 30_000)
+    })
+    try {
+      return await Promise.race([this.checkBlockWithin(clean), giveUp])
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
+  private async checkBlockWithin(clean: string): Promise<{ ok: boolean; reason: string }> {
+    // 单个零件从开始检测到出结果一共最多 30 秒，每次请求都只给剩下的时间（复查第 1 轮中等 10）
+    const deadline = Date.now() + 30_000
+    const left = () => Math.max(1, deadline - Date.now())
+    const timedOut = { ok: false, reason: '等了 30 秒还没结果，先跳过' }
+    let started: Record<string, unknown>
+    try {
+      started = await this.request('/api/blocks/check', {}, { id: clean }, left()) as Record<string, unknown>
+    } catch (error: unknown) {
+      if (Date.now() >= deadline) return timedOut
+      return { ok: false, reason: error instanceof Error ? error.message : String(error) }
+    }
+    const job = typeof started.job === 'string' ? started.job : ''
+    if (!job) return { ok: false, reason: '检测没能开始' }
+    while (Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, Math.min(800, left())))
+      if (Date.now() >= deadline) break
+      let state: Record<string, unknown>
+      try {
+        state = await this.request('/api/blocks/job', { id: job }, undefined, left()) as Record<string, unknown>
+      } catch {
+        if (Date.now() >= deadline) break
+        continue
+      }
+      if (state.done) {
+        if (state.error) return { ok: false, reason: String(state.error) }
+        const result = (state.result ?? {}) as Record<string, unknown>
+        return { ok: result.ok === true, reason: String(result.reason ?? '') }
+      }
+    }
+    return timedOut
+  }
+
+  /** 一键检测 · 大脑：拿存着的 Key 真连一次服务商（Key 不交给界面）。 */
+  @Remote('checkAssistantModel')
+  async checkAssistantModel(): Promise<{ ok: boolean; reason: string }> {
+    const state = await readOnboardingStateOnHost(this.ctx)
+    return checkAssistantModel(
+      state,
+      async () => {
+        const credentials = this.ctx.get('credentials') as unknown as { resolve?: (ref: unknown) => Promise<{ value?: string } | undefined> } | undefined
+        const resolved = await credentials?.resolve?.(resolveAssistantKeyRef())
+        return resolved?.value
+      },
+      request => discoverOnboardingModelsOnHost(this.ctx, request, AbortSignal.timeout(30_000)),
+    )
+  }
+
+  /** @returns 钥匙串里存着的 Key（只有名字）。 */
+  @Remote('storedKeys')
+  async storedKeys(): Promise<StoredKey[]> {
+    return listStoredKeys(this.ctx)
+  }
+
+  /** 删掉一把 Key（只认列得出来的）。 */
+  @Remote('deleteKey')
+  async deleteKey(id: string): Promise<boolean> {
+    await deleteStoredKey(this.ctx, id)
+    return true
+  }
+
+  /** @returns 任务和对话记录的位置和大小。 */
+  @Remote('records')
+  async records(): Promise<RecordsInfo> {
+    return recordsInfo()
+  }
+
+  /** 在访达里打开任务和对话记录。 */
+  @Remote('openRecords')
+  async openRecords(): Promise<boolean> {
+    openRecordsFolder()
+    return true
+  }
+
   /** @returns 当前项目的全部任务卡（含阶段、真实流转统计与归档标记，未知不编造）。 */
   @Remote('cards')
   async cards(): Promise<CardRow[]> {
@@ -157,16 +356,21 @@ export default class SuperagentGateway extends TypertRemoteService {
     return raw.map((item: Record<string, unknown>) => {
       const phase = (item.phase ?? {}) as Record<string, unknown>
       const id = String(item.id ?? '')
+      const title = sanitizeTrajectoryText(String(item.title ?? ''))
       const state = sanitizeTrajectoryText(String(item.state ?? ''))
       const phaseCode = String(phase.code ?? '')
-      const phaseLabel = sanitizeTrajectoryText(String(phase.label ?? ''))
-      const needsYou = phase.needs_you === true
+      const deferredPlan = hasCardDeferredPlan(project, id)
+      const isDeferredWaiting = cardWaitsForDispatcher(project, id, state, phaseCode, phase.tone)
+      const phaseLabel = isDeferredWaiting
+        ? '等你处理 · 接调度员'
+        : sanitizeTrajectoryText(String(phase.label ?? ''))
+      const needsYou = isDeferredWaiting || phase.needs_you === true
       const actions = Array.isArray(phase.actions) ? phase.actions.map(String) : []
       const updated = String(item.updated ?? '')
-      const meta = readCardOverviewMeta(project, id, state, phaseCode, phase.tone, needsYou, item)
+      const meta = readCardOverviewMeta(project, id, title, state, phaseCode, phase.tone, needsYou, item, deferredPlan)
       return {
         id,
-        title: sanitizeTrajectoryText(String(item.title ?? '')),
+        title,
         state,
         phaseCode,
         phaseLabel,
@@ -180,7 +384,7 @@ export default class SuperagentGateway extends TypertRemoteService {
 
   /**
    * @param card - 卡片编号。
-   * @returns 这张卡的进度（JSON 文字，界面自己解析；补充真实流转计算的 workElapsed 及验收标准和追加要求）。
+   * @returns 这张卡的进度（JSON 文字，界面自己解析；补充真实流转计算的 workElapsed、isRunningNow、真实汇报、停下复查表及验收标准）。
    */
   @Remote('view')
   async view(card: string): Promise<string> {
@@ -189,7 +393,11 @@ export default class SuperagentGateway extends TypertRemoteService {
     if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
       const payload = raw as Record<string, unknown>
       const project = this.config?.project ?? ''
-      const flowText = readSafeMetaText(project, safeCard, '流转.jsonl')
+      const realCardDir = resolveSafeCardDirForGateway(project, safeCard)
+      const flowText = realCardDir
+        ? (readSafeCardFile(realCardDir, '流转.jsonl') || null)
+        : readSafeMetaText(project, safeCard, '流转.jsonl')
+      const rawEvents = parseRawFlowRecords(flowText)
       const cardObj = payload.card && typeof payload.card === 'object' && !Array.isArray(payload.card)
         ? (payload.card as Record<string, unknown>)
         : null
@@ -202,17 +410,36 @@ export default class SuperagentGateway extends TypertRemoteService {
       const needsYou = typeof phaseObj?.needs_you === 'boolean'
         ? phaseObj.needs_you
         : VIEW_NEEDS_YOU_PHASES.has(phaseCode)
-      const isRunningNow = isCardRunningNow(state, phaseCode, phaseTone, needsYou)
+      const isRunningNow = resolveCardRunningNow(project, safeCard, state, phaseCode, phaseTone, needsYou, payload)
       const computedWorkElapsed = computeWorkElapsedFromFlowText(flowText, isRunningNow, Date.now())
       const explicitWorkElapsed = typeof payload.workElapsed === 'number' && Number.isFinite(payload.workElapsed) && payload.workElapsed >= 0
         ? payload.workElapsed
         : null
       const workElapsed = computedWorkElapsed ?? explicitWorkElapsed
-      const nextPayload: Record<string, unknown> = { ...payload, workElapsed }
+      const planning = extractPlanningInfoFromEvents(rawEvents)
+      const approvalTime = extractApprovalTime(rawEvents)
+      const runSummary = extractRunSummary(rawEvents)
+      const { stopReviews, stopAdvice } = STOP_VIEW_PHASES.has(phaseCode)
+        ? readStopReviewsAndAdvice(realCardDir, rawEvents, payload, phaseObj, phaseCode)
+        : { stopReviews: [] as StopReviewRow[], stopAdvice: '' }
+
+      const nextPayload: Record<string, unknown> = {
+        ...payload,
+        workElapsed,
+        isRunningNow,
+        ...(planning ? { planning } : {}),
+        ...(approvalTime ? { approval: { time: approvalTime } } : {}),
+        ...(runSummary ? { run: runSummary } : {}),
+        stopReviews,
+        stopAdvice,
+      }
 
       if (payload.accept && typeof payload.accept === 'object' && !Array.isArray(payload.accept)) {
         const accept = { ...(payload.accept as Record<string, unknown>) }
         const parsed = readCardAcceptanceCriteria(project, safeCard)
+        const latestReport = readLatestAcceptReport(realCardDir, rawEvents)
+        // 仅采信安全读取到的真实开发汇报；缺真实汇报时清除后台可能混入的旧方案预期，不冒充已完成结果。
+        accept.result = latestReport || ''
         if ((!Array.isArray(accept.criteria) || accept.criteria.length === 0) && parsed.criteria.length > 0) {
           accept.criteria = parsed.criteria
         }
@@ -325,7 +552,8 @@ export default class SuperagentGateway extends TypertRemoteService {
     if (ok && PREVIEW_CLEANUP_ACTIONS.has(action)) {
       await this.cleanupCardPreviewJob(safeCard)
     }
-    return { ok, message: String(value.error ?? '') }
+    // 成功时后台可能带一句说明（第七批 7-1：跑着时确认改 → “已确认，这一轮跑完生效”）
+    return { ok, message: String(value.error ?? (ok ? value.message ?? '' : '')) }
   }
 
   /**
@@ -1239,6 +1467,7 @@ const VIEW_NEEDS_YOU_PHASES = new Set([
   'plan_ready', 'plan_waiting', 'plan_failed',
   'review', 'merge_failed', 'blocked', 'interrupted', 'start_failed', 'copy_missing',
 ])
+const STOP_VIEW_PHASES = new Set(['blocked', 'interrupted', 'start_failed', 'plan_failed', 'copy_missing'])
 
 interface TrackedPreviewJob {
   readonly card: string
@@ -1506,20 +1735,79 @@ function defaultFlowForKind(kind: CardKind | null): string | null {
   return null
 }
 
-function readSectionFirstLine(markdown: string, headingName: string): string {
+function readSectionBody(markdown: string, headingName: string): string {
   const sections = markdown.split(/^##\s+/m).slice(1)
   for (const section of sections) {
     const newlineIdx = section.indexOf('\n')
     const heading = (newlineIdx === -1 ? section : section.slice(0, newlineIdx)).trim()
     if (heading !== headingName) continue
     const body = (newlineIdx === -1 ? '' : section.slice(newlineIdx + 1)).trim()
-    const first = body.split(/\r?\n/)[0]?.trim() ?? ''
-    if (first && first !== '（待填）') return first
+    if (!body || body === '（待填）') return ''
+    return sanitizeTrajectoryText(body)
   }
   return ''
 }
 
+function readSectionFirstLine(markdown: string, headingName: string): string {
+  const body = readSectionBody(markdown, headingName)
+  if (!body) return ''
+  const first = body.split(/\r?\n/)[0]?.trim() ?? ''
+  return first === '（待填）' ? '' : first
+}
+
+function readRequirementTitle(markdown: string): string {
+  const match = /^#\s+(.+)$/m.exec(markdown)
+  if (!match?.[1]) return ''
+  return sanitizeTrajectoryText(match[1].trim())
+}
+
+function parseRequirementQuestions(doBody: string, markdown: string): ProposalQuestion[] {
+  const questions: ProposalQuestion[] = []
+  const questionSection = readSectionBody(markdown, '要你拍板') || readSectionBody(markdown, '要你拍板的')
+  const sourceLines = questionSection
+    ? questionSection.split(/\r?\n/)
+    : (() => {
+        const marker = '拍板（问号没答的按建议）：'
+        const idx = doBody.indexOf(marker)
+        if (idx === -1) return []
+        return doBody.slice(idx + marker.length).split(/\r?\n/)
+      })()
+
+  for (const rawLine of sourceLines) {
+    const trimmed = rawLine.trim().replace(/^[-*•]\s*/, '').trim()
+    if (!trimmed) continue
+    const colonIdx = trimmed.indexOf('：') !== -1 ? trimmed.indexOf('：') : trimmed.indexOf(':')
+    if (colonIdx <= 0) continue
+    const question = trimmed.slice(0, colonIdx).trim()
+    const rawSuggestion = trimmed.slice(colonIdx + 1).trim().replace(/（按建议）$/, '').trim()
+    const suggestion = rawSuggestion === '（没给建议，写方案时再问）' ? '' : rawSuggestion
+    if (question) questions.push({ question, suggestion })
+  }
+  return questions
+}
+
+function parseCardRequirement(reqMd: string | null, fallbackTitle: string): CardRequirement | null {
+  if (!reqMd || !reqMd.trim()) return null
+  const title = readRequirementTitle(reqMd) || fallbackTitle
+  const doText = readSectionBody(reqMd, '要做什么')
+  const notDoText = readSectionBody(reqMd, '不做什么')
+  const doneWhenText = readSectionBody(reqMd, '验收标准') || readSectionBody(reqMd, '怎么算做完')
+  const questions = parseRequirementQuestions(doText, reqMd)
+  if (!doText && !notDoText && !doneWhenText && questions.length === 0) {
+    return null
+  }
+  return {
+    title,
+    do: doText,
+    notDo: notDoText,
+    doneWhen: doneWhenText,
+    questions,
+  }
+}
+
 interface CardOverviewMeta {
+  readonly createdAt: string | null
+  readonly requirement: CardRequirement | null
   readonly kind: CardKind | null
   readonly flow: string | null
   readonly reviewRounds: number | null
@@ -1527,6 +1815,84 @@ interface CardOverviewMeta {
   readonly completedAt: string | null
   readonly firstPass: boolean | null
   readonly archived: boolean
+  readonly isRunningNow: boolean
+  readonly dispatcher: string | null
+}
+
+function readJsonRecord(filePath: string): Record<string, unknown> | null {
+  try {
+    const raw = readFileSync(filePath, 'utf8')
+    const parsed = JSON.parse(raw) as unknown
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null
+  } catch {
+    return null
+  }
+}
+
+function isBackendPidAlive(pidValue: unknown): boolean {
+  if (typeof pidValue !== 'number' && typeof pidValue !== 'string') return false
+  const pid = Number(pidValue)
+  if (!Number.isInteger(pid) || pid <= 0) return false
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error: unknown) {
+    return (error as NodeJS.ErrnoException)?.code === 'EPERM'
+  }
+}
+
+function readBackendRecord(project: string, kind: 'plan' | 'run' | 'merge'): Record<string, unknown> | null {
+  if (!project) return null
+  return readJsonRecord(join(project, '.collab', '后台', `${kind}.json`))
+}
+
+
+/**
+ * 结合真实状态、暂缓标记（来源.json）与后台进程记录计算卡是否真的在跑，不凭 plan_waiting 叫法误判。
+ */
+function resolveCardRunningNow(
+  project: string,
+  cardId: string,
+  state: string,
+  phaseCode: string,
+  phaseTone: unknown,
+  needsYou: boolean,
+  item?: Record<string, unknown>,
+  deferredPlan?: boolean,
+): boolean {
+  if (deferredPlan ?? hasCardDeferredPlan(project, cardId)) {
+    return false
+  }
+  if (item && typeof item.isRunningNow === 'boolean') {
+    return item.isRunningNow
+  }
+  if (phaseCode === 'plan_waiting' || (state === '待对齐' && phaseCode !== 'planning' && phaseCode !== 'plan_ready' && phaseCode !== 'plan_failed')) {
+    const planRec = readBackendRecord(project, 'plan')
+    return planRec !== null && planRec.card === cardId && isBackendPidAlive(planRec.pid)
+  }
+  if (phaseCode === 'planning') {
+    const planRec = readBackendRecord(project, 'plan')
+    return planRec !== null && planRec.card === cardId && isBackendPidAlive(planRec.pid)
+  }
+  if (phaseCode === 'ready') {
+    const runRec = readBackendRecord(project, 'run')
+    return runRec !== null && runRec.card === cardId && isBackendPidAlive(runRec.pid)
+  }
+  if (phaseCode === 'running') {
+    const runRec = readBackendRecord(project, 'run')
+    if (runRec !== null) {
+      return runRec.card === cardId && isBackendPidAlive(runRec.pid)
+    }
+  }
+  if (phaseCode === 'merging') {
+    const mergeRec = readBackendRecord(project, 'merge')
+    if (mergeRec !== null) {
+      return mergeRec.card === cardId && isBackendPidAlive(mergeRec.pid)
+    }
+  }
+  return isCardRunningNow(state, phaseCode, phaseTone, needsYou)
 }
 
 function computeFirstPassFromFlow(events: readonly ParsedFlowEvent[]): boolean | null {
@@ -1571,15 +1937,18 @@ function computeFirstPassFromFlow(events: readonly ParsedFlowEvent[]): boolean |
 function readCardOverviewMeta(
   project: string,
   cardId: string,
+  rowTitle: string,
   state: string,
   phaseCode: string,
   phaseTone: unknown,
   needsYou: boolean,
   item: Record<string, unknown>,
+  deferredPlan?: boolean,
 ): CardOverviewMeta {
+  const hasDeferredPlan = deferredPlan ?? hasCardDeferredPlan(project, cardId)
   const isDiscarded = state === '已放弃' || phaseCode === 'dropped'
   const isFinished = !needsYou && (phaseTone === 'done' || FINISHED_PHASE_CODES.has(phaseCode) || FINISHED_CARD_STATES.has(state))
-  const isRunningNow = isCardRunningNow(state, phaseCode, phaseTone, needsYou)
+  const isRunningNow = resolveCardRunningNow(project, cardId, state, phaseCode, phaseTone, needsYou, item, hasDeferredPlan)
 
   // 已归档仅认 ARCHIVE_MARK（已归档.json）且已结束，绝不把流转 kind="归档" 当成隐藏卡
   let archived = false
@@ -1608,10 +1977,20 @@ function readCardOverviewMeta(
   let dispatchReviewCount = 0
   let replyReviewCount = 0
   let lastMergeTime: string | null = null
+  let firstRequirementTime: string | null = null
   let hasWorkWorkflowEvent = false
+  let dispatcher: string | null = null
   const parsedEvents = parseFlowEvents(flowText)
 
   for (const ev of parsedEvents) {
+    if (
+      firstRequirementTime === null
+      && ev.kind === '需求'
+      && ev.timeStr
+      && parseStrictDateParts(ev.timeStr) !== null
+    ) {
+      firstRequirementTime = ev.timeStr
+    }
     if (ev.kind === '开工' || ev.kind === '开跑' || ev.kind === '写方案') {
       hasWorkWorkflowEvent = true
     }
@@ -1625,6 +2004,15 @@ function readCardOverviewMeta(
     // 且日期必须为合法完整的真实日期，损坏时间绝不能记作完成时间
     if (ev.kind === '合并') {
       lastMergeTime = ev.timeStr && parseStrictDateParts(ev.timeStr) !== null ? ev.timeStr : null
+    }
+    if (ev.kind === '写方案' || ev.kind === '方案') {
+      const rawDispatcher = ev.kind === '写方案' ? ev.dst : ev.src
+      if (typeof rawDispatcher === 'string') {
+        const cleaned = sanitizeTrajectoryText(rawDispatcher.trim()).trim()
+        if (cleaned && cleaned !== '你' && cleaned !== '程序' && cleaned !== '调度员') {
+          dispatcher = cleaned
+        }
+      }
     }
   }
 
@@ -1640,10 +2028,10 @@ function readCardOverviewMeta(
     const mdFlow = readSectionFirstLine(reqMd, '流程')
     if (!cardKind && mdType) cardKind = parseCardKindValue(mdType)
     if (!cardFlow && mdFlow) cardFlow = sanitizeTrajectoryText(mdFlow)
-    if (!cardKind && (reqMd.includes('## 允许改动的范围') || hasWorkWorkflowEvent)) {
+    if (!cardKind && (reqMd.includes('## 允许改动的范围') || hasWorkWorkflowEvent || hasDeferredPlan)) {
       cardKind = 'work'
     }
-  } else if (!cardKind && hasWorkWorkflowEvent) {
+  } else if (!cardKind && (hasWorkWorkflowEvent || hasDeferredPlan)) {
     cardKind = 'work'
   }
 
@@ -1682,7 +2070,15 @@ function readCardOverviewMeta(
     firstPass = computeFirstPassFromFlow(parsedEvents)
   }
 
+  const explicitCreatedAt = typeof item.createdAt === 'string' && item.createdAt.trim() && parseStrictDateParts(item.createdAt.trim()) !== null
+    ? item.createdAt.trim()
+    : null
+  const createdAt = firstRequirementTime ?? explicitCreatedAt
+  const requirement = parseCardRequirement(reqMd, rowTitle)
+
   return {
+    createdAt,
+    requirement,
     kind: cardKind,
     flow: cardFlow,
     reviewRounds,
@@ -1690,6 +2086,8 @@ function readCardOverviewMeta(
     completedAt,
     firstPass,
     archived,
+    isRunningNow,
+    dispatcher,
   }
 }
 
@@ -1710,4 +2108,380 @@ function readPlanVersion(project: string, card: string, planText: string): numbe
   }
   if (count >= 1) return count
   return planText.trim().length > 0 ? 1 : 0
+}
+
+function resolveSafeCardDirForGateway(project: string, card: string): string | null {
+  try {
+    return resolveSafeCardDir(project, card)
+  } catch {
+    return null
+  }
+}
+
+function parseRawFlowRecords(flowText: string | null): Record<string, unknown>[] {
+  if (!flowText) return []
+  const records: Record<string, unknown>[] = []
+  for (const rawLine of flowText.split(/\r?\n/)) {
+    const line = rawLine.trim()
+    if (!line) continue
+    try {
+      const parsed = JSON.parse(line) as unknown
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        records.push(parsed as Record<string, unknown>)
+      }
+    } catch {
+      // 跳过损坏行。
+    }
+  }
+  return records
+}
+
+function extractDeveloperReportLine(text: string): string {
+  const idx = text.lastIndexOf('汇报：')
+  if (idx === -1) return ''
+  const after = text.slice(idx + '汇报：'.length).trim()
+  if (!after) return ''
+  const firstLine = after.split(/\r?\n/)[0]?.trim() ?? ''
+  return firstLine ? firstLine.slice(0, 200) : ''
+}
+
+function parseFlowIsoTimeMs(raw: unknown): number | null {
+  if (typeof raw !== 'string') return null
+  const trimmed = raw.trim()
+  if (!trimmed || !/\d{4}-\d{2}-\d{2}/.test(trimmed)) return null
+  const ms = Date.parse(trimmed)
+  return Number.isFinite(ms) ? ms : null
+}
+
+function cleanPlanningActor(raw: unknown): string {
+  if (typeof raw !== 'string') return ''
+  const clean = sanitizeTrajectoryText(raw.trim()).trim()
+  if (!clean || clean === '你' || clean === '程序') return ''
+  return clean
+}
+
+/** 第七批 7-4：最近一次“批准”方案的时刻（本机时间 HH:MM）；读不到返回空。 */
+function extractApprovalTime(rawEvents: readonly Record<string, unknown>[]): string {
+  let latest = ''
+  for (const ev of rawEvents) {
+    if (ev?.kind !== '批准') continue
+    const ms = parseFlowIsoTimeMs(ev.time)
+    if (ms === null) continue
+    const d = new Date(ms)
+    latest = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+  }
+  return latest
+}
+
+function extractPlanningInfoFromEvents(
+  rawEvents: readonly Record<string, unknown>[],
+): ViewPlanningInfo | undefined {
+  let activeWrite: Record<string, unknown> | null = null
+  let latest: ViewPlanningInfo | undefined
+
+  for (const ev of rawEvents) {
+    if (!ev) continue
+    if (ev.kind === '写方案') {
+      activeWrite = ev
+      latest = undefined
+      continue
+    }
+    if (ev.kind === '方案' || ev.kind === '方案失败') {
+      const actor = cleanPlanningActor(ev.src) || cleanPlanningActor(activeWrite?.dst)
+      const rawModel = typeof ev.model === 'string' && ev.model.trim()
+        ? ev.model.trim()
+        : (typeof activeWrite?.model === 'string' && activeWrite.model.trim() ? activeWrite.model.trim() : '')
+      const model = rawModel ? sanitizeTrajectoryText(rawModel) : ''
+      const rawSummary = typeof ev.summary === 'string' ? ev.summary.trim() : ''
+      const detail = rawSummary ? sanitizeTrajectoryText(rawSummary) : ''
+
+      let elapsed: number | null = null
+      if (typeof ev.seconds === 'number' && Number.isFinite(ev.seconds) && ev.seconds >= 0) {
+        elapsed = ev.seconds
+      } else if (activeWrite) {
+        const startMs = parseFlowIsoTimeMs(activeWrite.time)
+        const endMs = parseFlowIsoTimeMs(ev.time)
+        if (startMs !== null && endMs !== null && endMs >= startMs) {
+          elapsed = Math.round((endMs - startMs) / 1000)
+        }
+      }
+
+      latest = {
+        ...(actor ? { actor } : {}),
+        ...(model ? { model } : {}),
+        ...(detail ? { detail } : {}),
+        elapsed,
+      }
+      activeWrite = null
+    }
+  }
+
+  if (latest) return latest
+  if (activeWrite) {
+    const actor = cleanPlanningActor(activeWrite.dst)
+    const rawModel = typeof activeWrite.model === 'string' ? activeWrite.model.trim() : ''
+    const model = rawModel ? sanitizeTrajectoryText(rawModel) : ''
+    const rawSummary = typeof activeWrite.summary === 'string' ? activeWrite.summary.trim() : ''
+    const detail = rawSummary ? sanitizeTrajectoryText(rawSummary) : ''
+    return {
+      ...(actor ? { actor } : {}),
+      ...(model ? { model } : {}),
+      ...(detail ? { detail } : {}),
+      elapsed: null,
+    }
+  }
+  return undefined
+}
+
+function readLatestAcceptReport(
+  realCardDir: string | null,
+  rawEvents: readonly Record<string, unknown>[],
+): string {
+  if (!realCardDir) return ''
+  let roundBoundary = -1
+  for (let i = rawEvents.length - 1; i >= 0; i -= 1) {
+    const kind = rawEvents[i]?.kind
+    if (kind === '追加要求' || kind === '开跑' || kind === '开工') {
+      roundBoundary = i
+      break
+    }
+  }
+  const currentSlice = roundBoundary >= 0 ? rawEvents.slice(roundBoundary + 1) : rawEvents
+  for (let i = currentSlice.length - 1; i >= 0; i -= 1) {
+    const ev = currentSlice[i]
+    if (!ev) continue
+    if (ev.kind === '回复' && ev.src === '开发员' && ev.ok === true) {
+      const reportText = readSafeCardFile(realCardDir, ev.text)
+      if (reportText) {
+        const extracted = extractDeveloperReportLine(reportText)
+        if (extracted) return sanitizeTrajectoryText(extracted)
+      }
+    }
+  }
+
+  // 存在新轮或开跑边界时，汇报.md 必须能用自身时间戳严格证明晚于本轮边界；
+  // 只有没有任何流转轮次记录的旧兼容卡，才允许直接回退读汇报.md 最后一条。
+  const hasRoundBoundary = roundBoundary >= 0
+  const boundaryMs = hasRoundBoundary ? parseFlowIsoTimeMs(rawEvents[roundBoundary]?.time) : null
+  const boundaryMinuteMs = boundaryMs !== null ? Math.floor(boundaryMs / 60_000) * 60_000 : null
+
+  const reportMd = readSafeCardFile(realCardDir, '汇报.md')
+  if (!reportMd) return ''
+  const lines = reportMd.split(/\r?\n/)
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const trimmed = lines[i]?.trim() ?? ''
+    if (!trimmed || trimmed.startsWith('#')) continue
+    const timestamped = /^-\s*(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2})\s+(.+)$/.exec(trimmed)
+    if (timestamped?.[6]?.trim()) {
+      if (hasRoundBoundary || rawEvents.length > 0) {
+        if (boundaryMinuteMs === null) return ''
+        const entryMs = new Date(
+          Number(timestamped[1]),
+          Number(timestamped[2]) - 1,
+          Number(timestamped[3]),
+          Number(timestamped[4]),
+          Number(timestamped[5]),
+        ).getTime()
+        if (!Number.isFinite(entryMs) || entryMs <= boundaryMinuteMs) {
+          return ''
+        }
+      }
+      return sanitizeTrajectoryText(timestamped[6].trim().slice(0, 200))
+    }
+    if (trimmed.startsWith('- ')) {
+      if (hasRoundBoundary || rawEvents.length > 0) {
+        return ''
+      }
+      const plain = trimmed.slice(2).trim()
+      if (plain) return sanitizeTrajectoryText(plain.slice(0, 200))
+    }
+  }
+  return ''
+}
+
+function compactSingleLine(text: string, limit: number = 200): string {
+  const single = text.replace(/\s+/g, ' ').trim()
+  if (!single) return ''
+  return single.length > limit ? `${single.slice(0, limit - 1)}…` : single
+}
+
+function extractReviewFinding(reportText: string): string {
+  const trimmed = reportText.trim()
+  if (!trimmed) return '无记录'
+  const lines = trimmed.split(/\r?\n/).map(line => line.trim()).filter(Boolean)
+  const issueLines: string[] = []
+  const bodyLines: string[] = []
+  for (const line of lines) {
+    const issueMatch = /^(?:[-*•#>\s]*)问题[：:]\s*(.+)$/.exec(line)
+    if (issueMatch?.[1]?.trim()) {
+      issueLines.push(issueMatch[1].trim())
+      continue
+    }
+    if (/^(?:[-*•#>\s]*)结论[：:]\s*(?:不通过|通过)[。.!！；;，,]*$/.test(line)) {
+      continue
+    }
+    bodyLines.push(line)
+  }
+  const picked = issueLines.length > 0
+    ? issueLines.join('；')
+    : bodyLines.length > 0
+      ? bodyLines.join(' ')
+      : lines.join(' ')
+  return compactSingleLine(sanitizeTrajectoryText(picked)) || '无记录'
+}
+
+function extractDeveloperChange(reportText: string): string {
+  const trimmed = reportText.trim()
+  if (!trimmed) return '无记录'
+  const reported = extractDeveloperReportLine(trimmed)
+  if (reported) return sanitizeTrajectoryText(reported)
+  const firstLine = trimmed.split(/\r?\n/).map(line => line.trim()).find(Boolean) ?? ''
+  return compactSingleLine(sanitizeTrajectoryText(firstLine)) || '无记录'
+}
+
+function isReviewerReplyEvent(ev: Record<string, unknown>): boolean {
+  return ev.kind === '回复' && (ev.src === '复查员' || ev.step === '复查')
+}
+
+function isDeveloperReplyEvent(ev: Record<string, unknown>): boolean {
+  return ev.kind === '回复' && ev.src === '开发员'
+}
+
+function isReviewPassingReport(reportText: string, ev: Record<string, unknown>): boolean {
+  const cleanText = reportText.trim()
+  if (cleanText && /(?:^|\n)\s*结论[：:]\s*通过(?:[。.!！；;，,\s]|$)/.test(cleanText)) {
+    return true
+  }
+  const summary = typeof ev.summary === 'string' ? ev.summary.trim() : ''
+  return /^(?:结论[：:]\s*)?通过(?:[。.!！；;，,\s]|$)/.test(summary)
+}
+
+function readStopReviewsAndAdvice(
+  realCardDir: string | null,
+  rawEvents: readonly Record<string, unknown>[],
+  payload: Record<string, unknown>,
+  phaseObj: Record<string, unknown> | null,
+  phaseCode: string,
+): { readonly stopReviews: StopReviewRow[]; readonly stopAdvice: string } {
+  let stopAdvice = ''
+  let lastStopEv: Record<string, unknown> | null = null
+  for (let i = rawEvents.length - 1; i >= 0; i -= 1) {
+    const ev = rawEvents[i]
+    if (!ev) continue
+    if (!lastStopEv && (ev.kind === '转人工' || ev.kind === '停下')) {
+      lastStopEv = ev
+    }
+    if (ev.kind === '转人工') {
+      if (typeof ev.say === 'string' && ev.say.trim()) {
+        stopAdvice = sanitizeTrajectoryText(ev.say.trim())
+      } else if (typeof ev.advice === 'string' && ev.advice.trim()) {
+        stopAdvice = sanitizeTrajectoryText(ev.advice.trim())
+      }
+      break
+    }
+  }
+  if (!stopAdvice && typeof payload.stopAdvice === 'string' && payload.stopAdvice.trim()) {
+    stopAdvice = sanitizeTrajectoryText(payload.stopAdvice.trim())
+  }
+
+  let lastRoundBoundaryIdx = -1
+  for (let i = rawEvents.length - 1; i >= 0; i -= 1) {
+    const kind = rawEvents[i]?.kind
+    if (kind === '追加要求' || kind === '开跑' || kind === '开工') {
+      lastRoundBoundaryIdx = i
+      break
+    }
+  }
+  const slice = lastRoundBoundaryIdx >= 0 ? rawEvents.slice(lastRoundBoundaryIdx + 1) : rawEvents
+
+  const phaseActions = Array.isArray(phaseObj?.actions) ? phaseObj.actions.map(String) : []
+  const stopCause = typeof lastStopEv?.cause === 'string' ? lastStopEv.cause.trim() : ''
+  const phaseReasonText = String(phaseObj?.issues ?? phaseObj?.detail ?? lastStopEv?.summary ?? '').trim()
+
+  let isReviewStop = false
+  if (phaseActions.length > 0) {
+    isReviewStop = phaseActions.includes('accept_issues')
+  } else if (stopCause) {
+    isReviewStop = stopCause.includes('复查')
+  } else if (phaseCode === 'blocked') {
+    const hasFailedReview = slice.some((ev) => {
+      if (!ev || !isReviewerReplyEvent(ev)) return false
+      const revReport = realCardDir ? readSafeCardFile(realCardDir, ev.text) : ''
+      return !isReviewPassingReport(revReport, ev)
+    })
+    const looksLikeNonReviewReason = Boolean(
+      phaseReasonText
+      && !/复查/.test(phaseReasonText)
+      && /越界|撤回|崩溃|中断|启动|超时/.test(phaseReasonText),
+    )
+    isReviewStop = hasFailedReview && !looksLikeNonReviewReason
+  }
+
+  if (!isReviewStop) {
+    return { stopReviews: [], stopAdvice }
+  }
+
+  const stopReviews: StopReviewRow[] = []
+  for (let i = 0; i < slice.length; i += 1) {
+    const ev = slice[i]
+    if (!ev || !isReviewerReplyEvent(ev)) continue
+    const round = stopReviews.length + 1
+    const revReport = realCardDir ? readSafeCardFile(realCardDir, ev.text) : ''
+    const found = extractReviewFinding(revReport)
+
+    let devEvent: Record<string, unknown> | null = null
+    for (let j = i + 1; j < slice.length; j += 1) {
+      const next = slice[j]
+      if (!next) continue
+      if (
+        isReviewerReplyEvent(next)
+        || next.kind === '转人工'
+        || next.kind === '停下'
+        || next.kind === '追加要求'
+      ) {
+        break
+      }
+      if (isDeveloperReplyEvent(next)) {
+        devEvent = next
+      }
+    }
+
+    let changed = '无修改记录'
+    if (devEvent) {
+      const devReport = realCardDir ? readSafeCardFile(realCardDir, devEvent.text) : ''
+      changed = extractDeveloperChange(devReport)
+    }
+    stopReviews.push({ round, found, changed })
+  }
+
+  return { stopReviews, stopAdvice }
+}
+
+/** 后台回的分工 → 界面用的样子；读不到时照实报错。 */
+function toTeamInfo(value: unknown): TeamInfo {
+  const raw = (value ?? {}) as Record<string, unknown>
+  if (raw.problem) {
+    const msg = String(raw.problem)
+    throw new RemoteError('superagent/rejected', msg, { status: 409, message: msg })
+  }
+  const roles = (raw.roles ?? {}) as Record<string, unknown>
+  const picksRaw = (raw.picks ?? {}) as Record<string, Record<string, unknown> | undefined>
+  const pick = (role: string) => ({
+    tool: String(picksRaw[role]?.tool ?? ''), model: String(picksRaw[role]?.model ?? ''), effort: String(picksRaw[role]?.effort ?? ''),
+  })
+  const optionList = (list: unknown): TeamOption[] => (Array.isArray(list) ? list : []).map((o: Record<string, unknown>) => ({
+    value: String(o.value ?? ''),
+    label: String(o.label ?? o.value ?? ''),
+    ...(Array.isArray(o.efforts) ? { efforts: o.efforts.map(String) } : {}),
+  }))
+  const optionsRaw = (raw.options ?? {}) as Record<string, unknown>
+  const modelsRaw = (raw.models ?? {}) as Record<string, unknown>
+  return {
+    roles: { tester: String(roles.tester ?? ''), developer: String(roles.developer ?? ''), reviewer: String(roles.reviewer ?? '') },
+    dispatcher: String(raw.dispatcher ?? ''),
+    picks: { tester: pick('tester'), developer: pick('developer'), reviewer: pick('reviewer') },
+    options: { tester: optionList(optionsRaw.tester), developer: optionList(optionsRaw.developer), reviewer: optionList(optionsRaw.reviewer) },
+    models: Object.fromEntries(Object.entries(modelsRaw).map(([tool, list]) => [tool, optionList(list)])),
+    efforts: optionList(raw.efforts),
+  }
 }

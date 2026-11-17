@@ -24,12 +24,12 @@ const renderView = () => render(
   <TaskTrajectory sessionId="s1" cardOfSession={vi.fn(async () => 'CARD-011')} trajectory={vi.fn(async () => payload)} />,
 )
 
-it('轨迹说明是各角色累计用时，避免和施工墙钟用时混为一谈',async()=>{
- renderView();expect(await screen.findByText(/各角色累计用时/)).toBeTruthy()
+it('轨迹说明是已记录阶段累计，避免和施工墙钟用时混为一谈',async()=>{
+ renderView();expect(await screen.findByText(/已记录阶段累计/)).toBeTruthy()
  expect(screen.queryByText(/已明确记录用时合计/)).toBeNull()
 })
 
-it('表格只有五列（几点、谁、做了什么、用时、用量），“看原文”放在做了什么里，不再单占一列', async () => {
+it('表格只有五列（时间、谁、做了什么、用时、用量），“看原文”放在做了什么里，不再单占一列', async () => {
   renderView()
   const table = await screen.findByRole('table')
   // 窄栏把表格改成 block 显示时，部分浏览器会丢表格语义；显式写明角色保住读屏
@@ -41,7 +41,7 @@ it('表格只有五列（几点、谁、做了什么、用时、用量），“�
   allHaveRole('th', 'columnheader')
   allHaveRole('td', 'cell')
   const headers = within(table).getAllByRole('columnheader').map(h => h.textContent)
-  expect(headers).toEqual(['几点', '谁', '做了什么', '用时', '用量'])
+  expect(headers).toEqual(['时间', '谁', '做了什么', '用时', '用量'])
   const rows = within(table).getAllByRole('row').slice(1)
   const cells = within(rows[1]!).getAllByRole('cell')
   expect(cells).toHaveLength(5)

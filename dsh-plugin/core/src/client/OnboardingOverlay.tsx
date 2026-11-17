@@ -2,7 +2,7 @@
  * 挂载在 `shell.overlay` 的首次配置 / 更换模型原生 Modal 包装器：
  * - 状态尚未探测完毕或后台探测失败时保持锁定，不提前放行新会话与聊天输入，并提供明确重试入口；
  * - 后台仍返回未配置（`required === true` 或 `configured === false`）时，绝不允许完成回调关闭或绕过引导；
- * - 首次引导未完成时禁止点击遮罩或 Esc 退出，并同步把应用根元素设为 inert；
+ * - 首次引导未完成时禁止点击遮罩或 Esc 退出（背后靠 DSH Modal 的遮罩和焦点圈住，不另锁应用根元素，见下方说明）；
  * - 从设置“更换”打开时允许取消关闭；全程使用 DSH 原生 Modal，不改核心 DOM。
  */
 import { useEffect, useState, useSyncExternalStore, type ReactElement } from 'react'
@@ -79,7 +79,7 @@ export class OnboardingUiStore {
       required: true,
       modalOpen: true,
       canCancel: false,
-      probeError: message || '暂时无法确认超级助手配置状态，请重试',
+      probeError: message || '暂时无法确认超级玩家配置状态，请重试',
     })
   }
 
@@ -159,17 +159,9 @@ export function OnboardingOverlay(props: OnboardingOverlayInjected): ReactElemen
     return () => { alive = false }
   }, [snap.modalOpen, loadLegacyOptions])
 
-  // 强制首次引导期间阻止键盘焦点穿透到底层应用根容器（与 DSH 原生 OnboardingModal 一致）
-  useEffect(() => {
-    if (!snap.modalOpen || snap.canCancel) return
-    const appRoot = document.getElementById('root')
-    if (appRoot === null) return
-    const previous = appRoot.inert
-    appRoot.inert = true
-    return () => {
-      appRoot.inert = previous
-    }
-  }, [snap.modalOpen, snap.canCancel])
+  // 不再自己给应用根元素加 inert（11-16 用户实测：配置完窗口点不动）。
+  // 病根：DSH 自己的浮层也锁这个根元素（按计数），两家各记各的“原来的样子”，开关顺序一交错就会永远锁住或提前解锁。
+  // DSH 原生 Modal 已经有整屏遮罩挡鼠标、Tab 焦点只在框内转、Esc 和快捷键归框，背后本来就点不到，不需要再锁。
 
   if (!snap.modalOpen) return null
 
@@ -186,7 +178,7 @@ export function OnboardingOverlay(props: OnboardingOverlayInjected): ReactElemen
   return (
     <Modal
       open
-      title="配置超级助手模型"
+      title="配置超级玩家模型"
       headless
       onClose={snap.canCancel ? () => { props.store.closeIfAllowed() } : ignoreClose}
       className={css.dialog as string}
@@ -216,4 +208,11 @@ export function OnboardingOverlay(props: OnboardingOverlayInjected): ReactElemen
       </div>
     </Modal>
   )
+}
+
+/** 仅在已解锁后从设置“更换模型”时渲染的可取消弹窗包装器（首次引导改由整页承接）。 */
+export function ChangeModelOverlay(props: OnboardingOverlayInjected): ReactElement | null {
+  const snap = useSyncExternalStore(props.store.subscribe, props.store.getSnapshot, props.store.getSnapshot)
+  if (!snap.modalOpen || !snap.canCancel) return null
+  return <OnboardingOverlay {...props} />
 }

@@ -1,0 +1,78 @@
+{
+  "protected-baseline.json": {
+    "count": 6,
+    "mismatches": []
+  },
+  "dsh-protected-baseline.json": {
+    "count": 6,
+    "mismatches": []
+  },
+  "Python product": {
+    "count": 127,
+    "mismatches": []
+  },
+  "branch": "super-play",
+  "HEAD": "212773b120a5fa600deedd673f12420d9c9dec24",
+  "pairs": {
+    "1": 14,
+    "2": 10,
+    "3": 8,
+    "4": 12,
+    "5": 4
+  },
+  "plugin": {
+    "files": 84,
+    "passed": 384,
+    "seconds": 11.83
+  },
+  "gates": {
+    "passed": 10,
+    "failed": 0,
+    "seconds": 25.25
+  },
+  "Python": {
+    "result": "过",
+    "returncode": 0,
+    "seconds": 159.477,
+    "summaries": [
+      "Ran 2653 tests in 156.455s"
+    ]
+  },
+  "DSH tracked dirty paths": [
+    "apps/desktop/src/main.ts",
+    "packages/client/ui-conversation/src/client/skeleton/EmptyHero.tsx",
+    "pnpm-lock.yaml",
+    "tsconfig.base.json",
+    "tsconfig.client.json",
+    "tsconfig.host.json"
+  ],
+  "tests-frozen-31.json": {
+    "count": 85,
+    "mismatches": []
+  },
+  "verified_at_utc": "2026-11-16T19:48:33.296192+00:00",
+  "review_5": "R2通过，无剩余P1/P2；旧依赖仍未通过",
+  "cleanup": {
+    "terminated_task_pids": [
+      48620,
+      63255,
+      63309,
+      63409,
+      63513
+    ],
+    "remaining_task_pids": [],
+    "task_ports_listening": [],
+    "ports_checked": [
+      3092,
+      3093,
+      48921,
+      48931
+    ],
+    "temporary_viewport_reset": true,
+    "temporary_browser_tabs_remaining": 0,
+    "removed_fixture_markers": [
+      "release-developer",
+      "rephoto-null-input"
+    ]
+  }
+}

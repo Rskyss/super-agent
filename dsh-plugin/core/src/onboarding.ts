@@ -6,7 +6,7 @@
  *   任意环节失败均不持久化，任何返回值与错误信息均抹除密钥原文。
  */
 
-export type SetupProviderId = 'deepseek' | 'dashscope' | 'tencent' | 'other'
+export type SetupProviderId = 'deepseek' | 'dashscope' | 'tencent-tokenhub' | 'tencent' | 'other'
 
 export interface SetupProviderPreset {
   readonly id: SetupProviderId
@@ -16,7 +16,7 @@ export interface SetupProviderPreset {
   readonly requiresBaseUrlInput: boolean
 }
 
-/** 预置服务商列表（顺序固定：默认 DeepSeek、阿里百炼、腾讯云、其他 OpenAI 兼容）。 */
+/** 预置服务商列表（顺序固定：默认 DeepSeek、阿里百炼、腾讯云 TokenHub、腾讯混元、其他 OpenAI 兼容）。 */
 export const SETUP_PROVIDER_PRESETS: readonly SetupProviderPreset[] = [
   {
     id: 'deepseek',
@@ -33,8 +33,15 @@ export const SETUP_PROVIDER_PRESETS: readonly SetupProviderPreset[] = [
     requiresBaseUrlInput: false,
   },
   {
+    id: 'tencent-tokenhub',
+    label: '腾讯云 TokenHub',
+    defaultBaseUrl: 'https://tokenhub.tencentmaas.com/v1',
+    routeId: 'superagent-tencent-tokenhub',
+    requiresBaseUrlInput: false,
+  },
+  {
     id: 'tencent',
-    label: '腾讯云',
+    label: '腾讯混元',
     defaultBaseUrl: 'https://api.hunyuan.cloud.tencent.com/v1',
     routeId: 'superagent-tencent',
     requiresBaseUrlInput: false,
@@ -210,6 +217,9 @@ export function formatSafeOnboardingError(error: unknown, secret?: string): stri
   }
   if (/\b429\b|rate[_\s-]?limit|too many requests/.test(lower)) {
     return translateHttpStatusMessage(429)
+  }
+  if (/\b(?:502|503|504)\b|service[_\s-]?unavailable|bad[_\s-]?gateway|gateway[_\s-]?timeout/.test(lower)) {
+    return '服务商暂时不可用，请稍后重新粘贴 Key'
   }
   if (/econnrefused|enotfound|etimedout|eai_again|fetch failed|network|timed out|timeout|aborted|socket hang up/.test(lower)) {
     return '无法连接到服务商接口（网络超时或地址不可达），请检查网络或接口地址是否正确'

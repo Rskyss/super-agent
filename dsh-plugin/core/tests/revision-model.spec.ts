@@ -8,6 +8,13 @@ function setup(output:string) {
  const ctx:any={agents:{get:vi.fn(()=>({model:{current:()=>({provider:'task-provider',model:'task-model'})}}))},llm:{stream}}
  return {host,ctx,stream,run:()=>prepareRevisionOnHost(host,ctx,{card:'CARD-017',sessionId:'task-CARD-017',text:'第二条改成双击，新增保存提示'})}
 }
+it.each(['plan_ready','plan_waiting','plan_failed','planning'])('%s阶段有revise动作时也使用任务模型先出逐条确认',async code=>{
+ const f=setup('{"changes":[{"replaceNth":2,"text":"双击保存"}]}')
+ f.host.view.mockResolvedValue(JSON.stringify({card:{state:'待对齐',phase:{code,actions:['revise']}},accept:{criteria:['标题黑色','单击保存']}}))
+ expect(await f.run()).toMatchObject({ok:true,pending:true})
+ expect(f.host.requestChange).toHaveBeenCalledWith('CARD-017',expect.stringContaining('单击保存 → 双击保存'),expect.any(String),expect.objectContaining({criteriaChanges:[{replaceNth:2,text:'双击保存'}]}))
+ expect(f.host.cardAction).not.toHaveBeenCalled()
+})
 it('调用任务会话当前模型拆出两条；只出确认条，原话不改写',async()=>{
  const f=setup('{"changes":[{"replaceNth":2,"text":"双击保存"},{"add":"保存成功提示"}]}')
  expect(await f.run()).toMatchObject({ok:true,pending:true})

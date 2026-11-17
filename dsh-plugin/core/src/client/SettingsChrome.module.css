@@ -1,0 +1,9 @@
+.entry {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+[data-shortcut-modal='settings']:has([data-superagent-settings-entry]) nav button:not(:has([data-superagent-settings-entry])) {
+  display: none;
+}

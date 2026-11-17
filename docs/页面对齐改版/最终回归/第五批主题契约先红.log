@@ -1,0 +1,37 @@
+
+ RUN  v4.1.11 /Users/rs/Desktop/project/super-agent/dsh-plugin/core
+
+ ❯ tests/alignment-overview-tokens.spec.ts (1 test | 1 failed) 4ms
+   × 任务总览所有启用的DSH颜色变量在真实主题中有定义，悬停和焦点不依赖空变量 4ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  tests/alignment-overview-tokens.spec.ts > 任务总览所有启用的DSH颜色变量在真实主题中有定义，悬停和焦点不依赖空变量
+AssertionError: expected [ '--dsw-alias-bg-elevated', …(2) ] to deeply equal []
+
+- Expected
++ Received
+
+- []
++ [
++   "--dsw-alias-bg-elevated",
++   "--dsw-specific-card",
++   "--dsw-alias-fill-hover",
++ ]
+
+ ❯ tests/alignment-overview-tokens.spec.ts:19:53
+     17|   const used = [...new Set([...css.matchAll(/var\((--dsw-[\w-]+)/g)].m…
+     18|   const defined = new Set([...theme.matchAll(/(--dsw-[\w-]+)\s*:/g)].m…
+     19|   expect(used.filter(token => !defined.has(token))).toEqual([])
+       |                                                     ^
+     20| })
+     21|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed (1)
+   Start at  03:32:11
+   Duration  96ms (transform 9ms, setup 0ms, import 14ms, tests 4ms, environment 0ms)
+

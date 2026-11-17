@@ -2,7 +2,8 @@
  * 把任务卡的当前阶段、方案原文和验收信息解析为输入框上方的决定卡模型。
  * 只做纯数据解析与文案脱敏，不直接发请求或操作浏览器对象。
  */
-import type { CardPlanPayload, CardViewPayload } from '../types.ts'
+import type { CardPlanPayload, CardViewPayload, StopReviewRow } from '../types.ts'
+import { formatWorkDuration } from '../work-duration.ts'
 import { sanitizeProgressText, summarizePlainText } from './progress-view.ts'
 
 export type DecisionKind = 'plan' | 'accept' | 'stop'
@@ -39,6 +40,7 @@ export interface AcceptDecisionView {
   readonly phaseCode: string
   readonly title: string
   readonly statusLabel: string
+  readonly workElapsed: number | null
   readonly result: string
   readonly how: string
   readonly criteria: readonly string[]
@@ -58,6 +60,8 @@ export interface StopDecisionView {
   readonly statusLabel: string
   readonly reason: string
   readonly detailText: string
+  readonly stopReviews: readonly StopReviewRow[]
+  readonly stopAdvice: string
   readonly actions: readonly DecisionAction[]
 }
 
@@ -83,16 +87,39 @@ const ACCEPT_ACTION_META: Record<string, { label: string; primary?: boolean; nee
   accept_issues: { label: '接受剩下的问题，去验收' },
 }
 
+const STOP_ACTION_ORDER: readonly string[] = ['accept_issues', 'revise', 'resume', 'replan', 'discard']
+
 const STOP_ACTION_META: Record<string, { label: string; primary?: boolean; needsDraft?: boolean }> = {
-  accept_issues: { label: '接受剩下的问题，去验收' },
+  accept_issues: { label: '接受剩下的问题，去验收', primary: true },
   revise: { label: '按我说的改', needsDraft: true },
-  resume: { label: '再跑一次', primary: true },
+  resume: { label: '再跑一次' },
   discard: { label: '先不做' },
   replan: { label: '重写一次' },
 }
 
 const EMPTY_QUESTION_RE = /^(?:无|没有|暂无|不需要|不用确认|无需确认|无问题)[。！!.]*$/
 const COMMAND_OR_PATH_RE = /`[^`]+`|(?:^|[\s(])(?:src|tests|docs|collab|desktop|dsh-plugin)\/|\b(?:pytest|vitest|npm|pnpm|yarn|python3?|node|tsc|eslint|git)\b|[A-Za-z0-9_-]+\.(?:tsx?|jsx?|py|json|css|md)\b/i
+
+/**
+ * 严格判定当前停下视图是否确由“复查不通过”触发，防止非复查停因被历史复查记录改名。
+ */
+export function isReviewFailureStopView(view: CardViewPayload | null | undefined): boolean {
+  if (!view || typeof view !== 'object') return false
+  const phase = view.card?.phase
+  const phaseCode = String(phase?.code ?? '')
+  const actions = Array.isArray(phase?.actions) ? phase.actions.map(String) : []
+  if (actions.length > 0) {
+    return actions.includes('accept_issues')
+  }
+  if (phaseCode && phaseCode !== 'blocked') return false
+  const reviews = Array.isArray(view.stopReviews) ? view.stopReviews : []
+  if (reviews.length === 0) return false
+  const reason = String(phase?.issues ?? phase?.detail ?? view.now?.text ?? '')
+  if (reason && !/复查/.test(reason) && /越界|撤回|崩溃|中断|启动|超时/.test(reason)) {
+    return false
+  }
+  return true
+}
 
 /**
  * 校验网页预览地址是否为允许在本机打开的 HTTP 地址。
@@ -223,15 +250,21 @@ function buildPlanDecision(
     detailSections.push({ label: '完整方案原文', value: sanitizeProgressText(markdown) })
   }
 
-  const actions = buildActions(rawActions, PLAN_ACTION_META, ['approve'])
+  // 04a 方案卡按图仅保留“批准，开工 / 我要改”；原先不做（discard）注释保留：
+  // const actions = buildActions(rawActions, PLAN_ACTION_META, ['approve'])
+  const actions = buildActions(
+    rawActions.filter(action => action !== 'discard'),
+    PLAN_ACTION_META,
+    ['approve'],
+  )
   const fingerprint = hashText(`${markdown}\n${allowed.join(',')}\n${testCommand}`)
   return {
     kind: 'plan',
     id: `plan:${phaseCode}:v${version}:r${round}:rw${rework}:${fingerprint}:${actions.map(a => a.action).join(',')}`,
     card,
     phaseCode,
-    title: '方案写好了，你看这样行不行',
-    statusLabel: `第 ${version} 版`,
+    title: `方案 · 第 ${version} 版`,
+    statusLabel: '等你批',
     version,
     rows,
     detailSections,
@@ -248,8 +281,7 @@ function buildAcceptDecision(
   view: CardViewPayload,
 ): AcceptDecisionView {
   const accept = view.accept
-  const phaseDetail = sanitizeProgressText(String(view.card?.phase?.detail ?? ''))
-  const result = sanitizeProgressText(String(accept?.result ?? '').trim()) || phaseDetail || '改动已完成，请按验收标准核对结果。'
+  const result = sanitizeProgressText(String(accept?.result ?? '').trim()) || '暂未读到完成汇报，请先查看预览核对'
   const how = sanitizeProgressText(String(accept?.how ?? '').trim()) || '对照下方验收标准逐条确认。'
   const criteria = Array.isArray(accept?.criteria)
     ? accept.criteria.map(item => sanitizeProgressText(String(item).trim())).filter(Boolean)
@@ -260,7 +292,21 @@ function buildAcceptDecision(
   const criteriaUpdated = accept?.criteriaUpdated === true
   const canPreview = accept?.can_preview === true
   const copyThere = accept?.copy_there === true
-  const actions = buildActions(rawActions, ACCEPT_ACTION_META, ['accept', 'resume', 'accept_issues'])
+  const workElapsed = typeof view.workElapsed === 'number' && Number.isFinite(view.workElapsed) && view.workElapsed >= 0
+    ? view.workElapsed
+    : null
+  const statusLabel = workElapsed !== null
+    ? `等你 · 用时 ${formatWorkDuration(workElapsed)}`
+    : phaseCode === 'merge_failed'
+      ? '放回项目时冲突'
+      : '待验收'
+  // 05 验收卡按图仅保留“打开预览窗口 / 没问题，放进项目 / 继续改”；原先不做（discard）注释保留：
+  // const actions = buildActions(rawActions, ACCEPT_ACTION_META, ['accept', 'resume', 'accept_issues'])
+  const actions = buildActions(
+    rawActions.filter(action => action !== 'discard'),
+    ACCEPT_ACTION_META,
+    ['accept', 'resume', 'accept_issues'],
+  )
   const fingerprint = hashText(`${result}|${how}|${criteria.join(';')}|${changeNotes.join(';')}|${String(criteriaUpdated)}|${String(canPreview)}`)
 
   return {
@@ -269,7 +315,8 @@ function buildAcceptDecision(
     card,
     phaseCode,
     title: '做好了，请你验收',
-    statusLabel: phaseCode === 'merge_failed' ? '放回项目时冲突' : '待验收',
+    statusLabel,
+    workElapsed,
     result,
     how,
     criteria,
@@ -294,18 +341,46 @@ function buildStopDecision(
   const rawState = String(view.card?.state ?? '').trim()
   const reason = sanitizeProgressText(rawIssues || rawDetail || rawState) || '当前进度停下来了，请你决定下一步怎么做。'
   const detailText = rawIssues && rawDetail && rawIssues !== rawDetail ? sanitizeProgressText(rawDetail) : ''
-  const actions = buildActions(rawActions, STOP_ACTION_META, ['resume', 'accept_issues', 'replan'])
-  const fingerprint = hashText(`${reason}|${detailText}`)
+  const isReviewStop = isReviewFailureStopView(view)
+  const stopReviews: StopReviewRow[] = isReviewStop && Array.isArray(view.stopReviews)
+    ? view.stopReviews
+      .filter((row): row is StopReviewRow => Boolean(row && typeof row === 'object'))
+      .map((row, idx) => ({
+        round: typeof row.round === 'number' && Number.isFinite(row.round) && row.round >= 1 ? row.round : idx + 1,
+        found: sanitizeProgressText(String(row.found ?? '').trim()) || '无记录',
+        changed: sanitizeProgressText(String(row.changed ?? '').trim()) || '无修改记录',
+      }))
+    : []
+  const stopAdvice = typeof view.stopAdvice === 'string' && view.stopAdvice.trim()
+    ? sanitizeProgressText(view.stopAdvice.trim())
+    : ''
+  const orderedActions = [
+    ...STOP_ACTION_ORDER.filter(name => rawActions.includes(name)),
+    ...rawActions.filter(name => !STOP_ACTION_ORDER.includes(name)),
+  ]
+  const actions = buildActions(orderedActions, STOP_ACTION_META, ['accept_issues', 'resume', 'replan'])
+  const fingerprint = hashText(
+    `${reason}|${detailText}|${stopAdvice}|${stopReviews.map(r => `${r.round}:${r.found}:${r.changed}`).join(';')}`,
+  )
+  const rawStopCause = !isReviewStop
+    ? sanitizeProgressText(rawIssues || '') || sanitizeProgressText(rawDetail || '')
+    : ''
+  const stopCause = rawStopCause ? summarizePlainText(rawStopCause) : ''
+  const title = isReviewStop && stopReviews.length > 0
+    ? `复查 ${stopReviews.length} 轮都没通过，停下了`
+    : stopCause || '停下了 · 需要你决定'
 
   return {
     kind: 'stop',
     id: `stop:${phaseCode}:r${round}:rw${rework}:${fingerprint}:${actions.map(a => a.action).join(',')}`,
     card,
     phaseCode,
-    title: '停下了 · 需要你决定',
-    statusLabel: '停下了',
+    title,
+    statusLabel: '需要你',
     reason,
     detailText,
+    stopReviews,
+    stopAdvice,
     actions,
   }
 }

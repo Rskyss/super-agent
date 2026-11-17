@@ -1,0 +1,33 @@
+{
+  "item": 22,
+  "plugin_tests": 222,
+  "plugin_files": 48,
+  "build_gates": 10,
+  "new_tests_red_before": 4,
+  "real_self_identification": "我是超级玩家。",
+  "legacy_title": "超级助手 · 流转",
+  "confirmation_dismissed_without_card_creation": true,
+  "own_normal_chats_archived": 2,
+  "own_late_draft_cleared": true,
+  "changed_card_requirements": false,
+  "firstuse_test_service": "com.aisoup.superagent.test.r3-firstuse",
+  "firstuse_test_ref": "SUPERAGENT_TEST_R3_FIRSTUSE",
+  "key_written": false,
+  "screenshots": [
+    "第22项-设置角色名称.png",
+    "第22项-模式选择两个新名.png",
+    "第22项-旧版面板保持可用.png",
+    "第22项-真实任务卡与任务模式.png",
+    "第22项-真实首次配置.png",
+    "第22项-真实确认卡.png",
+    "第22项-真实自称与聊天模式.png",
+    "第22项-任务卡最终与任务模式.png"
+  ],
+  "legacy_brand_verification": "实际document.title为超级助手 · 流转；页面截图仅显示旧版流程，不含浏览器标题栏",
+  "related_python_tests": 19,
+  "independent_review_rounds": 1,
+  "review_critical": 0,
+  "review_medium": 0,
+  "review_result": "通过",
+  "own_services_stopped": true
+}

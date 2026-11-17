@@ -1,0 +1,36 @@
+{
+  "item": 25,
+  "requests": [
+    {
+      "target": "https://tokenhub.tencentmaas.com/v1/models",
+      "path": "/v1/models",
+      "method": "GET",
+      "auth_is_fixture": true
+    },
+    {
+      "target": "https://api.hunyuan.cloud.tencent.com/v1/models",
+      "path": "/v1/models",
+      "method": "GET",
+      "auth_is_fixture": true
+    }
+  ],
+  "transport": "真实首配UI→正式Remote→原生模型发现；保留真实目标URL的fetch测试转发到本机HTTP假服务，仅允许fixture key",
+  "tokenhub_model_visible": true,
+  "hunyuan_model_visible": true,
+  "provider_switch_cleared_key_and_models": true,
+  "clicked_confirm": false,
+  "persisted_key": false,
+  "test_key_cleared": true,
+  "real_tencent_key_test": "按施工单留用户第26项后自行试",
+  "plugin_tests": 227,
+  "plugin_files": 50,
+  "build_gates": 10,
+  "new_tests": 5,
+  "formal_red_failed": 6,
+  "formal_red_passed": 3,
+  "independent_review_rounds": 1,
+  "review_result": "通过",
+  "build_gate_seconds": 23.45,
+  "build_sync_wall_seconds": 26.2,
+  "own_services_stopped": true
+}

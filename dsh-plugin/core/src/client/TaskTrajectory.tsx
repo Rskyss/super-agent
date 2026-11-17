@@ -24,7 +24,7 @@ export interface TaskTrajectoryInjected {
   readonly cardAttachment?: (card: string, name: string) => Promise<ImagePayload>
 }
 
-export type TaskTrajectoryProps = PropsRuntime<'conversation.view'> & TaskTrajectoryInjected
+export type TaskTrajectoryProps = Pick<PropsRuntime<'conversation.view'>, 'sessionId'> & TaskTrajectoryInjected
 
 function formatDuration(seconds: number | null): string {
   if (seconds === null || !Number.isFinite(seconds)) return '—'
@@ -196,7 +196,7 @@ function TaskTrajectoryBody({ sessionId, cardOfSession, trajectory, cardAttachme
 
   if (state.loading && !state.data && !state.error) {
     return (
-      <div className={styles.root}>
+      <div className={styles.root} data-superagent-trajectory="true">
         <div className={styles.notice}>正在加载任务轨迹…</div>
       </div>
     )
@@ -204,7 +204,7 @@ function TaskTrajectoryBody({ sessionId, cardOfSession, trajectory, cardAttachme
 
   if (!state.loading && !state.boundCard && !state.error) {
     return (
-      <div className={styles.root}>
+      <div className={styles.root} data-superagent-trajectory="true">
         <div className={styles.notice}>
           当前是普通聊天，没有任务流程。任务轨迹会在左侧“任务”列表对应的任务对话里展示。
         </div>
@@ -214,9 +214,12 @@ function TaskTrajectoryBody({ sessionId, cardOfSession, trajectory, cardAttachme
 
   const distribution: readonly TrajectoryDistributionItem[] = state.data?.distribution ?? []
   const rows = state.data?.rows ?? []
+  const waitSeconds = distribution.reduce((sum, item) => (
+    item.actor.includes('等你') && item.seconds > 0 ? sum + item.seconds : sum
+  ), 0)
 
   return (
-    <div className={styles.root}>
+    <div className={styles.root} data-superagent-trajectory="true">
       {state.error && <div className={styles.error} role="alert">{state.error}</div>}
 
       <section className={styles.card} aria-label="用时分布">
@@ -224,7 +227,9 @@ function TaskTrajectoryBody({ sessionId, cardOfSession, trajectory, cardAttachme
           <h3 className={styles.sectionTitle}>用时分布</h3>
           <span className={styles.sectionMeta}>
             {totalExplicitSeconds > 0
-              ? `各角色累计用时 ${formatDuration(totalExplicitSeconds)}`
+              ? (waitSeconds > 0
+                  ? `总 ${formatDuration(totalExplicitSeconds)}，其中等你 ${formatDuration(waitSeconds)}（已记录阶段累计）`
+                  : `已记录阶段累计 ${formatDuration(totalExplicitSeconds)}（暂未记录等待耗时）`)
               : '仅统计明确记录用时的步骤'}
           </span>
         </div>
@@ -266,17 +271,19 @@ function TaskTrajectoryBody({ sessionId, cardOfSession, trajectory, cardAttachme
       </section>
 
       <section className={styles.card} aria-label="流转明细">
+        {/* 05t 页面对齐隐藏旧区头（已登记至 docs/页面对齐改版/已藏清单.md）：
         <div className={styles.sectionHeader}>
           <h3 className={styles.sectionTitle}>流转记录</h3>
           <span className={styles.sectionMeta}>
             {state.boundCard ? `${state.boundCard} · 共 ${rows.length} 条 · 每 2 秒刷新` : `共 ${rows.length} 条`}
           </span>
         </div>
+        */}
 
         {attachmentError && (
           <div className={styles.attachmentError} role="alert">
             <span>{attachmentError}</span>
-            <button type="button" className={styles.rawBtn} onClick={() => setAttachmentError('')}>知道了</button>
+            <Button size="sm" variant="ghost" className={styles.rawBtn} onClick={() => setAttachmentError('')}>知道了</Button>
           </div>
         )}
 
@@ -287,7 +294,7 @@ function TaskTrajectoryBody({ sessionId, cardOfSession, trajectory, cardAttachme
             <table className={styles.table} role="table">
               <thead role="rowgroup">
                 <tr role="row">
-                  <th className={styles.colTime} role="columnheader">几点</th>
+                  <th className={styles.colTime} role="columnheader">时间</th>
                   <th className={styles.colActor} role="columnheader">谁</th>
                   <th className={styles.colSummary} role="columnheader">做了什么</th>
                   <th className={styles.colSeconds} role="columnheader">用时</th>
@@ -297,7 +304,8 @@ function TaskTrajectoryBody({ sessionId, cardOfSession, trajectory, cardAttachme
               <tbody role="rowgroup">
                 {rows.map((row) => {
                   const hasRaw = row.raw.trim().length > 0
-                  const isOpen = expandedIds[row.id] === true
+                  const hasOutput = (row.output?.trim().length ?? 0) > 0
+                  const hasDiff = (row.diff?.trim().length ?? 0) > 0
                   return (
                     <TrajectoryTableRow
                       key={row.id}
@@ -308,8 +316,14 @@ function TaskTrajectoryBody({ sessionId, cardOfSession, trajectory, cardAttachme
                       seconds={row.seconds}
                       usage={row.usage}
                       raw={hasRaw ? sanitizeProgressText(row.raw) : ''}
+                      output={hasOutput ? sanitizeProgressText(row.output ?? '') : ''}
+                      diff={hasDiff ? (row.diff ?? '') /* 代码原文逐字显示，不换叫法（复查第 1 轮中等 15） */ : ''}
                       hasRaw={hasRaw}
-                      isOpen={isOpen}
+                      hasOutput={hasOutput}
+                      hasDiff={hasDiff}
+                      rawOpen={expandedIds[`${row.id}:raw`] === true}
+                      outputOpen={expandedIds[`${row.id}:output`] === true}
+                      diffOpen={expandedIds[`${row.id}:diff`] === true}
                       attachments={row.attachments}
                       loadingAttachmentKey={loadingAttachmentKey}
                       onToggle={toggleExpanded}
@@ -359,11 +373,17 @@ interface TrajectoryTableRowProps {
   readonly seconds: number | null
   readonly usage: number | null
   readonly raw: string
+  readonly output: string
+  readonly diff: string
   readonly hasRaw: boolean
-  readonly isOpen: boolean
+  readonly hasOutput: boolean
+  readonly hasDiff: boolean
+  readonly rawOpen: boolean
+  readonly outputOpen: boolean
+  readonly diffOpen: boolean
   readonly attachments?: readonly TrajectoryAttachment[] | undefined
   readonly loadingAttachmentKey: string | null
-  readonly onToggle: (id: string) => void
+  readonly onToggle: (detailKey: string) => void
   readonly onOpenAttachment: (rowId: string, attachment: TrajectoryAttachment) => void
 }
 
@@ -375,8 +395,14 @@ function TrajectoryTableRow({
   seconds,
   usage,
   raw,
+  output,
+  diff,
   hasRaw,
-  isOpen,
+  hasOutput,
+  hasDiff,
+  rawOpen,
+  outputOpen,
+  diffOpen,
   attachments,
   loadingAttachmentKey,
   onToggle,
@@ -390,34 +416,72 @@ function TrajectoryTableRow({
         <td className={styles.colSummary} role="cell">
           <span>{summary || '—'}</span>
           {hasRaw && (
-            <button
-              type="button"
+            <Button
+              size="sm"
+              variant="ghost"
               className={styles.rawBtn}
-              aria-expanded={isOpen}
-              onClick={() => onToggle(id)}
+              aria-expanded={rawOpen}
+              onClick={() => onToggle(`${id}:raw`)}
             >
-              {isOpen ? '收起原文' : '看原文'}
-            </button>
+              {rawOpen ? '收起原文' : '看原文'}
+            </Button>
+          )}
+          {hasOutput && (
+            <Button
+              size="sm"
+              variant="ghost"
+              className={styles.rawBtn}
+              aria-expanded={outputOpen}
+              onClick={() => onToggle(`${id}:output`)}
+            >
+              {outputOpen ? '收起运行输出' : '看运行输出'}
+            </Button>
+          )}
+          {hasDiff && (
+            <Button
+              size="sm"
+              variant="ghost"
+              className={styles.rawBtn}
+              aria-expanded={diffOpen}
+              onClick={() => onToggle(`${id}:diff`)}
+            >
+              {diffOpen ? '收起改动' : '看改动'}
+            </Button>
           )}
           {attachments && attachments.length > 0 && attachments.map((att, idx) => (
-            <button
+            <Button
               key={`${att.name}-${idx}`}
-              type="button"
+              size="sm"
+              variant="ghost"
               className={styles.rawBtn}
               disabled={loadingAttachmentKey === `${id}:${att.name}`}
               onClick={() => onOpenAttachment(id, att)}
             >
               {`查看截图 ${idx + 1}`}
-            </button>
+            </Button>
           ))}
         </td>
         <td className={styles.colSeconds} role="cell">{formatDuration(seconds)}</td>
         <td className={styles.colUsage} role="cell">{formatUsage(usage)}</td>
       </tr>
-      {hasRaw && isOpen && (
+      {hasRaw && rawOpen && (
         <tr className={styles.rawRow} role="row">
           <td colSpan={5} role="cell">
             <pre className={styles.rawPre}>{raw}</pre>
+          </td>
+        </tr>
+      )}
+      {hasOutput && outputOpen && (
+        <tr className={styles.rawRow} role="row">
+          <td colSpan={5} role="cell">
+            <pre className={styles.rawPre}>{output}</pre>
+          </td>
+        </tr>
+      )}
+      {hasDiff && diffOpen && (
+        <tr className={styles.rawRow} role="row">
+          <td colSpan={5} role="cell">
+            <pre className={styles.rawPre}>{diff}</pre>
           </td>
         </tr>
       )}

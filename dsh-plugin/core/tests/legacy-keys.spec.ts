@@ -12,7 +12,7 @@ it('清单里的三把模型 Key 对应到服务商和旧版用的接口地址�
   const options = legacyOptionsFromManifest(manifest)
   expect(options.map(o => o.account)).toEqual(['legacy:tencent', 'legacy:bailian', 'legacy:other:ark.cn-beijing.volces.com'])
   const byAccount = Object.fromEntries(options.map(o => [o.account, o]))
-  expect(byAccount['legacy:tencent']).toMatchObject({ provider: 'tencent', baseUrl: 'https://tokenhub.tencentmaas.com/v1' })
+  expect(byAccount['legacy:tencent']).toMatchObject({ provider: 'tencent-tokenhub', baseUrl: 'https://tokenhub.tencentmaas.com/v1' })
   expect(byAccount['legacy:tencent']!.label).toContain('腾讯云')
   expect(byAccount['legacy:bailian']).toMatchObject({ provider: 'dashscope', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1' })
   expect(byAccount['legacy:other:ark.cn-beijing.volces.com']).toMatchObject({ provider: 'other', baseUrl: 'https://ark.cn-beijing.volces.com/api/v3' })
@@ -33,7 +33,7 @@ it('选用旧版 Key：服务商和地址以主机清单为准（不信界面传
     options,
     readKey,
   )
-  expect(resolved).toEqual({ provider: 'tencent', baseUrl: 'https://tokenhub.tencentmaas.com/v1', key: 'fixture-legacy-secret', model: 'm' })
+  expect(resolved).toEqual({ provider: 'tencent-tokenhub', baseUrl: 'https://tokenhub.tencentmaas.com/v1', key: 'fixture-legacy-secret', model: 'm' })
   expect(readKey).toHaveBeenCalledWith('legacy:tencent')
 })
 

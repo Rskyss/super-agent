@@ -36,12 +36,17 @@ class ScriptedClient:
         self.steps = list(steps or [])
         self.default = default
         self.calls = []  # 每次 (messages, tools)
+        self.revision_calls = []  # 逐条拆分是独立子调用，不消耗主对话的steps脚本
         self.lock = threading.Lock()
 
     def chat(self, messages, on_text=None, tools=None):
         text_all = json.dumps(messages, ensure_ascii=False)
         if "用不超过 12 个字" in text_all:
             return {"text": "标题", "tool_calls": [], "tokens": 1}
+        if messages and messages[0].get("role") == "system" and str(messages[0].get("content", "")).startswith("你负责把用户对任务卡的修改意见"):
+            with self.lock:
+                self.revision_calls.append(json.loads(json.dumps(messages, ensure_ascii=False)))
+            return {"text": '{"changes":[]}', "tool_calls": [], "tokens": 1}
         with self.lock:
             self.calls.append((json.loads(json.dumps(messages, ensure_ascii=False)), tools))
             step = self.steps.pop(0) if self.steps else {"text": self.default}

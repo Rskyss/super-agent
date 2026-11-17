@@ -1,0 +1,9 @@
+
+ RUN  v4.1.11 /Users/rs/Desktop/project/super-agent/dsh-plugin/core
+
+
+ Test Files  4 passed (4)
+      Tests  15 passed (15)
+   Start at  03:42:26
+   Duration  1.43s (transform 1.03s, setup 0ms, import 2.44s, tests 339ms, environment 1.24s)
+

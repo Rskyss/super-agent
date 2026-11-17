@@ -1,0 +1,23 @@
+{
+  "terminated_task_pids": [
+    48620,
+    63255,
+    63309,
+    63409,
+    63513
+  ],
+  "remaining_task_pids": [],
+  "task_ports_listening": [],
+  "ports_checked": [
+    3092,
+    3093,
+    48921,
+    48931
+  ],
+  "temporary_viewport_reset": true,
+  "temporary_browser_tabs_remaining": 0,
+  "removed_fixture_markers": [
+    "release-developer",
+    "rephoto-null-input"
+  ]
+}

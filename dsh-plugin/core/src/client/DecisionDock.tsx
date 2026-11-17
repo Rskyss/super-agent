@@ -2,7 +2,7 @@
  * 任务决定卡：在输入框上方展示方案卡、验收卡或停下卡（同一时刻只出一张）。
  * 支持收起（保留主按钮）、详情展开看原文、安全打开本机预览、以及基于最新草稿提交修改意见。
  */
-import { Fragment, useEffect, useRef, useState, type ReactElement } from 'react'
+import { Fragment, useEffect, useLayoutEffect, useRef, useState, type ReactElement } from 'react'
 import { Button, Tag } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { RemoteResult } from '@deepseek-ai/dsh-api-remotes/client'
 import { initialPoll, markHandled, receivePoll, type PollState } from '../confirm-state.ts'
@@ -10,6 +10,15 @@ import type { CardActionOptions, CardActionResult, CardPlanPayload, CardViewPayl
 import { buildDecisionView, isLocalHttpUrl, isPlanPhase, type DecisionAction, type DecisionCardView } from './decision-model.ts'
 import { sanitizeProgressText } from './progress-view.ts'
 import css from './ConfirmDock.module.css'
+
+const REVISION_PREPARE_PHASES = new Set([
+  'plan_ready',
+  'plan_waiting',
+  'plan_failed',
+  'planning',
+  'review',
+  'blocked',
+])
 
 /** DecisionDock 对外公开属性（与组件测试及桥接层保持一致）。 */
 export interface DecisionDockProps {
@@ -67,7 +76,7 @@ function DecisionDockCard(props: DecisionDockProps): ReactElement | null {
   const [pollError, setPollError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [previewBusy, setPreviewBusy] = useState(false)
-  const [collapsed, setCollapsed] = useState(false)
+  // 保留原折叠状态注释以便需要时恢复：const [collapsed, setCollapsed] = useState(false)
   const [showDetail, setShowDetail] = useState(false)
   const [actionNote, setActionNote] = useState('')
   const [openedPreviewUrl, setOpenedPreviewUrl] = useState<string | null>(null)
@@ -146,11 +155,11 @@ function DecisionDockCard(props: DecisionDockProps): ReactElement | null {
   }, [card])
 
   const decision = poll.current
-  useEffect(() => {
+  // 在浏览器绘制与用户可点击交互之前同步重置卡片展开态，避免首帧点击“展开”后被异步 effect 收起
+  useLayoutEffect(() => {
     const nextId = decision?.id ?? null
     if (prevDecisionIdRef.current !== nextId) {
       prevDecisionIdRef.current = nextId
-      setCollapsed(false)
       setShowDetail(false)
       setOpenedPreviewUrl(null)
       if (nextId !== null) setActionNote('')
@@ -203,7 +212,7 @@ function DecisionDockCard(props: DecisionDockProps): ReactElement | null {
     const shouldPrepareRevision = Boolean(
       prepareRevisionRef.current
       && item.action === 'revise'
-      && (decision.phaseCode === 'review' || decision.phaseCode === 'blocked'),
+      && REVISION_PREPARE_PHASES.has(decision.phaseCode),
     )
 
     if (shouldPrepareRevision) {
@@ -231,7 +240,6 @@ function DecisionDockCard(props: DecisionDockProps): ReactElement | null {
         setPoll(state => markHandled(state, targetId))
         setActionNote('')
         setShowDetail(false)
-        setCollapsed(false)
         onRevisionPreparedRef.current?.()
       }).catch((error: unknown) => {
         if (!aliveRef.current || cardRef.current !== targetCard) return
@@ -262,7 +270,6 @@ function DecisionDockCard(props: DecisionDockProps): ReactElement | null {
       setPoll(state => markHandled(state, targetId))
       setActionNote('')
       setShowDetail(false)
-      setCollapsed(false)
     }).catch((error: unknown) => {
       if (!aliveRef.current || cardRef.current !== targetCard) return
       busyRef.current = false
@@ -315,32 +322,44 @@ function DecisionDockCard(props: DecisionDockProps): ReactElement | null {
     })
   }
 
-  const visibleActions = collapsed ? decision.actions.filter(item => item.primary) : decision.actions
+  const visibleActions = decision.actions
 
   return (
     <div className={css.dock}>
-      <div className={css.card} role="group" aria-label={`${decision.title}：${decision.card}`}>
+      <div className={`${css.card} ${css.decisionCard}`} role="group" aria-label={`${decision.title}：${decision.card}`}>
         <div className={css.head}>
           <span className={css.title}>{decision.title}</span>
+          {/* 旧版头部卡号与收起按钮注释保留：
           <Tag>{decision.card}</Tag>
+          <Button size="sm" variant="ghost" aria-expanded={!collapsed} onClick={() => { setCollapsed(value => !value) }}>
+            {collapsed ? '展开' : '收起'}
+          </Button>
+          */}
           <span className={css.headActions}>
-            <span className={stale ? css.warn : css.status}>
+            <Tag tone={stale ? 'warning' : 'warning'} className={stale ? css.warn : undefined}>
               {stale ? '不是最新' : decision.statusLabel}
-            </span>
-            <Button
-              size="sm"
-              variant="ghost"
-              aria-expanded={!collapsed}
-              onClick={() => { setCollapsed(value => !value) }}
-            >
-              {collapsed ? '展开' : '收起'}
-            </Button>
+            </Tag>
           </span>
         </div>
 
-        {!collapsed ? renderBody(decision, showDetail, () => { setShowDetail(value => !value) }) : null}
+        {renderBody(
+          decision,
+          showDetail,
+          () => { setShowDetail(value => !value) },
+          openedPreviewUrl,
+        )}
 
         <div className={css.actions}>
+          {decision.kind === 'accept' && decision.canPreview ? (
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={busy || previewBusy || stale}
+              onClick={handleOpenPreview}
+            >
+              {previewBusy ? '正在打开预览…' : '打开预览窗口'}
+            </Button>
+          ) : null}
           {visibleActions.map(item => (
             <Button
               key={item.action}
@@ -352,20 +371,11 @@ function DecisionDockCard(props: DecisionDockProps): ReactElement | null {
               {item.label}
             </Button>
           ))}
-          {!collapsed && decision.kind === 'accept' && decision.canPreview ? (
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={busy || previewBusy || stale}
-              onClick={handleOpenPreview}
-            >
-              {previewBusy ? '正在打开预览…' : '打开预览'}
-            </Button>
-          ) : null}
         </div>
 
         {pollError ? <div className={css.note}>{pollError}（当前显示的不是最新内容，请等待恢复后再操作）</div> : null}
         {actionNote ? <div className={css.note}>{actionNote}</div> : null}
+        {/* 05 验收卡预览正常态去重，不在按钮下方重复展示裸网址与备用链接（已登记至 docs/页面对齐改版/已藏清单.md）：
         {openedPreviewUrl && isLocalHttpUrl(openedPreviewUrl) ? (
           <div className={css.note}>
             {'预览已打开，没看到就点这里：'}
@@ -374,6 +384,17 @@ function DecisionDockCard(props: DecisionDockProps): ReactElement | null {
             </a>
           </div>
         ) : null}
+        */}
+        {/* 展开态备用链接注释保留：用户图外地址不展示（包括展开）
+        {showDetail && openedPreviewUrl && isLocalHttpUrl(openedPreviewUrl) ? (
+          <div className={css.note}>
+            {'预览已打开，没看到就点这里：'}
+            <a className={css.previewLink} href={openedPreviewUrl} target="_blank" rel="noopener noreferrer">
+              {openedPreviewUrl}
+            </a>
+          </div>
+        ) : null}
+        */}
       </div>
     </div>
   )
@@ -383,6 +404,7 @@ function renderBody(
   decision: DecisionCardView,
   showDetail: boolean,
   onToggleDetail: () => void,
+  openedPreviewUrl: string | null,
 ): ReactElement {
   if (decision.kind === 'plan') {
     return (
@@ -390,7 +412,10 @@ function renderBody(
         <div className={css.rows}>
           {decision.rows.map(row => (
             <Fragment key={row.label}>
-              <span className={css.label}>{row.label}</span>
+              <span className={css.label}>
+                {row.label === '要你拍板的' ? <span className={css.warn} aria-hidden="true">？</span> : null}
+                <span>{row.label}</span>
+              </span>
               <span className={css.value}>{row.value}</span>
             </Fragment>
           ))}
@@ -419,43 +444,70 @@ function renderBody(
   }
 
   if (decision.kind === 'accept') {
+    const hasExpandable = decision.criteria.length > 0 || decision.changeNotes.length > 0
+    const hasOpenedPreview = Boolean(openedPreviewUrl && isLocalHttpUrl(openedPreviewUrl))
     return (
       <>
-        <div className={css.rows}>
-          <span className={css.label}>做出什么</span>
-          <span className={css.value}>{decision.result}</span>
-          <span className={css.label}>请你亲自做</span>
-          <span className={css.value}>{decision.how}</span>
-          {!decision.canPreview ? (
-            <>
-              <span className={css.label}>预览说明</span>
-              <span className={css.value}>这次改动没有网页界面，请按上面文字结果逐条验收</span>
-            </>
+        <div className={css.acceptSummary}>
+          <span>{decision.result}</span>
+          {decision.criteria.length > 0 ? (
+            <span className={css.acceptCriteriaTag}>
+              {`${decision.criteria.length} 条验收标准全部 `}
+              <span className={css.okCheck}>✓</span>
+            </span>
+          ) : null}
+          {hasExpandable ? (
+            <Button
+              size="sm"
+              variant="ghost"
+              className={css.inlineExpandBtn}
+              aria-expanded={showDetail}
+              onClick={onToggleDetail}
+            >
+              {showDetail ? '收起' : '展开'}
+            </Button>
           ) : null}
         </div>
 
-        {decision.criteria.length > 0 ? (
-          <>
-            <div className={css.sectionLabel}>
-              {decision.changeNotes.length > 0 && !decision.criteriaUpdated ? '原验收标准（以追加要求为准）' : '验收标准（请你核对）'}
-            </div>
-            <ol className={css.list}>
-              {decision.criteria.map((item, idx) => (
-                <li key={`${idx}-${item}`}>{item}</li>
-              ))}
-            </ol>
-          </>
-        ) : null}
+        <div className={css.acceptHow}>
+          {/* 原内嵌裸地址文案注释保留：
+          {hasOpenedPreview
+            ? `预览已经打开（${openedPreviewUrl}）。${decision.how}`
+            : ...}
+          */}
+          {hasOpenedPreview
+            ? `预览已经打开（可从顶部后台任务查看或停止）。${decision.how}`
+            : !decision.canPreview
+              ? `这次改动没有网页界面，请按下面步骤验收：${decision.how}`
+              : decision.how}
+        </div>
 
-        {decision.changeNotes.length > 0 ? (
-          <>
-            <div className={css.sectionLabel}>追加要求记录</div>
-            <ul className={css.list}>
-              {decision.changeNotes.map((item, idx) => (
-                <li key={`${idx}-${item}`}>{item}</li>
-              ))}
-            </ul>
-          </>
+        {showDetail && hasExpandable ? (
+          <div className={css.acceptExpanded}>
+            {decision.criteria.length > 0 ? (
+              <>
+                <div className={css.sectionLabel}>
+                  {decision.changeNotes.length > 0 && !decision.criteriaUpdated ? '原验收标准（以追加要求为准）' : '验收标准（请你核对）'}
+                </div>
+                <ol className={css.list}>
+                  {decision.criteria.map((item, idx) => (
+                    <li key={`${idx}-${item}`}>{item}</li>
+                  ))}
+                </ol>
+              </>
+            ) : null}
+
+            {decision.changeNotes.length > 0 ? (
+              <>
+                <div className={css.sectionLabel}>追加要求记录</div>
+                <ul className={css.list}>
+                  {decision.changeNotes.map((item, idx) => (
+                    <li key={`${idx}-${item}`}>{item}</li>
+                  ))}
+                </ul>
+              </>
+            ) : null}
+          </div>
         ) : null}
       </>
     )
@@ -463,10 +515,38 @@ function renderBody(
 
   return (
     <>
-      <div className={css.rows}>
-        <span className={css.label}>停下原因</span>
-        <span className={css.value}>{decision.reason}</span>
-      </div>
+      {decision.stopReviews.length > 0 ? (
+        <table className={css.stopTable} role="table">
+          <thead role="rowgroup">
+            <tr role="row">
+              <th role="columnheader">轮次</th>
+              <th role="columnheader">复查发现</th>
+              <th role="columnheader">写代码改了什么</th>
+            </tr>
+          </thead>
+          <tbody role="rowgroup">
+            {decision.stopReviews.map(row => (
+              <tr key={row.round} role="row">
+                <td role="cell">{`第 ${row.round} 轮`}</td>
+                <td role="cell">{row.found}</td>
+                <td role="cell" className={css.stopChangedCell}>{row.changed}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      ) : (
+        <div className={css.rows}>
+          <span className={css.label}>停下原因</span>
+          <span className={css.value}>{decision.reason}</span>
+        </div>
+      )}
+      {decision.stopAdvice ? (
+        <div className={css.adviceRow}>
+          <strong>我的建议</strong>
+          <span>：</span>
+          <span>{decision.stopAdvice}</span>
+        </div>
+      ) : null}
       {decision.detailText ? (
         <>
           <div className={css.sectionLabel}>

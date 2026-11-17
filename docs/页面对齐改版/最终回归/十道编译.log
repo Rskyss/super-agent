@@ -1,0 +1,30 @@
+tsconfig.base.json: 已登记
+tsconfig.host.json: 已登记
+tsconfig.client.json: 已登记
+apps/desktop/src/main.ts: 已打过补丁
+packages/client/ui-conversation/src/client/skeleton/EmptyHero.tsx: 已打过补丁
+$ tsx scripts/build.ts
+run-gates: build running 10 gate(s) with 6 worker(s) from $DSH_GATE_CONCURRENCY.
+run-gates: start native addon
+run-gates: start Host Typert
+run-gates: PASS native addon (0.76s)
+run-gates: PASS Host Typert (4.70s)
+run-gates: start host compiler
+run-gates: PASS host compiler (1.36s)
+run-gates: start Host bundle
+run-gates: start host aggregate check
+run-gates: PASS Host bundle (4.83s)
+run-gates: start Desktop bundle
+run-gates: PASS Desktop bundle (1.22s)
+run-gates: start client compiler
+run-gates: PASS host aggregate check (8.40s)
+run-gates: PASS client compiler (4.95s)
+run-gates: start Client bundle
+run-gates: start client aggregate check
+run-gates: PASS client aggregate check (4.07s)
+run-gates: PASS Client bundle (4.61s)
+run-gates: start Web build
+run-gates: PASS Web build (3.59s)
+
+run-gates: 10 passed, 0 failed, 0 skipped in 25.25s.
+build: recorded 374 client artifact(s) with 5 public value(s)

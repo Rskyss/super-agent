@@ -3,6 +3,43 @@
 /** 任务卡类型：干活 / 造能力 / 接零件。 */
 export type CardKind = 'work' | 'ability' | 'connect'
 
+/** 03b 聊天回执的轻量 UI 定位锚（仅记录建卡确认轮 startSeq 与建卡时间戳，绝不含内容或凭据）。 */
+export interface ConfirmedTurnAnchor {
+  readonly startSeq: number
+  readonly createdAt: string
+}
+
+/** 03b 尚未取得建卡时间前的待锚定占位记录（仅在已明确项目归属时持久化）。 */
+export interface PendingTurnAnchor {
+  readonly sessionId: string
+  readonly card: string
+  readonly startSeq: number
+  readonly project: string
+}
+
+/** 按施工项目与卡号分层的持久回执定位台账。 */
+export interface ConfirmedTurnAnchorState {
+  readonly records: Record<string, Record<string, ConfirmedTurnAnchor>>
+  pending?: Record<string, PendingTurnAnchor>
+}
+
+/** 从真实 `需求卡.md` 恢复的已确认需求摘要（浏览器端可安全引用）。 */
+export interface CardRequirement {
+  readonly title: string
+  readonly do: string
+  readonly notDo: string
+  readonly doneWhen: string
+  readonly questions: readonly ProposalQuestion[]
+}
+
+/** 当前工作流元信息（只读真实来源，未知字段为 null，绝不编造）。 */
+export interface WorkflowInfo {
+  readonly name: string
+  readonly steps: readonly string[]
+  readonly maxReviewRounds: number | null
+  readonly version: number | null
+}
+
 /** 左栏、总览用的一行卡片。 */
 export interface CardRow {
   readonly id: string
@@ -13,6 +50,8 @@ export interface CardRow {
   readonly needsYou: boolean
   readonly actions: readonly string[]
   readonly updated: string
+  readonly createdAt?: string | null
+  readonly requirement?: CardRequirement | null
   readonly kind?: CardKind | null
   readonly flow?: string | null
   readonly reviewRounds?: number | null
@@ -20,6 +59,10 @@ export interface CardRow {
   readonly completedAt?: string | null
   readonly firstPass?: boolean | null
   readonly archived?: boolean
+  /** 后台当前是否真的有进程在为这张卡干活（排除暂缓写方案或无进程排队）。 */
+  readonly isRunningNow?: boolean
+  /** 该卡最近一次实际写方案或出方案的调度工具名，未知为 null。 */
+  readonly dispatcher?: string | null
 }
 
 /** 后台服务状态。 */
@@ -192,17 +235,53 @@ export interface ViewAcceptInfo {
   readonly criteriaUpdated?: boolean
 }
 
+/** 后台视图里的关键交接记录（来自 `/api/view` 的 `handoffs`）。 */
+export interface ViewHandoff {
+  readonly seq?: number | undefined
+  readonly kind?: string | undefined
+  readonly time?: string | undefined
+  readonly from?: string | undefined
+  readonly to?: string | undefined
+  readonly summary?: string | undefined
+  readonly tone?: string | undefined
+  readonly has_text?: boolean | undefined
+}
+
+/** 停下卡（14）的每轮复查发现与后续写代码修改摘要。 */
+export interface StopReviewRow {
+  readonly round: number
+  readonly found: string
+  readonly changed: string
+}
+
+/** 第 1 步“调度员写方案”的专属历史事实，避免复用后续阶段覆盖的 disp 站位状态。 */
+export interface ViewPlanningInfo {
+  readonly actor?: string | undefined
+  readonly model?: string | undefined
+  readonly detail?: string | undefined
+  readonly elapsed?: number | null | undefined
+}
+
 /** 后台视图返回的完整数据结构。 */
 export interface CardViewPayload {
   readonly installed?: boolean
   readonly card?: ViewCard | null
   readonly stations?: readonly ViewStation[]
+  readonly planning?: ViewPlanningInfo | undefined
+  /** 第七批 7-3：本次运行摘要（改了几个文件、自动检查通过了哪几项）。 */
+  readonly run?: RunSummary | undefined
+  /** 第七批 7-4：你批准方案的时刻（HH:MM，读流转记录）；没有就不显示。 */
+  readonly approval?: { readonly time?: string } | undefined
+  readonly handoffs?: readonly ViewHandoff[]
   readonly elapsed?: number
   readonly workElapsed?: number | null
+  readonly isRunningNow?: boolean
   readonly stale?: boolean
   readonly live?: boolean
   readonly now?: { readonly text?: string; readonly tone?: string; readonly detail?: string }
   readonly accept?: ViewAcceptInfo
+  readonly stopReviews?: readonly StopReviewRow[]
+  readonly stopAdvice?: string
 }
 
 /** 后台方案接口返回的结构。 */
@@ -254,6 +333,19 @@ export interface ProgressStep {
 }
 
 /** 界面解析后的卡片七步总览。 */
+/** 第七批 7-3：一项自动检查（“守住的规矩”）。 */
+export interface RunRule {
+  readonly label: string
+  readonly ok: boolean
+  readonly detail: string
+}
+
+/** 第七批 7-3：本次运行摘要。 */
+export interface RunSummary {
+  readonly changedFiles: number | null
+  readonly rules: readonly RunRule[]
+}
+
 export interface ParsedCardProgress {
   readonly cardId: string
   readonly title: string
@@ -262,7 +354,10 @@ export interface ParsedCardProgress {
   readonly phaseCode: string
   readonly elapsed: number
   readonly workElapsed: number | null
+  readonly isRunningNow: boolean
   readonly steps: readonly ProgressStep[]
+  /** 第七批 7-3：本次运行摘要；没有就不显示。 */
+  readonly run?: RunSummary | undefined
 }
 
 /** 流转轨迹行中登记的安全截图元数据（不含文件内容或绝对路径）。 */
@@ -280,6 +375,8 @@ export interface TrajectoryRow {
   readonly seconds: number | null
   readonly usage: number | null
   readonly raw: string
+  readonly output?: string | undefined
+  readonly diff?: string | undefined
   readonly attachments?: readonly TrajectoryAttachment[] | undefined
 }
 
@@ -369,7 +466,7 @@ export interface OnboardingModelItem {
 /** 第 17 项：旧版复制过来、可直接选用的模型 Key（只有条目名、服务商和地址，不含密钥）。 */
 export interface LegacyKeyOption {
   readonly account: string
-  readonly provider: 'deepseek' | 'dashscope' | 'tencent' | 'other'
+  readonly provider: 'deepseek' | 'dashscope' | 'tencent-tokenhub' | 'tencent' | 'other'
   readonly label: string
   readonly baseUrl: string
 }
@@ -389,4 +486,70 @@ export interface OnboardingSetupSummary {
   readonly provider: string
   readonly baseUrl: string
   readonly model: string
+}
+
+/** 设置 · 通用：钥匙串里存着的一把 Key（只有名字，不含内容）。 */
+export interface StoredKey {
+  readonly id: string
+  readonly label: string
+  /** 超级玩家正在用的那把（删了要重新配置大模型）。 */
+  readonly inUse: boolean
+}
+
+/** 设置 · 通用：任务和对话记录存放位置和占用大小。 */
+export interface RecordsInfo {
+  readonly path: string
+  readonly bytes: number
+}
+
+/** 设置 · 能力层：表格一行（后台已翻成大白话）。 */
+export interface AbilityRow {
+  readonly id: string
+  readonly title: string
+  readonly inputs?: string
+  readonly output?: string
+  readonly who?: string
+  readonly check?: string
+  readonly runs?: number
+  readonly draft?: boolean
+  /** 卡坏了时的原因；正常为空。 */
+  readonly problem: string
+}
+
+/** 设置 · 积木库：一块零件。 */
+export interface BlockRow {
+  readonly id: string
+  readonly name: string
+  readonly group: 'brain' | 'worker' | 'tool'
+  readonly kind?: string
+  readonly status: 'ok' | 'fail' | 'never'
+  readonly reason: string
+  readonly usedBy: number
+}
+
+export type TeamRole = 'tester' | 'developer' | 'reviewer'
+
+/** 一个岗位现在选的：工具（none = 不复查）、模型、Codex 思考强度。 */
+export interface TeamPick {
+  readonly tool: string
+  readonly model: string
+  readonly effort: string
+}
+
+export interface TeamOption {
+  readonly value: string
+  readonly label: string
+  /** 只有 Codex 的模型带：这款能选的思考强度。 */
+  readonly efforts?: readonly string[]
+}
+
+/** 设置 · 业务流程：现在开发流程每一步谁来跑（读真实分工），过渡期可在这里换（用户 11-16 晚）。 */
+export interface TeamInfo {
+  /** 岗位 → 工具 · 模型（强度），例如 tester → “Codex · GPT-6.1-Sol（极高）”。 */
+  readonly roles: Readonly<Record<TeamRole, string>>
+  readonly dispatcher: string
+  readonly picks?: Readonly<Record<TeamRole, TeamPick>>
+  readonly options?: Readonly<Record<TeamRole, readonly TeamOption[]>>
+  readonly models?: Readonly<Record<string, readonly TeamOption[]>>
+  readonly efforts?: readonly TeamOption[]
 }

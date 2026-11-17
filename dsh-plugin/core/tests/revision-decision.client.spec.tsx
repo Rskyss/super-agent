@@ -18,12 +18,13 @@ it.each(['review','blocked'])('%s的修改先拆分并出确认，不能直接�
  expect(f.prepareRevision).toHaveBeenCalledWith('CARD-015','第二条改成双击保存')
  expect(f.cardAction).not.toHaveBeenCalled();expect(f.clearDraft).not.toHaveBeenCalled()
 })
-it('方案批准阶段我要改仍沿原方案重写路径',async()=>{
+it('方案批准阶段我要改也先拆分出确认，不能直接重写方案或清草稿',async()=>{
  const f=setup('plan_ready')
  fireEvent.click(await screen.findByRole('button',{name:'我要改'}))
  await act(async()=>{await Promise.resolve();await Promise.resolve()})
- expect(f.prepareRevision).not.toHaveBeenCalled()
- expect(f.cardAction).toHaveBeenCalledWith('CARD-015','revise','第二条改成双击保存')
+ expect(f.prepareRevision).toHaveBeenCalledWith('CARD-015','第二条改成双击保存')
+ expect(f.cardAction).not.toHaveBeenCalled()
+ expect(f.clearDraft).not.toHaveBeenCalled()
 })
 it('合法的空拆分完成追加后才清空旧草稿',async()=>{
  const f=setup('review');f.prepareRevision.mockResolvedValue(ok({ok:true,pending:false,message:''}))
@@ -40,6 +41,7 @@ it('模型拆分失败时留下草稿并显示失败，不能假装已经追加'
 it('标准已经逐条更新时显示当前验收标准，不能仍叫原标准以追加为准',async()=>{
  setup('review',{criteriaUpdated:true,changeNotes:['第二条改成双击保存']})
  await screen.findByRole('button',{name:'继续改'})
+ fireEvent.click(screen.getByRole('button',{name:'展开'}))
  expect(screen.queryByText(/原验收标准/)).toBeNull()
  expect(screen.getByText('验收标准（请你核对）')).toBeTruthy()
  expect(screen.getByText('追加要求记录')).toBeTruthy()

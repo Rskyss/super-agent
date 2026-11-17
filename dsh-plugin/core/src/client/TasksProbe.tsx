@@ -1,13 +1,23 @@
-import { useEffect, useMemo, useRef, useState, type ReactElement } from 'react'
+import { useEffect, useId, useMemo, useRef, useState, type ReactElement } from 'react'
 import type { RemoteResult } from '@deepseek-ai/dsh-api-remotes/client'
-import { Button, Input } from '@deepseek-ai/dsh-client-ui-primitives'
+import {
+  Button,
+  IconBrowseOutlineRegular,
+  IconSearchOutlineRegular,
+  Input,
+  SegmentedTabs,
+  StateDot,
+  type SegmentedTab,
+} from '@deepseek-ai/dsh-client-ui-primitives'
 import { FINISHED_CARD_STATES, FINISHED_PHASE_CODES, type CardRow } from '../types.ts'
 import { formatWorkDuration } from '../work-duration.ts'
-import { sanitizeProgressText } from './progress-view.ts'
+import { formatTaskDisplayStatus, sanitizeProgressText } from './progress-view.ts'
 import styles from './TasksProbe.module.css'
 
 type OverviewTab = 'all' | 'work' | 'ability' | 'connect' | 'archived'
+type OverviewStatusKind = 'done' | 'dropped' | 'warning' | 'error' | 'ongoing' | 'paused'
 
+/* 旧五类标签定义保留注释（本期暂藏“造能力 / 接零件”入口，保留 OverviewTab 与 matchesTab 历史数据能力，详见已藏清单）：
 const TAB_ITEMS: ReadonlyArray<{ readonly key: OverviewTab; readonly label: string }> = [
   { key: 'all', label: '全部' },
   { key: 'work', label: '干活' },
@@ -15,6 +25,7 @@ const TAB_ITEMS: ReadonlyArray<{ readonly key: OverviewTab; readonly label: stri
   { key: 'connect', label: '接零件' },
   { key: 'archived', label: '已归档' },
 ]
+*/
 
 const POLL_INTERVAL_MS = 3000
 
@@ -42,7 +53,30 @@ function isCompletedCard(row: CardRow): boolean {
 function isInProgressCard(row: CardRow): boolean {
   if (row.archived || row.needsYou) return false
   if (FINISHED_PHASE_CODES.has(row.phaseCode) || FINISHED_CARD_STATES.has(row.state)) return false
-  return true
+  // 只有后台明确在跑的任务计入“进行中”；undefined 或 false 保守不计入，避免排队/暂停误报
+  return row.isRunningNow === true
+}
+
+/** 第七批 7-4（对照 09）：等你处理排最前，再进行中 / 没开工的，最后已完成和不做了的。 */
+function orderGroup(row: CardRow): number {
+  if (!row.archived && row.needsYou) return 0
+  if (isCompletedCard(row) || isDroppedCard(row) || FINISHED_PHASE_CODES.has(row.phaseCode) || FINISHED_CARD_STATES.has(row.state)) return 2
+  return 1
+}
+
+/** 组内按最后更新时间新的在前；时间一样按卡号大的在前。 */
+function compareRows(a: CardRow, b: CardRow): number {
+  const group = orderGroup(a) - orderGroup(b)
+  if (group !== 0) return group
+  const time = String(b.updated ?? '').localeCompare(String(a.updated ?? ''))
+  if (time !== 0) return time
+  return b.id.localeCompare(a.id, undefined, { numeric: true })
+}
+
+function formatCardShortId(cardId: string): string {
+  const match = /^CARD-0*(\d+)([A-Za-z]*)$/i.exec(cardId.trim())
+  if (!match) return cardId
+  return `${match[1]}${match[2] ?? ''}`
 }
 
 const STRICT_DATE_RE = /^(\d{4})[-/](\d{1,2})[-/](\d{1,2})(?:[T\s](\d{1,2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?(?:\s*(Z|[+-]\d{2}:?\d{2}))?)?$/i
@@ -123,14 +157,62 @@ function formatReviewRounds(rounds: number | null | undefined): string {
   return `${Math.round(rounds)} 轮`
 }
 
-function statusClassName(row: CardRow, label: string): string {
-  if (row.needsYou) return styles.statusWarn ?? ''
-  if (isCompletedCard(row)) return styles.statusSuccess ?? ''
-  if (isDroppedCard(row)) return styles.statusMuted ?? ''
-  if (row.phaseCode === 'blocked' || row.phaseCode === 'error' || label.includes('失败')) {
-    return styles.statusError ?? ''
+function resolveRowStatus(row: CardRow): { readonly kind: OverviewStatusKind; readonly label: string } {
+  if (isCompletedCard(row)) {
+    const label = formatTaskDisplayStatus({
+      phaseCode: row.phaseCode,
+      phaseLabel: row.phaseLabel,
+      state: row.state,
+    }) || '已完成'
+    return { kind: 'done', label }
   }
-  return styles.statusOngoing ?? ''
+  if (isDroppedCard(row)) {
+    const label = formatTaskDisplayStatus({
+      phaseCode: row.phaseCode,
+      phaseLabel: row.phaseLabel,
+      state: row.state,
+    }) || '已放弃'
+    return { kind: 'dropped', label }
+  }
+  const rawFallback = sanitizeProgressText(row.phaseLabel || row.state).trim()
+  const isBlocked = row.phaseCode === 'blocked'
+  const isFailed = row.phaseCode === 'error'
+    || row.phaseCode.endsWith('_failed')
+    || row.phaseCode === 'interrupted'
+    || row.phaseCode === 'copy_missing'
+    || rawFallback.includes('失败')
+  if (row.needsYou) {
+    const label = formatTaskDisplayStatus({
+      phaseCode: row.phaseCode,
+      phaseLabel: row.phaseLabel,
+      state: row.state,
+    }) || rawFallback || '等你处理'
+    return { kind: 'warning', label }
+  }
+  if (isBlocked || isFailed) {
+    const label = formatTaskDisplayStatus({
+      phaseCode: row.phaseCode,
+      phaseLabel: row.phaseLabel,
+      state: row.state,
+    }) || rawFallback || '已停下'
+    return { kind: 'error', label }
+  }
+  if (!row.archived && row.isRunningNow === true) {
+    const label = formatTaskDisplayStatus(row) || '运行中'
+    return { kind: 'ongoing', label }
+  }
+  return { kind: 'paused', label: '暂停' }
+}
+
+function statusClassName(kind: OverviewStatusKind): string {
+  switch (kind) {
+    case 'warning': return styles.statusWarn ?? ''
+    case 'done': return styles.statusSuccess ?? ''
+    case 'dropped': return styles.statusMuted ?? ''
+    case 'error': return styles.statusError ?? ''
+    case 'ongoing': return styles.statusOngoing ?? ''
+    case 'paused': return styles.statusPaused ?? ''
+  }
 }
 
 function matchesTab(row: CardRow, tab: OverviewTab): boolean {
@@ -146,18 +228,32 @@ function matchesQuery(row: CardRow, query: string): boolean {
   const q = query.toLowerCase()
   const fields = [
     row.id,
+    formatCardShortId(row.id),
     sanitizeProgressText(row.title),
     formatFlowOrKind(row),
+    resolveRowStatus(row).label,
     sanitizeProgressText(row.phaseLabel || row.state),
   ]
   return fields.some(text => text.toLowerCase().includes(q))
 }
 
 /** 正式任务总览页面（09）与无任务引导页（17）。 */
+/** 任务总览外框：可拖顶条在滚动层外面，列表滚动时顶条不跟着走。 */
 export function TasksProbe(props: TasksProbeInjected): ReactElement {
+  return (
+    <div className={styles.frame}>
+      {/* 窗口拖动顶条：盖住页面顶部 24px 留白，不盖按钮。 */}
+      <div className={styles.dragStrip} data-window-drag="" aria-hidden="true" />
+      <TasksProbeBody {...props} />
+    </div>
+  )
+}
+
+function TasksProbeBody(props: TasksProbeInjected): ReactElement {
   const cardsFnRef = useRef(props.cards)
   cardsFnRef.current = props.cards
   const aliveRef = useRef(true)
+  const tabsId = useId()
 
   const [cards, setCards] = useState<readonly CardRow[]>([])
   const [loaded, setLoaded] = useState(false)
@@ -247,7 +343,7 @@ export function TasksProbe(props: TasksProbeInjected): ReactElement {
 
   const trimmedQuery = query.trim()
   const filteredRows = useMemo(
-    () => cards.filter(row => matchesTab(row, activeTab) && matchesQuery(row, trimmedQuery)),
+    () => cards.filter(row => matchesTab(row, activeTab) && matchesQuery(row, trimmedQuery)).sort(compareRows),
     [cards, activeTab, trimmedQuery],
   )
 
@@ -310,22 +406,51 @@ export function TasksProbe(props: TasksProbeInjected): ReactElement {
     return (
       <div className={styles.root}>
         <div className={styles.centerState}>
+          {loadError ? (
+            <div className={styles.errorBanner} role="alert">{`刷新任务失败：${loadError}`}</div>
+          ) : null}
           {actionError ? <div className={styles.errorBanner} role="alert">{actionError}</div> : null}
+          <IconBrowseOutlineRegular size={40} className={styles.emptyIcon ?? ''} />
           <h2 className={styles.emptyTitle}>还没有任务</h2>
           <p className={styles.emptyDesc}>
-            和超级助手聊清楚一件事，点“确认”，它就变成一张任务卡出现在这里。只是聊聊想法不会出现在这里。
+            和超级玩家聊清楚一件事，点“确认”，它就变成一张任务卡出现在这里。只是聊聊想法不会出现在这里。
           </p>
           <Button
             variant="primary"
             disabled={startingChat}
             onClick={handleStartChat}
           >
-            去找超级助手聊
+            去找超级玩家聊
           </Button>
         </div>
       </div>
     )
   }
+
+  const panelId = `${tabsId}-panel`
+  const segmentedTabItems: readonly [SegmentedTab<OverviewTab>, ...SegmentedTab<OverviewTab>[]] = [
+    {
+      value: 'all',
+      id: `${tabsId}-all-tab`,
+      panelId,
+      label: '全部',
+    },
+    {
+      value: 'work',
+      id: `${tabsId}-work-tab`,
+      panelId,
+      label: '干活',
+    },
+    // 本期暂藏“造能力 / 接零件”入口（保留类型、数据匹配逻辑与旧展示注释，详见 docs/页面对齐改版/已藏清单.md）：
+    // { value: 'ability', id: `${tabsId}-ability-tab`, panelId, label: '造能力' },
+    // { value: 'connect', id: `${tabsId}-connect-tab`, panelId, label: '接零件' },
+    {
+      value: 'archived',
+      id: `${tabsId}-archived-tab`,
+      panelId,
+      label: '已归档',
+    },
+  ]
 
   return (
     <div className={styles.root}>
@@ -364,6 +489,15 @@ export function TasksProbe(props: TasksProbeInjected): ReactElement {
         </section>
 
         <div className={styles.toolbar}>
+          <SegmentedTabs<OverviewTab>
+            size="sm"
+            className={styles.segmentedTabs ?? ''}
+            label="任务类型筛选"
+            value={activeTab}
+            onChange={(nextTab) => { setActiveTab(nextTab) }}
+            items={segmentedTabItems}
+          />
+          {/* 旧自制分类标签保留注释，改由 DSH SegmentedTabs 承担视图切换与键盘交互：
           <div className={styles.tabs} role="tablist" aria-label="任务类型筛选">
             {TAB_ITEMS.map((item) => {
               const selected = activeTab === item.key
@@ -381,17 +515,25 @@ export function TasksProbe(props: TasksProbeInjected): ReactElement {
               )
             })}
           </div>
+          */}
           <div className={styles.searchWrap}>
             <Input
               aria-label="搜索任务"
-              placeholder="搜任务名、编号..."
+              className={styles.searchInput ?? ''}
+              icon={<IconSearchOutlineRegular size={16} />}
+              placeholder="搜任务名、编号…"
               value={query}
               onChange={(event) => { setQuery(event.target.value) }}
             />
           </div>
         </div>
 
-        <div className={styles.tableWrap}>
+        <div
+          id={panelId}
+          role="tabpanel"
+          aria-labelledby={`${tabsId}-${activeTab}-tab`}
+          className={styles.tableWrap}
+        >
           <table className={styles.table}>
             <thead>
               <tr>
@@ -410,7 +552,7 @@ export function TasksProbe(props: TasksProbeInjected): ReactElement {
             </thead>
             <tbody>
               {filteredRows.map((row) => {
-                const statusLabel = sanitizeProgressText(row.phaseLabel || row.state) || '—'
+                const rowStatus = resolveRowStatus(row)
                 const rowBusy = openingCard === row.id
                 return (
                   <tr
@@ -426,11 +568,15 @@ export function TasksProbe(props: TasksProbeInjected): ReactElement {
                       }
                     }}
                   >
-                    <td className={styles.colId}>{row.id}</td>
+                    <td className={styles.colId}>{formatCardShortId(row.id)}</td>
                     <td className={styles.colTitle}>{sanitizeProgressText(row.title) || row.id}</td>
                     <td className={styles.colFlow}>{formatFlowOrKind(row)}</td>
-                    <td className={`${styles.colStatus} ${statusClassName(row, statusLabel)}`}>
-                      {statusLabel}
+                    <td className={`${styles.colStatus} ${statusClassName(rowStatus.kind)}`}>
+                      <span className={styles.statusCell}>
+                        {rowStatus.kind === 'ongoing' ? <StateDot state="ongoing" size={12} /> : null}
+                        {rowStatus.kind === 'paused' ? <StateDot state="idle" appearance="step" size={11} /> : null}
+                        <span>{rowStatus.label}</span>
+                      </span>
                     </td>
                     <td className={styles.colRounds}>{formatReviewRounds(row.reviewRounds)}</td>
                     <td className={styles.colElapsed}>{formatWorkDuration(row.elapsed, '—')}</td>

@@ -1,23 +1,136 @@
 .root {
+  position: relative;
+  --dsh-sidebar-inline-padding: 12px;
+  --dsh-sidebar-row-padding: 10px;
+  --dsh-sidebar-label-gap: 8px;
+  --dsh-sidebar-paint-inset: 0px;
   display: flex;
   flex-direction: column;
   height: 100%;
   min-height: 0;
-  gap: 8px;
-  padding: 4px 8px 8px;
+  gap: 10px;
+  padding: 14px 12px 10px;
+  box-sizing: border-box;
+  background: var(--dsw-specific-sidebar-fill);
   color: var(--dsw-alias-label-primary);
   font-size: 13px;
+}
+
+:global([data-platform='darwin']) .root {
+  background: transparent;
+}
+
+:global(html[data-platform='darwin']:not([data-fullscreen])) .root {
+  padding-top: 40px;
+}
+
+.railRoot {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  align-items: center;
+  height: 100%;
+  min-height: 0;
+  padding: 14px 6px 10px;
+  box-sizing: border-box;
+  background: var(--dsw-specific-sidebar-fill);
+}
+
+:global([data-platform='darwin']) .railRoot {
+  background: transparent;
 }
 
 .rail {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 6px;
-  padding: 6px 4px;
+  gap: 8px;
+}
+
+.railFoot {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.railIconBtn {
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  justify-content: center;
+}
+
+/* 窗口拖动顶条：盖住 darwin 下左栏顶部 40px 留白（红绿灯那一行）。 */
+.dragStrip {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 40px;
+}
+
+.brandArea {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 2px 4px 4px;
+}
+
+.brandRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 24px;
+}
+
+.collapseBtn {
+  margin-left: auto;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  justify-content: center;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  -webkit-app-region: no-drag;
+}
+
+.root:hover .collapseBtn,
+.root:focus-within .collapseBtn,
+.drawerRoot .collapseBtn,
+.collapseBtn:focus-visible {
+  opacity: 1;
+}
+
+.drawerRoot {
+  outline: none;
+}
+
+.brandTitle {
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 22px;
+  color: var(--dsw-alias-label-primary);
+  white-space: nowrap;
+}
+
+.brandVersion {
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--dsw-alias-label-tertiary, var(--dsw-alias-label-secondary));
+  white-space: nowrap;
+}
+
+.brandStudio {
+  padding-left: 32px;
+  font-size: 11px;
+  line-height: 14px;
+  color: var(--dsw-alias-label-secondary);
 }
 
 .newChatWrap {
+  flex: none;
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -26,8 +139,10 @@
 
 .newChatBtn {
   width: 100%;
-  justify-content: flex-start;
-  gap: 8px;
+  height: 36px;
+  justify-content: center;
+  gap: 6px;
+  border-radius: var(--dsw-radius-md);
 }
 
 .newChatRailBtn {
@@ -37,11 +152,24 @@
   justify-content: center;
 }
 
+.segmentedTabs {
+  flex: none;
+}
+
+.tabLabel {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+/* 旧自制标签样式保留注释，现由 DSH SegmentedTabs 承担：
 .tabs {
+  flex: none;
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 4px;
-  padding: 2px;
+  padding: 3px;
   border-radius: var(--dsw-radius-md);
   background: var(--dsw-alias-fill-quaternary, rgba(127, 127, 127, 0.08));
 }
@@ -67,9 +195,26 @@
 }
 
 .tabActive {
-  background: var(--dsw-alias-bg-primary, var(--dsw-specific-card, transparent));
+  background: var(--dsw-alias-bg-layer-2, var(--dsw-alias-bg-primary, var(--dsw-specific-card, transparent)));
   color: var(--dsw-alias-label-primary);
   box-shadow: var(--dsw-elevation-card, none);
+}
+*/
+
+.tabBadge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  box-sizing: border-box;
+  border-radius: 999px;
+  background: var(--dsw-alias-state-warn-primary);
+  color: var(--dsw-alias-label-primary-inverted, #111111);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
 }
 
 .scroll {
@@ -78,36 +223,45 @@
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
 }
 
 .section {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 2px;
 }
 
 .groupTitle {
-  padding: 2px 6px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 8px;
   font-size: 12px;
   font-weight: 600;
   color: var(--dsw-alias-label-secondary);
 }
 
+.groupCount {
+  font-weight: 500;
+  color: var(--dsw-alias-label-tertiary, var(--dsw-alias-label-secondary));
+}
+
 .row {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px 6px;
+  gap: 4px;
+  padding: 4px 8px;
   border-radius: var(--dsw-radius-md);
 }
 
 .row:hover {
-  background: var(--dsw-alias-fill-hover, rgba(127, 127, 127, 0.1));
+  background: var(--dsw-alias-interactive-bg-hover, rgba(127, 127, 127, 0.1));
 }
 
 .rowActive {
-  background: var(--dsw-alias-fill-quaternary, rgba(127, 127, 127, 0.14));
+  background: var(--dsw-specific-sidebar-nav-item-active, var(--dsw-alias-fill-quaternary, rgba(127, 127, 127, 0.14)));
 }
 
 .rowMain {
@@ -116,13 +270,21 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 2px 0;
+  padding: 3px 0;
   border: 0;
   background: transparent;
   color: inherit;
   font: inherit;
   text-align: left;
   cursor: pointer;
+}
+
+.cardNumber {
+  flex-shrink: 0;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--dsw-alias-label-secondary);
+  white-space: nowrap;
 }
 
 .rowTitle {
@@ -133,11 +295,45 @@
   white-space: nowrap;
 }
 
+.rowTime {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--dsw-alias-label-tertiary, var(--dsw-alias-label-secondary));
+  white-space: nowrap;
+}
+
+.rowTrailing {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 4px;
+}
+
 .rowActions {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
   display: inline-flex;
   align-items: center;
   gap: 2px;
   flex-shrink: 0;
+  opacity: 0;
+  pointer-events: none;
+  background: var(--dsw-specific-sidebar-fill, var(--dsw-alias-bg-layer-2));
+  border-radius: var(--dsw-radius-sm, 6px);
+}
+
+.row:hover .rowActions,
+.row:focus-within .rowActions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.row:hover .rowTime,
+.row:focus-within .rowTime {
+  opacity: 0;
 }
 
 .renameForm {
@@ -159,6 +355,19 @@
   color: var(--dsw-alias-label-tertiary, var(--dsw-alias-label-secondary));
 }
 
+.pausedBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--dsw-alias-label-tertiary, var(--dsw-alias-label-secondary));
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.pausedText {
+  color: var(--dsw-alias-label-tertiary, var(--dsw-alias-label-secondary));
+}
+
 .droppedBadge {
   flex-shrink: 0;
   padding: 0 5px;
@@ -170,9 +379,21 @@
 }
 
 .empty {
-  padding: 8px 6px;
+  padding: 20px 8px;
+  text-align: center;
   font-size: 12px;
   color: var(--dsw-alias-label-secondary);
+}
+
+.footer {
+  flex: none;
+  padding-top: 4px;
+}
+
+.settingsBtn {
+  width: 100%;
+  justify-content: flex-start;
+  gap: 8px;
 }
 
 .error {

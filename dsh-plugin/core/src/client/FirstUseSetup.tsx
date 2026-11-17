@@ -7,8 +7,8 @@
  * - 切换服务商时清空 Key 与模型，且丢弃过期异步验证响应；
  * - 确认按钮在选定模型前禁用并防连点；成功后直接触发 `onDone`，不另出成功卡片。
  */
-import { useEffect, useId, useRef, useState, type ClipboardEvent, type ReactElement } from 'react'
-import { Button } from '@deepseek-ai/dsh-client-ui-primitives'
+import { useEffect, useId, useRef, useState, type ClipboardEvent, type KeyboardEvent, type ReactElement } from 'react'
+import { Button, IconCheckCircleFillRegular, IconCloseCircleFillRegular, Input, Tag } from '@deepseek-ai/dsh-client-ui-primitives'
 import {
   SETUP_PROVIDER_PRESETS,
   findProviderPreset,
@@ -23,6 +23,7 @@ import type { LegacyKeyOption } from '../types.ts'
 import css from './FirstUseSetup.module.css'
 
 export interface FirstUseSetupProps {
+  readonly presentation?: 'page' | 'dialog' | undefined
   readonly loadModels: (request: OnboardingSetupRequest) => Promise<readonly OnboardingModelOption[]>
   readonly complete: (request: OnboardingSetupRequest) => Promise<void>
   readonly onDone: () => void | Promise<void>
@@ -50,7 +51,49 @@ function initialProviderOf(raw?: string): SetupProviderId {
   return matched ? matched.id : 'deepseek'
 }
 
+function parseHttpOrigin(rawUrl: string): string | null {
+  const trimmed = rawUrl.trim()
+  if (!trimmed) return null
+  try {
+    const parsed = new URL(trimmed)
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null
+    return parsed.origin
+  } catch {
+    return null
+  }
+}
+
+function resolveHelpLink(
+  preset: { readonly id: string; readonly label: string; readonly requiresBaseUrlInput?: boolean } | undefined,
+  effectiveBaseUrl: string,
+): { readonly href: string | null; readonly title?: string } {
+  if (!preset) return { href: null }
+  const id = String(preset.id).toLowerCase()
+  const label = preset.label
+  if (id === 'deepseek' || label.includes('DeepSeek')) {
+    return { href: 'https://platform.deepseek.com/api_keys' }
+  }
+  if (id.includes('bailian') || id.includes('aliyun') || id.includes('dashscope') || label.includes('百炼')) {
+    return { href: 'https://help.aliyun.com/zh/model-studio/get-api-key/' }
+  }
+  if (id.includes('tokenhub') || label.includes('TokenHub')) {
+    return { href: 'https://cloud.tencent.com/document/product/1823/130090' }
+  }
+  if (id.includes('hunyuan') || label.includes('混元')) {
+    return { href: 'https://cloud.tencent.com/document/product/1729/111007' }
+  }
+  if (preset.requiresBaseUrlInput) {
+    const origin = parseHttpOrigin(effectiveBaseUrl)
+    if (origin) {
+      return { href: origin, title: '到该服务商网站获取 API Key' }
+    }
+    return { href: null, title: '填写合法的 http(s) 接口地址后，可前往该服务商网站获取 API Key' }
+  }
+  return { href: null }
+}
+
 export function FirstUseSetup(props: FirstUseSetupProps): ReactElement {
+  const isPage = (props.presentation ?? 'dialog') === 'page'
   const initialProvider = initialProviderOf(props.initialProvider)
   const initialPreset = findProviderPreset(initialProvider)
 
@@ -67,11 +110,15 @@ export function FirstUseSetup(props: FirstUseSetupProps): ReactElement {
   const [loadingModels, setLoadingModels] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [errorText, setErrorText] = useState('')
+  const [verificationRevision, setVerificationRevision] = useState(0)
 
   const baseUrlInputId = useId()
   const keyInputId = useId()
   const generationRef = useRef(0)
   const submittingRef = useRef(false)
+  const keyInputRef = useRef<HTMLInputElement>(null)
+  const providerButtonRefs = useRef<Partial<Record<SetupProviderId, HTMLButtonElement | null>>>({})
+  const modelButtonRefs = useRef<Array<HTMLButtonElement | null>>([])
   const loadModelsRef = useRef(props.loadModels)
   loadModelsRef.current = props.loadModels
 
@@ -79,6 +126,12 @@ export function FirstUseSetup(props: FirstUseSetupProps): ReactElement {
   const requiresBaseUrl = preset?.requiresBaseUrlInput === true
   const effectiveBaseUrl = resolveEffectiveBaseUrl(provider, baseUrl)
   const debounceDelay = props.debounceMs ?? 400
+
+  useEffect(() => {
+    if (isPage) {
+      keyInputRef.current?.focus()
+    }
+  }, [isPage])
 
   const handleSelectProvider = (nextProvider: SetupProviderId) => {
     if (nextProvider === provider) return
@@ -98,6 +151,7 @@ export function FirstUseSetup(props: FirstUseSetupProps): ReactElement {
     const clean = normalizeApiKeyInput(raw)
     generationRef.current += 1
     setApiKey(clean)
+    setVerificationRevision(rev => rev + 1)
     setModels([])
     setSelectedModel('')
     setErrorText('')
@@ -105,6 +159,7 @@ export function FirstUseSetup(props: FirstUseSetupProps): ReactElement {
 
   const resetVerification = () => {
     generationRef.current += 1
+    setVerificationRevision(rev => rev + 1)
     setModels([])
     setSelectedModel('')
     setLoadingModels(false)
@@ -136,6 +191,7 @@ export function FirstUseSetup(props: FirstUseSetupProps): ReactElement {
 
   const handleBaseUrlChange = (raw: string) => {
     generationRef.current += 1
+    setVerificationRevision(rev => rev + 1)
     setBaseUrl(raw.trim())
     setModels([])
     setSelectedModel('')
@@ -189,7 +245,7 @@ export function FirstUseSetup(props: FirstUseSetupProps): ReactElement {
     return () => {
       clearTimeout(timer)
     }
-  }, [provider, effectiveBaseUrl, requiresBaseUrl, apiKey, legacy, debounceDelay])
+  }, [provider, effectiveBaseUrl, requiresBaseUrl, apiKey, legacy, debounceDelay, verificationRevision])
 
   const handleConfirm = async () => {
     if (submittingRef.current) return
@@ -212,14 +268,257 @@ export function FirstUseSetup(props: FirstUseSetupProps): ReactElement {
     }
   }
 
+  if (isPage) {
+    const helpLink = resolveHelpLink(preset, effectiveBaseUrl)
+    const showModelsAndConfirm = !loadingModels && models.length > 0
+    const keyStatusBadge = !loadingModels ? (models.length > 0 ? 'valid' : (errorText ? 'invalid' : null)) : null
+    const selectedModelIndex = models.findIndex((item) => item.id === selectedModel)
+
+    const handleFocusProviderControls = () => {
+      const firstPresetId = SETUP_PROVIDER_PRESETS[0]?.id
+      const target =
+        providerButtonRefs.current[provider] ??
+        (firstPresetId ? providerButtonRefs.current[firstPresetId] : null)
+      target?.focus()
+    }
+
+    const handleModelKeyDown = (index: number, event: KeyboardEvent<HTMLButtonElement>) => {
+      if (submitting || models.length === 0) return
+      let nextIndex: number | null = null
+      switch (event.key) {
+        case 'ArrowDown':
+          nextIndex = (index + 1) % models.length
+          break
+        case 'ArrowUp':
+          nextIndex = (index - 1 + models.length) % models.length
+          break
+        case 'Home':
+          nextIndex = 0
+          break
+        case 'End':
+          nextIndex = models.length - 1
+          break
+        default:
+          return
+      }
+      const nextModel = models[nextIndex]
+      if (!nextModel) return
+      event.preventDefault()
+      setSelectedModel(nextModel.id)
+      setErrorText('')
+      modelButtonRefs.current[nextIndex]?.focus()
+    }
+
+    return (
+      <div className={css.pageWrap}>
+        <div className={css.pageHeader}>
+          <h1 className={css.pageTitle}>配置一个大模型来做你的超级玩家吧</h1>
+          <p className={css.pageSubtitle}>
+            它负责和你对话，也负责帮你把各种工具接进来。这一步设好后一般不用再改。
+          </p>
+        </div>
+
+        <div className={css.pageCard}>
+          <div className={css.pageField}>
+            <span className={css.pageLabel}>服务商</span>
+            <div className={css.pageProviderGroup} role="group" aria-label="模型服务商">
+              {SETUP_PROVIDER_PRESETS.map((item) => {
+                const active = item.id === provider
+                const label = item.requiresBaseUrlInput ? '其他（OpenAI 兼容）' : item.label
+                return (
+                  <Button
+                    key={item.id}
+                    ref={(el) => { providerButtonRefs.current[item.id] = el }}
+                    type="button"
+                    size="sm"
+                    variant={active ? 'primary' : 'outline'}
+                    aria-pressed={active}
+                    disabled={submitting}
+                    className={`${css.pageProviderBtn ?? ''} ${active ? (css.pageProviderBtnActive ?? '') : ''}`}
+                    onClick={() => { handleSelectProvider(item.id) }}
+                  >
+                    {label}
+                  </Button>
+                )
+              })}
+            </div>
+          </div>
+
+          {requiresBaseUrl ? (
+            <div className={css.pageField}>
+              <label className={css.pageLabel} htmlFor={baseUrlInputId}>接口地址</label>
+              <Input
+                id={baseUrlInputId}
+                aria-label="接口地址"
+                type="url"
+                className={css.pageInputWrap ?? ''}
+                placeholder="例：https://api.example.com/v1"
+                value={baseUrl}
+                disabled={submitting}
+                onChange={(event) => { handleBaseUrlChange(event.target.value) }}
+              />
+              <div className={css.pageHint}>服务商文档里写的“OpenAI 兼容地址”，一般以 /v1 结尾。</div>
+            </div>
+          ) : null}
+
+          <div className={css.pageField}>
+            <div className={css.pageLabelRow}>
+              <label className={css.pageLabel} htmlFor={keyInputId}>API Key</label>
+              {helpLink.href ? (
+                <a
+                  className={css.pageHelpLink}
+                  href={helpLink.href}
+                  target="_blank"
+                  rel="noreferrer"
+                  title={helpLink.title}
+                >
+                  去哪里拿？
+                </a>
+              ) : (
+                <span
+                  className={css.pageHelpLinkDisabled}
+                  aria-disabled="true"
+                  title={helpLink.title}
+                >
+                  去哪里拿？
+                </span>
+              )}
+            </div>
+            <div className={css.pageKeyInputRow}>
+              <Input
+                ref={keyInputRef}
+                id={keyInputId}
+                aria-label="API Key"
+                type="password"
+                autoComplete="off"
+                spellCheck={false}
+                autoFocus
+                className={`${css.pageInputWrap ?? ''}${keyStatusBadge ? ` ${css.pageInputWithBadge ?? ''}` : ''}`}
+                placeholder="粘贴你的 API Key，粘贴后自动验证"
+                value={apiKey}
+                disabled={submitting}
+                onPaste={handleKeyPaste}
+                onChange={(event) => { handleKeyChange(event.target.value) }}
+              />
+              {keyStatusBadge === 'valid' ? (
+                <Tag tone="success" className={css.pageKeyBadge}>
+                  <IconCheckCircleFillRegular size={12} />
+                  <span>有效</span>
+                </Tag>
+              ) : keyStatusBadge === 'invalid' ? (
+                <Tag tone="danger" className={css.pageKeyBadge}>
+                  <IconCloseCircleFillRegular size={12} />
+                  <span>未通过</span>
+                </Tag>
+              ) : null}
+            </div>
+            {errorText ? (
+              <div className={css.pageErrorBox}>
+                <div className={css.pageErrorLine} role="alert" title={errorText}>{errorText}</div>
+                <div className={css.pageErrorActions}>
+                  {helpLink.href ? (
+                    <a
+                      className={css.pageHelpLink}
+                      href={helpLink.href}
+                      target="_blank"
+                      rel="noreferrer"
+                      title={helpLink.title}
+                    >
+                      去哪里拿？
+                    </a>
+                  ) : (
+                    <span
+                      className={css.pageHelpLinkDisabled}
+                      aria-disabled="true"
+                      title={helpLink.title}
+                    >
+                      去哪里拿？
+                    </span>
+                  )}
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    disabled={submitting}
+                    className={css.pageSwitchProviderBtn}
+                    onClick={handleFocusProviderControls}
+                  >
+                    换一家服务商
+                  </Button>
+                </div>
+              </div>
+            ) : null}
+            <div className={css.pageKeychainHint}>只存在这台电脑的钥匙串里，不会上传。</div>
+          </div>
+
+          {loadingModels ? (
+            <div className={css.pageStatusText}>正在验证密钥并读取可用模型…</div>
+          ) : null}
+
+          {showModelsAndConfirm ? (
+            <>
+              <div className={css.pageField}>
+                <span className={css.pageLabel}>选一个模型</span>
+                <div className={css.pageModelList} role="radiogroup" aria-label="选一个模型">
+                  {models.map((item, index) => {
+                    const checked = selectedModel === item.id
+                    const isTabTarget = selectedModelIndex >= 0 ? index === selectedModelIndex : index === 0
+                    return (
+                      <Button
+                        key={item.id}
+                        ref={(el) => { modelButtonRefs.current[index] = el }}
+                        type="button"
+                        role="radio"
+                        aria-checked={checked}
+                        aria-label={item.name}
+                        title={item.name}
+                        tabIndex={isTabTarget ? 0 : -1}
+                        size="sm"
+                        variant={checked ? 'primary' : 'outline'}
+                        disabled={submitting}
+                        className={`${css.pageModelOption ?? ''} ${checked ? (css.pageModelOptionActive ?? '') : ''}`}
+                        onKeyDown={(event) => { handleModelKeyDown(index, event) }}
+                        onClick={() => {
+                          setSelectedModel(item.id)
+                          setErrorText('')
+                        }}
+                      >
+                        <span className={css.pageModelName}>{item.name}</span>
+                      </Button>
+                    )
+                  })}
+                </div>
+              </div>
+
+              <div className={css.pageFooter}>
+                <Button
+                  type="button"
+                  size="md"
+                  variant="primary"
+                  disabled={!selectedModel || loadingModels || submitting}
+                  onClick={() => { void handleConfirm() }}
+                >
+                  {submitting ? '正在验证并保存…' : '确认'}
+                </Button>
+                {!selectedModel && !submitting ? (
+                  <span className={css.pageConfirmHint}>先选一个模型</span>
+                ) : null}
+              </div>
+            </>
+          ) : null}
+        </div>
+      </div>
+    )
+  }
+
   const maskedPreview = apiKey ? maskPreview(apiKey) : (props.existingMaskedKey || '')
 
   return (
     <div className={css.wrap}>
       <div className={css.header}>
-        <h2 className={css.title}>配置超级助手模型</h2>
+        <h2 className={css.title}>配置超级玩家模型</h2>
         <p className={css.subtitle}>
-          先选好超级助手使用的模型服务商并验证密钥，即可直接开始聊天（需要用调度员干活时再单独接）。
+          先选好超级玩家使用的模型服务商并验证密钥，即可直接开始聊天（需要用调度员干活时再单独接）。
         </p>
       </div>
 

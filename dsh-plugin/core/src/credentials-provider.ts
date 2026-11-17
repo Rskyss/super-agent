@@ -263,6 +263,20 @@ export class MacCredentialProvider extends CredentialProvider {
     return this.store.get(account)
   }
 
+  /** 设置 · 通用：已登记的正式条目名（只读本地索引，不扫描系统钥匙串，不含 Key 内容）。 */
+  async listRefs(): Promise<string[]> {
+    const meta = await readMetadataFile(this.metaPath, this.service)
+    return [...meta.refs]
+  }
+
+  /** 设置 · 通用：删掉旧版复制过来的条目（只认 legacy: 开头）。 */
+  async deleteLegacyKey(account: string): Promise<void> {
+    if (typeof account !== 'string' || !/^legacy:.+/.test(account)) {
+      throw new Error('只能删旧版复制过来的钥匙串条目')
+    }
+    await this.runExclusive(async () => { await this.store.delete(account) })
+  }
+
   /** 每次按需实时读取 Mac 钥匙串；绝不缓存、绝不读旧 `.credentials.yaml` 或宿主环境密钥。 */
   async resolve(ref: CredentialRef): Promise<ResolvedCredential | undefined> {
     const validRef = credentialRef(ref)

@@ -1,0 +1,16 @@
+{
+  "confirm": "回复超级玩家，比如“没登录的算没通，会花钱的也测”…",
+  "menu": "回复超级玩家…",
+  "dismiss": {
+    "draft": "这段修改草稿要保留，不自动发送。",
+    "focused": true,
+    "hint": "回复超级玩家…",
+    "proposal": false
+  },
+  "confirmed": {
+    "fixedSentence": true,
+    "hint": "接着聊…",
+    "insideTail": true,
+    "receiptCount": 1
+  }
+}

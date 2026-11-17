@@ -68,13 +68,27 @@ function readPiAiSettingsSnapshot(ctx: Context): {
   }
 }
 
-/** 从原生设置反推当前超级助手对应的引导预设名，供设置展示使用。 */
+function isTokenHubBaseUrl(baseUrl: string): boolean {
+  const lower = baseUrl.trim().toLowerCase()
+  if (!lower) return false
+  try {
+    return new URL(lower).hostname === 'tokenhub.tencentmaas.com'
+  } catch {
+    return lower.includes('tokenhub.tencentmaas.com')
+  }
+}
+
+/** 从原生设置反推当前超级玩家对应的引导预设名，供设置展示使用。 */
 function inferPresetProvider(routeId: string, baseUrl: string): string {
   if (routeId === 'deepseek') return 'deepseek'
   if (routeId === 'superagent-dashscope') return 'dashscope'
-  if (routeId === 'superagent-tencent') return 'tencent'
+  if (routeId === 'superagent-tencent-tokenhub') return 'tencent-tokenhub'
+  if (routeId === 'superagent-tencent') {
+    return isTokenHubBaseUrl(baseUrl) ? 'tencent-tokenhub' : 'tencent'
+  }
   if (baseUrl.includes('api.deepseek.com')) return 'deepseek'
   if (baseUrl.includes('dashscope.aliyuncs.com')) return 'dashscope'
+  if (isTokenHubBaseUrl(baseUrl)) return 'tencent-tokenhub'
   if (baseUrl.includes('cloud.tencent.com')) return 'tencent'
   return 'other'
 }
@@ -399,7 +413,7 @@ export async function completeOnboardingOnHost(
   const settings = ctx.get('settings')
   const agentDefaultModel = ctx.get('agentDefaultModel')
   if (!settings || !agentDefaultModel) {
-    throw new Error('模型或设置服务未就绪，无法保存超级助手配置')
+    throw new Error('模型或设置服务未就绪，无法保存超级玩家配置')
   }
 
   const keyRef = resolveAssistantKeyRef()

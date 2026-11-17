@@ -5,6 +5,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type {} from './index.ts'
+import { cardWaitsForDispatcher } from './card-wait.ts'
 import { cardOfTaskSession } from './task-session.ts'
 import { parseProgressView, sanitizeProgressText } from './progress-model.ts'
 import { buildCriteriaSummary, validateCriteriaChanges } from './revision.ts'
@@ -17,14 +18,20 @@ export const name = 'superagent-task-tools'
 export const inject = ['tools', 'superagentGateway']
 
 /** 把后台的进度按共享七步进度模型整理成大白话，给模型看。 */
-export function describeView(raw: string, plan: string): string {
+export function describeView(raw: string, plan: string, options: { waitingDispatcher?: boolean } = {}): string {
   const payload = JSON.parse(raw) as CardViewPayload
   const progress = parseProgressView(raw, '')
   const phaseDetail = sanitizeProgressText(String(payload.card?.phase?.detail ?? '')).trim()
-  const lines = [
-    `卡片：${progress.title}`,
-    `现在：${progress.phaseLabel}${phaseDetail ? `（${phaseDetail}）` : ''}`,
-  ]
+  const lines = options.waitingDispatcher
+    ? [
+        `卡片：${progress.title}`,
+        '现在：等你处理 · 接调度员',
+        '这张卡还没开工：建卡时还没有调度员，要先在这张卡里接好调度员（订阅的 Codex 或 agy），接好后才会开始写方案。回答用户时不要说已经开工或正在写方案。',
+      ]
+    : [
+        `卡片：${progress.title}`,
+        `现在：${progress.phaseLabel}${phaseDetail ? `（${phaseDetail}）` : ''}`,
+      ]
   for (const step of progress.steps) {
     const who = step.actor ? `（${step.actor}）` : ''
     const elapsed = step.elapsed ? `，${step.elapsed} 秒` : ''
@@ -60,7 +67,17 @@ export function apply(ctx: Context): void {
         const status = (error as { details?: { status?: number } }).details?.status
         if (status !== 400 && status !== 404) planNote = `\n（方案没读到：${error instanceof Error ? error.message : String(error)}）`
       }
-      return describeView(view, plan) + planNote
+      let waitingDispatcher = false
+      try {
+        const parsed = JSON.parse(view) as CardViewPayload
+        waitingDispatcher = cardWaitsForDispatcher(
+          ctx.superagentGateway.projectPath, card, String(parsed.card?.state ?? ''),
+          String(parsed.card?.phase?.code ?? ''), parsed.card?.phase?.tone,
+        )
+      } catch {
+        // 读不出就按原样回答
+      }
+      return describeView(view, plan, { waitingDispatcher }) + planNote
     },
   }))
 

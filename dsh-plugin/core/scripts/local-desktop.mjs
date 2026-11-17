@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 制作本地可运行的临时桌面版“超级助手”（macOS Electron 本地开发壳）。
+ * 制作本地可运行的临时桌面版“超级玩家”（macOS Electron 本地开发壳）。
  *
  * 严格约束：
  * - import 本模块无任何磁盘或环境副作用；仅暴露 `desktopLayout`、`desktopLaunchEnvironment`、`prepareLocalDesktop`。
@@ -31,7 +31,8 @@ import { homedir, tmpdir } from 'node:os'
 import { basename, dirname, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const APP_DISPLAY_NAME = '超级助手'
+/** 应用外壳名字（第 22 项改名“超级玩家”；旧版仍叫超级助手） */
+export const APP_DISPLAY_NAME = '超级玩家'
 const LAUNCHER_EXECUTABLE_NAME = 'SuperAgentLocal'
 const OWN_MARKER_FILENAME = '.superagent-local-desktop.json'
 const OWN_MARKER_TYPE = 'superagent-local-desktop'
@@ -223,8 +224,8 @@ function assertSafeTempRoot(rawRoot) {
   return realRoot
 }
 
-/** 自用版（第 17 项）位置固定：~/Library/Application Support/超级助手新版。不在旧版资料夹里，不接受别的位置。 */
-export const SELF_USE_DIRNAME = '超级助手新版'
+/** 自用版（第 17 项）位置固定：~/Library/Application Support/超级玩家（第 22 项由“超级助手新版”改名）。不在旧版资料夹里，不接受别的位置。 */
+export const SELF_USE_DIRNAME = '超级玩家'
 export const SELF_USE_KEYCHAIN_SERVICE = 'com.aisoup.superagent'
 
 /** 只有经 assertSelfUseRoot 核对过的自用版位置才记在这里，构建时据此放行（不放宽到任意持久目录）。 */
@@ -287,12 +288,12 @@ function pickExistingOrDefault(candidates) {
 }
 
 /**
- * 计算本地临时桌面版“超级助手”的完整隔离目录布局（纯计算，若省略 root 则新建临时目录）。
+ * 计算本地临时桌面版“超级玩家”的完整隔离目录布局（纯计算，若省略 root 则新建临时目录）。
  */
 export function desktopLayout(options = {}) {
   const selfUse = options.selfUse === true
   if (selfUse && options.root !== undefined) {
-    throw new Error('local-desktop: 自用版位置固定（~/Library/Application Support/超级助手新版），不接受 --root')
+    throw new Error('local-desktop: 自用版位置固定（~/Library/Application Support/超级玩家），不接受 --root')
   }
   const root = selfUse
     ? assertSelfUseRoot(options.home)
@@ -694,7 +695,7 @@ app.setName(config.appName)
 app.setPath('userData', config.userDataDir)
 app.setAppLogsPath(config.logsDir)
 
-// 原 main.js 顶层会无参调用 app.setAppLogsPath()，包装拦截防止重置到 ~/Library/Logs/超级助手
+// 原 main.js 顶层会无参调用 app.setAppLogsPath()，包装拦截防止重置到 ~/Library/Logs/超级玩家
 const originalSetAppLogsPath = app.setAppLogsPath.bind(app)
 const pinnedSetAppLogsPath = (_path) => originalSetAppLogsPath(config.logsDir)
 try {
@@ -840,7 +841,7 @@ function buildLauncherScript(layout, ports) {
 
 function writeLocalReadme(layout, ports, pluginDir) {
   const content = [
-    '超级助手 · 本地临时桌面版（开发验证壳，非可分发安装包）',
+    '超级玩家 · 本地临时桌面版（开发验证壳，非可分发安装包）',
     '============================================================',
     `临时根目录 (root): ${layout.root}`,
     `应用包 (bundle): ${layout.bundle}`,
@@ -865,7 +866,7 @@ function writeLocalReadme(layout, ports, pluginDir) {
     '',
     '说明：',
     '1. 本产物是依赖本机 dsh-base 与 super-agent 仓库的本地临时开发壳，未安装到 /Applications，也不是可分发安装包。',
-    '2. 打开后直接进入超级助手首次配置，不弹 DSH 欢迎页（第 16 项补丁，SUPERAGENT_DESKTOP=1）。',
+    '2. 打开后直接进入超级玩家首次配置，不弹 DSH 欢迎页（第 16 项补丁，SUPERAGENT_DESKTOP=1）。',
     layout.selfUse
       ? '3. 自用版：Key 存正式钥匙串 com.aisoup.superagent（含从旧版复制来的 legacy:* 模型 Key）；不读写旧版钥匙串条目和旧版积木库。不会注册 dsh:// 默认协议，不会开启自动更新。'
       : '3. 测试版：只用测试专用钥匙串条目，不读写真实 Keychain 或旧版积木库。不会注册 dsh:// 默认协议，不会开启自动更新。',
@@ -876,7 +877,7 @@ function writeLocalReadme(layout, ports, pluginDir) {
 }
 
 /**
- * 在安全的临时根目录下制作可本地运行的临时桌面版“超级助手.app”，返回产物与启动命令信息（不自动打开）。
+ * 在安全的临时根目录下制作可本地运行的临时桌面版“超级玩家.app”，返回产物与启动命令信息（不自动打开）。
  */
 export async function prepareLocalDesktop(options = {}) {
   const layout = desktopLayout(options)
@@ -889,7 +890,7 @@ export async function prepareLocalDesktop(options = {}) {
   assertExists(join(layout.dshRoot, 'apps', 'desktop-host', 'lib', 'index.js'), 'DSH desktop-host lib/index.js')
   assertExists(layout.pnpmEntry, 'DSH desktop pnpm.mjs')
   assertExists(layout.primaryRuntimeDir, 'DSH primary-runtime')
-  assertExists(brandPng, '超级助手品牌原图 aisoup-碗-反白.png')
+  assertExists(brandPng, '品牌原图 aisoup-碗-反白.png')
 
   const electronBinaryLink = join(layout.dshDesktopDir, 'node_modules', 'electron', 'dist', 'Electron.app')
   assertExists(electronBinaryLink, 'Electron.app')
@@ -1012,7 +1013,7 @@ if (isMainModule()) {
       process.stdout.write(
         [
           '用法: node dsh-plugin/core/scripts/local-desktop.mjs [--self-use | --root <tmpDir>] [--dsh-root <dir>] [--project <dir>]',
-          '  --self-use  自用版：放 ~/Library/Application Support/超级助手新版，用正式钥匙串名字（第 17 项）',
+          '  --self-use  自用版：放 ~/Library/Application Support/超级玩家，用正式钥匙串名字（第 17 项）',
           '',
           '说明:',
           '  --root      临时根目录（必须位于系统 tmpdir 或 /private/tmp 下；省略时自动新建 mkdtemp 目录）',
@@ -1026,7 +1027,7 @@ if (isMainModule()) {
     const result = await prepareLocalDesktop(parsed.options)
     process.stdout.write(
       [
-        `临时桌面版“超级助手”已就绪（本地开发壳，非可分发安装包，未自动启动）:`,
+        `临时桌面版“超级玩家”已就绪（本地开发壳，非可分发安装包，未自动启动）:`,
         `  bundle:            ${result.layout.bundle}`,
         `  bundleId:          ${result.layout.bundleId}`,
         `  root:              ${result.layout.root}`,

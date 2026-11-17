@@ -11,7 +11,7 @@ import type {
   ViewStation,
 } from './types.ts'
 
-const STEP_LABELS: ReadonlyArray<{ readonly key: ProgressStepKey; readonly label: string; readonly defaultActor: string }> = [
+export const STEP_LABELS: ReadonlyArray<{ readonly key: ProgressStepKey; readonly label: string; readonly defaultActor: string }> = [
   { key: 'disp', label: '调度员写方案', defaultActor: '调度员' },
   { key: 'approve', label: '你批方案', defaultActor: '你' },
   { key: 'test', label: '写测试', defaultActor: '' },
@@ -84,6 +84,7 @@ function mapStationState(
   phaseCode: string,
   isStopped: boolean,
   isTerminal: boolean,
+  isRunningNow: boolean,
 ): ProgressStepState {
   const raw = station?.state ?? 'idle'
   if (raw === 'done') return 'done'
@@ -91,7 +92,7 @@ function mapStationState(
   if (raw === 'wait') return 'wait'
   if (raw === 'active') {
     if (phaseCode === 'done') return 'done'
-    if (isTerminal || isStopped || station?.live === false) {
+    if (!isRunningNow || isTerminal || isStopped || station?.live === false) {
       return phaseCode === 'interrupted' ? 'wait' : 'idle'
     }
     return 'active'
@@ -118,6 +119,8 @@ export function parseProgressView(raw: string, fallbackCardId: string): ParsedCa
   const workElapsed = typeof payload.workElapsed === 'number' && Number.isFinite(payload.workElapsed) && payload.workElapsed >= 0
     ? payload.workElapsed
     : null
+  const isRunningNow = payload.isRunningNow === true
+  const needsYou = card?.phase?.needs_you === true
 
   const stations = Array.isArray(payload.stations) ? payload.stations : []
   const byKey = new Map<string, ViewStation>()
@@ -132,13 +135,14 @@ export function parseProgressView(raw: string, fallbackCardId: string): ParsedCa
   const isTerminal = TERMINAL_PHASES.has(phaseCode) || stateText === '已合并' || stateText === '已放弃'
   const isStopped = STOPPED_PHASES.has(phaseCode)
     || isTerminal
+    || needsYou
     || stateText === '待验收'
     || stateText === '需调度员介入'
 
   let dispState: ProgressStepState
   let approveState: ProgressStepState
   if (phaseCode === 'planning') {
-    dispState = 'active'
+    dispState = isRunningNow ? 'active' : 'wait'
     approveState = 'idle'
   } else if (phaseCode === 'plan_waiting') {
     dispState = 'wait'
@@ -150,7 +154,11 @@ export function parseProgressView(raw: string, fallbackCardId: string): ParsedCa
     dispState = 'fail'
     approveState = 'idle'
   } else if (!phaseCode && stateText === '待对齐') {
-    dispState = dispStation?.state === 'active' ? 'active' : dispStation?.state === 'fail' ? 'fail' : 'done'
+    dispState = dispStation?.state === 'active'
+      ? (isRunningNow ? 'active' : 'wait')
+      : dispStation?.state === 'fail'
+        ? 'fail'
+        : 'done'
     approveState = dispState === 'done' ? 'wait' : 'idle'
   } else {
     dispState = 'done'
@@ -159,9 +167,27 @@ export function parseProgressView(raw: string, fallbackCardId: string): ParsedCa
 
   const beforeStart = PRE_START_PHASES.has(phaseCode) || (!phaseCode && stateText === '待对齐')
   const phaseFailDetail = sanitizeProgressText(String(card?.phase?.detail ?? '')).trim()
+  const planning = payload.planning
+  const planningActor = sanitizeProgressText(String(planning?.actor ?? '')).trim()
+  const planningModel = sanitizeProgressText(String(planning?.model ?? '')).trim()
+  const planningDetail = sanitizeProgressText(String(planning?.detail ?? '')).trim()
+  const planningElapsed = typeof planning?.elapsed === 'number' && Number.isFinite(planning.elapsed) && planning.elapsed >= 0
+    ? planning.elapsed
+    : null
+  const isPlanningPhase = phaseCode === 'planning'
+    || phaseCode === 'plan_waiting'
+    || phaseCode === 'plan_failed'
+    || phaseCode === 'plan_ready'
+    || (!phaseCode && stateText === '待对齐')
+
   const rawSteps: Omit<ProgressStep, 'current'>[] = STEP_LABELS.map((spec) => {
     if (spec.key === 'disp') {
-      const dispRaw = sanitizeProgressText(String(dispStation?.detail ?? ''))
+      // desktop/view.py 在离开规划阶段后会把 stations.disp 覆盖成当前调度汇总（如复查失败、已向你汇报），
+      // 因此已完成/阻断阶段第 1 步只能使用专属 planning 历史来源，缺源省略，绝不拿后续调度状态填充。
+      const stationDispDetail = isPlanningPhase ? sanitizeProgressText(String(dispStation?.detail ?? '')) : ''
+      const preferredPlanDetail = (phaseCode === 'plan_waiting' || phaseCode === 'plan_failed')
+        ? (stationDispDetail || planningDetail)
+        : (planningDetail || stationDispDetail)
       const fallbackRaw = phaseCode === 'plan_waiting'
         ? '等待接入调度员后开始写方案'
         : phaseCode === 'plan_failed'
@@ -173,20 +199,41 @@ export function parseProgressView(raw: string, fallbackCardId: string): ParsedCa
             : approveState === 'wait'
               ? '方案已写好'
               : ''
-      const rawDetail = dispRaw || fallbackRaw
+      const rawDetail = preferredPlanDetail || (isPlanningPhase ? fallbackRaw : '')
+      const actor = planningActor
+        || sanitizeProgressText(String(dispStation?.who ?? ''))
+        || spec.defaultActor
+      const model = planningModel || sanitizeProgressText(String(dispStation?.model ?? ''))
+      const elapsed = planningElapsed ?? (typeof dispStation?.elapsed === 'number' ? dispStation.elapsed : null)
       return {
         key: 'disp',
         label: spec.label,
         state: dispState,
-        actor: sanitizeProgressText(String(dispStation?.who ?? spec.defaultActor)),
-        model: sanitizeProgressText(String(dispStation?.model ?? '')),
-        elapsed: typeof dispStation?.elapsed === 'number' ? dispStation.elapsed : null,
+        actor,
+        model,
+        elapsed,
         summary: summarizePlainText(rawDetail),
         rawDetail,
       }
     }
     if (spec.key === 'approve') {
       // 后台 you 站位表示提需求，不能直接当作“你批方案”。
+      const approvedAt = typeof payload.approval?.time === 'string' && /^\d{2}:\d{2}$/.test(payload.approval.time)
+        ? payload.approval.time
+        : ''
+      if (approveState === 'done' && approvedAt) {
+        // 对照 04 / 05：第二行“你 · 09:15 批准”，不再另起一行“已批准”。
+        return {
+          key: 'approve',
+          label: spec.label,
+          state: approveState,
+          actor: spec.defaultActor,
+          model: `${approvedAt} 批准`,
+          elapsed: null,
+          summary: '',
+          rawDetail: `${approvedAt} 批准`,
+        }
+      }
       const rawDetail = approveState === 'wait'
         ? (sanitizeProgressText(String(card?.phase?.detail ?? '')) || '方案已写好，等你批准')
         : approveState === 'done'
@@ -205,15 +252,22 @@ export function parseProgressView(raw: string, fallbackCardId: string): ParsedCa
     }
 
     const station = byKey.get(spec.key)
-    let state: ProgressStepState = beforeStart ? 'idle' : mapStationState(station, phaseCode, isStopped, isTerminal)
+    let state: ProgressStepState = beforeStart
+      ? 'idle'
+      : mapStationState(station, phaseCode, isStopped, isTerminal, isRunningNow)
     if (spec.key === 'accept') {
       if (phaseCode === 'done' && state !== 'fail') state = 'done'
       else if (phaseCode === 'review' && state === 'idle') state = 'wait'
     }
     const rawDetail = sanitizeProgressText(String(station?.detail ?? ''))
+    const label = spec.key === 'rev' && Array.isArray(payload.stopReviews) && payload.stopReviews.length > 0
+      ? (phaseCode === 'blocked' && payload.stopReviews.length >= 3
+          ? `复查 · ${payload.stopReviews.length} / 3 轮`
+          : `复查 · ${payload.stopReviews.length} 轮`)
+      : spec.label
     return {
       key: spec.key,
-      label: spec.label,
+      label,
       state,
       actor: sanitizeProgressText(String(station?.who ?? spec.defaultActor)),
       model: sanitizeProgressText(String(station?.model ?? '')),
@@ -223,10 +277,12 @@ export function parseProgressView(raw: string, fallbackCardId: string): ParsedCa
     }
   })
 
-  // 后台仍在执行但各站位处于两步交接空隙（尚无 active/wait）时，把第一个未完成步骤标为准备中，
-  // 避免界面看似无事可做；已停下或已结束的阶段不得补转圈。
-  const isExecuting = ACTIVE_EXECUTION_PHASES.has(phaseCode)
+  // 后台真正在执行（isRunningNow=true）但各站位处于两步交接空隙（尚无 active/wait）时，把第一个未完成步骤标为准备中，
+  // 避免界面看似无事可做；未确认在运行、暂停或已停下/已结束阶段绝不补转圈。
+  const isExecuting = isRunningNow && (
+    ACTIVE_EXECUTION_PHASES.has(phaseCode)
     || (!phaseCode && (stateText === '开发中' || stateText === '待测试' || stateText === '测试中' || stateText === '待派发'))
+  )
   if (isExecuting && !isStopped && !isTerminal && !rawSteps.some(step => step.state === 'active' || step.state === 'wait')) {
     const nextIdx = rawSteps.findIndex(step => step.state !== 'done' && !(step.key === 'rev' && step.actor === '不复查'))
     const target = nextIdx >= 0 ? rawSteps[nextIdx] : undefined
@@ -255,6 +311,8 @@ export function parseProgressView(raw: string, fallbackCardId: string): ParsedCa
     phaseCode,
     elapsed,
     workElapsed,
+    isRunningNow,
     steps: rawSteps.map(step => ({ ...step, current: step.key === currentKey })),
+    ...(payload.run && Array.isArray(payload.run.rules) ? { run: payload.run } : {}),
   }
 }
