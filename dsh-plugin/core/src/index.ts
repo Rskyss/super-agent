@@ -122,7 +122,7 @@ export interface Config {
   blocksHome: string
 }
 
-const DEFAULT_REPO = join(homedir(), 'Desktop', 'project', 'super-agent')
+const DEFAULT_REPO = join(homedir(), 'Desktop', 'project', '超级玩家', 'super-agent')  // 11-17 工具分家
 
 function defaultBlocksHome(): string {
   const override = (process.env.SUPERAGENT_DSH_BLOCKS_HOME ?? '').trim()

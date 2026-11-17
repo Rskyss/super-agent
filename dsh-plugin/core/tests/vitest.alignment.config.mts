@@ -3,10 +3,10 @@ import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { defineConfig } from '/Users/rs/Desktop/project/dsh-base/node_modules/vitest/dist/config.js'
-import { standardDecoratorPlugin } from '/Users/rs/Desktop/project/dsh-base/vitest.shared.ts'
+import { defineConfig } from '../../../../dsh-base/node_modules/vitest/dist/config.js'
+import { standardDecoratorPlugin } from '../../../../dsh-base/vitest.shared.ts'
 
-const base = '/Users/rs/Desktop/project/dsh-base'
+const base = fileURLToPath(new URL('../../../../dsh-base', import.meta.url))  // 本仓库同级的 dsh-base（11-17 工具分家）
 const root = fileURLToPath(new URL('..', import.meta.url))
 const require = createRequire(`${base}/package.json`)
 const pluginRequire = createRequire(`${base}/packages/superagent/core/package.json`)

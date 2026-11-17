@@ -1,9 +1,9 @@
 #!/bin/bash
 # 把本仓库 dsh-plugin/core 同步进锁定版本 DSH，登记根配置，再编译。
-# 用法：dsh-plugin/sync.sh [DSH 目录]（默认 ~/Desktop/project/dsh-base）
+# 用法：dsh-plugin/sync.sh [DSH 目录]（默认：本仓库同级的 dsh-base，即 ~/Desktop/project/超级玩家/dsh-base）
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
-DSH="${1:-$HOME/Desktop/project/dsh-base}"
+DSH="${1:-$HERE/../../dsh-base}"
 LOCKED="0.2.2-rc.3"
 # 先核对目标确实是锁定版本的 DSH，再做任何删除式同步（复查第 1 轮建议 1）。
 [ -f "$DSH/package.json" ] || { echo "不是 DSH 目录：$DSH" >&2; exit 1; }
