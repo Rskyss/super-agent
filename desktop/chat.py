@@ -150,7 +150,7 @@ class ChatSession:
         if row is None:
             raise LookupError("这段对话已经不在了")
         if row.get("deletable") is False:
-            raise LookupError("这段对话不是在超级助手里开始的，不能在这里删除")
+            raise LookupError("这段对话不是在这个应用里开始的，不能在这里删除")
         current = getattr(self.adapter, "thread_id", None)
         if thread_id == current and self.busy:
             raise RuntimeError("这段对话还在回复，等说完或先点停止再删")

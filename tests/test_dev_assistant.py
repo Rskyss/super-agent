@@ -33,13 +33,6 @@ class Name(unittest.TestCase):
         # 编号不变，设置、钥匙串、窗口记忆照旧
         self.assertIn("<key>CFBundleIdentifier</key><string>local.superagent.desktop</string>", self.build)
 
-    def test_install_replaces_old_app(self):
-        # 装开发助手时去掉旧的“超级助手.app”，免得搜索里出现两个
-        install = self.build[self.build.index('if [ "${1:-}" = "--install" ]'):]
-        self.assertIn('rm -rf "$HOME/Applications/超级助手.app"', install)
-        self.assertIn('rm -rf "$HOME/Applications/开发助手.app"', install)
-        self.assertIn("开发助手.app", install.split("cp -R")[1].split("\n")[0] + install)
-
     def test_window_title_and_menu(self):
         self.assertIn('window?.title = "开发助手 · "', self.src)
         for item in ("关于开发助手", "隐藏开发助手", "退出开发助手"):
@@ -51,37 +44,131 @@ class Name(unittest.TestCase):
         self.assertIn('"Application Support" / "超级助手" / "积木库"', blocks)
 
 
+def top_func(src, name):
+    """顶层函数全文（到第一个回到行首的右括号）。"""
+    m = re.search(r"^func " + re.escape(name) + r"\b.*?^}", src, re.S | re.M)
+    return m.group(0) if m else None
+
+
+def run_swift(code):
+    import shutil, subprocess, tempfile
+    if not shutil.which("swift"):
+        raise unittest.SkipTest("本机没有 swift")
+    with tempfile.TemporaryDirectory() as d:
+        f = Path(d) / "t.swift"
+        f.write_text("import Foundation\n" + code, encoding="utf-8")
+        out = subprocess.run(["swift", str(f)], capture_output=True, text=True, timeout=180)
+    if out.returncode != 0:
+        raise AssertionError(out.stderr)
+    return dict(line.split(" ", 1) for line in out.stdout.splitlines() if line)
+
+
 class Frozen(unittest.TestCase):
+    """实际跑选根规则：默认只用自带的那份；--source-root 且源目录完整才用源目录。"""
+
     def setUp(self):
         self.src = SWIFT.read_text(encoding="utf-8")
-        self.body = swift_func(self.src, "superAgentRoot")
 
-    def test_default_is_bundled(self):
-        self.assertIsNotNone(self.body)
-        # 读源目录只能在 --source-root 分支里
-        self.assertIn('"--source-root"', self.body)
-        src_branch = self.body[self.body.index('"--source-root"'):]
-        self.assertIn("return source", src_branch)
-        before = self.body[:self.body.index('"--source-root"')]
-        self.assertNotIn("return source", before)
-        # 最后兜底返回应用自带的那份
-        last_return = self.body.strip().splitlines()[-2].strip()
-        self.assertTrue(last_return.startswith("return Bundle.main.resourceURL"), last_return)
+    def test_pick_rule(self):
+        body = top_func(self.src, "pickSuperAgentRoot")
+        self.assertIsNotNone(body, "要有一个可单独验证的选根规则 pickSuperAgentRoot")
+        cases = {
+            "none": ('[]', "true"), "bundledflag": ('["--bundled-root"]', "true"),
+            "src_ok": ('["--source-root"]', "true"), "src_broken": ('["--source-root"]', "false"),
+            "walk": ('["--walk"]', "true"),
+        }
+        lines = [body, 'let b = URL(fileURLWithPath: "/B")', 'let s = URL(fileURLWithPath: "/S")']
+        for k, (args, ok) in cases.items():
+            lines.append(f'print("{k}", pickSuperAgentRoot(["/app"] + {args}, bundled: b, source: s, sourceComplete: {ok}).path)')
+        got = run_swift("\n".join(lines))
+        self.assertEqual(got, {"none": "/B", "bundledflag": "/B", "src_ok": "/S", "src_broken": "/B", "walk": "/B"})
 
-    def test_no_unconditional_source(self):
-        # 不能再有“源目录存在就用源目录”的老写法
-        self.assertNotRegex(self.body, r'if fm\.fileExists\(atPath: source\.appendingPathComponent\("collab/规则\.md"\)\.path\),\s*\n\s*fm\.fileExists\(atPath: source\.appendingPathComponent\("desktop/server\.py"\)\.path\) \{\s*\n\s*return source')
+    def test_root_uses_rule_without_source_fallback(self):
+        body = swift_func(self.src, "superAgentRoot")
+        self.assertIsNotNone(body)
+        self.assertIn("pickSuperAgentRoot(", body)
+        self.assertNotIn("?? source", body, "应用资源拿不到时也不能退回源目录")
+        self.assertNotIn("return source", body)
 
 
 class SourceProjectNotOldPackage(unittest.TestCase):
-    def test_guard(self):
+    """打开的项目就是本产品源码时不当旧协作包；只凭一个通用文件名不算。"""
+
+    def test_rule(self):
+        src = SWIFT.read_text(encoding="utf-8")
+        body = top_func(src, "isProductSource")
+        self.assertIsNotNone(body, "要有一个可单独验证的判断 isProductSource")
+        code = body + """
+func check(_ files: [String]) -> Bool { isProductSource("/p", exists: { files.contains($0) }) }
+print("both", check(["/p/desktop/server.py", "/p/desktop/mac/Sources/SuperAgent/main.swift"]))
+print("server_only", check(["/p/desktop/server.py"]))
+print("swift_only", check(["/p/desktop/mac/Sources/SuperAgent/main.swift"]))
+print("none", check([]))
+"""
+        self.assertEqual(run_swift(code), {"both": "true", "server_only": "false", "swift_only": "false", "none": "false"})
+
+    def test_prepare_uses_rule(self):
         src = SWIFT.read_text(encoding="utf-8")
         body = swift_func(src, "prepareProject")
-        self.assertIsNotNone(body)
         decl = body[body.index("let isOldPackage"):body.index("if isOldPackage")]
-        # 项目里有 desktop/server.py（就是本产品源码）时，不算旧协作包
-        self.assertIn('desktop/server.py', decl)
+        self.assertRegex(decl, r"&&\s*!isProductSource\(p,")
+
+
+class InstallOnlyRemovesOurApp(unittest.TestCase):
+    """装开发助手时只删编号是 local.superagent.desktop 的应用；同名的别的东西不删、停下。"""
+
+    def make_app(self, path, ident):
+        import plistlib
+        (path / "Contents").mkdir(parents=True)
+        with open(path / "Contents" / "Info.plist", "wb") as f:
+            plistlib.dump({"CFBundleIdentifier": ident}, f)
+
+    def run_remove(self, target):
+        import subprocess
+        script = ROOT / "desktop" / "mac" / "remove_app.sh"
+        self.assertTrue(script.is_file(), "删旧应用的规则单独放在 desktop/mac/remove_app.sh")
+        return subprocess.run(["bash", str(script), str(target)], capture_output=True, text=True, timeout=30)
+
+    def test_cases(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            ours = d / "ours.app"; self.make_app(ours, "local.superagent.desktop")
+            other = d / "other.app"; self.make_app(other, "com.example.other")
+            plain = d / "plain.app"; plain.mkdir(); (plain / "x.txt").write_text("keep")
+            missing = d / "missing.app"
+            self.assertEqual(self.run_remove(ours).returncode, 0); self.assertFalse(ours.exists())
+            self.assertNotEqual(self.run_remove(other).returncode, 0); self.assertTrue(other.exists())
+            self.assertNotEqual(self.run_remove(plain).returncode, 0); self.assertTrue((plain / "x.txt").exists())
+            self.assertEqual(self.run_remove(missing).returncode, 0)
+
+    def test_build_uses_it(self):
+        build = BUILD.read_text(encoding="utf-8")
+        install = build[build.index('if [ "${1:-}" = "--install" ]'):]
+        self.assertIn('remove_app.sh" "$HOME/Applications/超级助手.app"', install)
+        self.assertIn('remove_app.sh" "$HOME/Applications/开发助手.app"', install)
+        self.assertNotIn("rm -rf", install)
+        self.assertIn('cp -R "$APP" "$HOME/Applications/"', install)
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NoOldNameShown(unittest.TestCase):
+    """页面和后台报给用户看的话里不再出现“超级助手”（这套后台新旧两个应用共用，改成不带名字的说法）。
+    内部标记【超级助手自动交代】、积木库资料夹名、注释不算。"""
+
+    def test_no_old_name(self):
+        files = list((ROOT / "desktop" / "static").glob("*.js")) + [
+            ROOT / "desktop" / n for n in ("chat.py", "view.py", "server.py")]
+        bad = []
+        for f in files:
+            for i, line in enumerate(f.read_text(encoding="utf-8").splitlines(), 1):
+                code = line.split("//")[0] if f.suffix == ".js" else line.split("#")[0]
+                code = code.replace("【超级助手自动交代】", "")
+                if "超级助手" in code and not code.lstrip().startswith(('"""', "'''")) and i > 3:
+                    bad.append(f"{f.name}:{i}: {line.strip()[:80]}")
+        allowed = ['"from": "超级助手"', 'description="超级助手']
+        bad = [b for b in bad if not any(a in b for a in allowed)]
+        self.assertEqual(bad, [])

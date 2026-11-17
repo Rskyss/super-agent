@@ -1495,7 +1495,7 @@ class Handler(BaseHTTPRequestHandler):
         given = unquote(self.headers.get("X-Chat-Token") or (query or {}).get("token") or "")
         if expected and given and hmac.compare_digest(given.encode("utf-8"), expected.encode("utf-8")):
             return True
-        self._json({"error": "聊天需要从超级助手窗口里打开"}, 403)
+        self._json({"error": "聊天需要从应用窗口里打开"}, 403)
         return False
 
     def _block_allowed(self, query=None) -> bool:
@@ -1577,7 +1577,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/team/save":
             if not (Path(project) / ".collab" / "cards").is_dir():
-                self._json({"error": "这个文件夹还没接入超级助手（不是 git 项目），不能保存执行员"}, 409)
+                self._json({"error": "这个文件夹还没接入（不是 git 项目），不能保存执行员"}, 409)
                 return
             try:
                 if body.get("role_models") is not None:

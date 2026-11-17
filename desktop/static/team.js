@@ -749,7 +749,7 @@ if (typeof document !== "undefined") (function () {
 
   if (!project || !token) {
     $("problem").hidden = false;
-    $("problem").textContent = "请从超级助手窗口打开团队配置。";
+    $("problem").textContent = "请从应用窗口打开团队配置。";
   } else {
     get("/api/team").then(function (d) {
       info = d;

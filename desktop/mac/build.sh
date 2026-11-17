@@ -53,8 +53,8 @@ codesign --force --deep --sign - "$APP"
 
 if [ "${1:-}" = "--install" ]; then
   mkdir -p "$HOME/Applications"
-  rm -rf "$HOME/Applications/超级助手.app"   # 改名前的旧应用，免得搜索里出现两个
-  rm -rf "$HOME/Applications/开发助手.app"
+  bash "$HERE/remove_app.sh" "$HOME/Applications/超级助手.app"   # 改名前的旧应用，免得搜索里出现两个
+  bash "$HERE/remove_app.sh" "$HOME/Applications/开发助手.app"   # 只删自己的应用包，同名的别的东西会停下
   cp -R "$APP" "$HOME/Applications/"
   echo "完成：$HOME/Applications/开发助手.app"
 else

@@ -325,7 +325,7 @@ async function recovery() {
       await ui.advance(1500);
       assert.strictEqual(requests(ui, "/api/blocks/job").length, count + 1, "重开后继续查进度");
     }
-    if (state === "lost") assert.match(content, /这次试做的结果没留下来（超级助手重开过）。跟管家说再出一次草稿。/);
+    if (state === "lost") assert.match(content, /这次试做的结果没留下来（应用重开过）。跟管家说再出一次草稿。/);
     if (state === "cancelled") assert.match(content, /先不做了/);
     if (state === "voided") assert.match(content, /已失效/);
     if (["cancelled", "voided"].includes(state)) {

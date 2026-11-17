@@ -362,7 +362,7 @@ var ChatCore = (function () {
   }
 
   function jobView(job) {
-    if (!job) return { state: "lost", text: "这次的结果没留下来（超级助手重开过）。可以在左边基础层里看，或者跟管家说重新提议", lines: [], canSave: false };
+    if (!job) return { state: "lost", text: "这次的结果没留下来（应用重开过）。可以在左边基础层里看，或者跟管家说重新提议", lines: [], canSave: false };
     if (!job.done) return { state: "running", text: job.kind === "install" ? "正在安装…" : "正在检测…", lines: job.kind === "install" ? (job.tail || []) : [], canSave: false };
     if (job.error) return { state: "fail", text: job.error, lines: job.tail || [], canSave: false };
     var res = job.result || {};
@@ -532,7 +532,7 @@ if (typeof document !== "undefined") (function () {
   var ABILITY_JOB_MS = 1500;
   var ABILITY_RETRY_MS = 3000;
   var ABILITY_OFFLINE = "没连上本机服务，过一会儿再试…";
-  var ABILITY_LOST = "这次试做的结果没留下来（超级助手重开过）。跟管家说再出一次草稿。";
+  var ABILITY_LOST = "这次试做的结果没留下来（应用重开过）。跟管家说再出一次草稿。";
   var abilityJobs = {};   // 提议编号 -> 这次试做的跟进情况；同一个草稿同时只有一个查询在路上
 
   function abilityRec(pid) {
@@ -1042,7 +1042,7 @@ if (typeof document !== "undefined") (function () {
     var face = butlerMode ? "管" : (clerkMode ? "行" : (faces[dispatcher] || "调"));
     if (b.kind === "sys") {
       el.className = "sys";
-      el.innerHTML = "超级助手自动交代<button type=\"button\" data-sys>看全文</button><pre hidden></pre>";
+      el.innerHTML = "自动交代<button type=\"button\" data-sys>看全文</button><pre hidden></pre>";
       el.querySelector("pre").textContent = b.text;
     } else if (b.kind === "user") {
       el.className = "row me";
@@ -1814,7 +1814,7 @@ if (typeof document !== "undefined") (function () {
   }
 
   if (!project || !token) {
-    $("status").textContent = "请从超级助手窗口打开聊天";
+    $("status").textContent = "请从应用窗口打开聊天";
   } else if (clerkMode) {
     $("input").placeholder = clerkPlaceholder;
     if (butlerMode) {

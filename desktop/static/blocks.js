@@ -134,7 +134,7 @@ var BlocksCore = {
     }
     var rows = items.map(function (it) {
       var ok = it.status === "有" && it.login !== "没登录" && !it.note;
-      var text = it.status === "有" ? (it.version ? shortVersion(it.version, it.label) : "有") + (it.login === "已登录" ? " · 已登录" : (it.login === "没登录" ? " · 没登录" : "")) + (it.note ? " · " + it.note : "") : (it.status === "没有" ? "没有" : "装了，但超级助手找不到");
+      var text = it.status === "有" ? (it.version ? shortVersion(it.version, it.label) : "有") + (it.login === "已登录" ? " · 已登录" : (it.login === "没登录" ? " · 没登录" : "")) + (it.note ? " · " + it.note : "") : (it.status === "没有" ? "没有" : "装了，但这里找不到");
       var fix = it.fix || (it.note ? "跟管家说一声，它会帮你查" : "");
       return { name: it.name, label: it.label, ok: ok, text: text, fix: fix, why: it.why };
     });
@@ -225,7 +225,7 @@ var BlocksCore = {
     };
   },
   checkView: function (job) {
-    if (!job) return { state: "lost", text: "这次检测的结果没留下来（超级助手重开过），再点一次检测" };
+    if (!job) return { state: "lost", text: "这次检测的结果没留下来（应用重开过），再点一次检测" };
     if (!job.done) return { state: "running", text: "正在检测…" };
     if (job.error) return { state: "fail", text: job.error };
     if (job.result && job.result.ok && job.result.warn) return { state: "warn", text: job.result.reason + (job.result.how ? "。" + job.result.how : "") };   // 通了但用量太大（第四轮 55）
@@ -1245,7 +1245,7 @@ if (typeof document !== "undefined") (function () {
       }).catch(function (err) {
         scanRunning = false;
         if (err && err.status === 404) {
-          scanError = "环境体检没做成：超级助手重开过，点“重新检查”";
+          scanError = "环境体检没做成：应用重开过，点“重新检查”";
         } else {
           scanError = "环境体检没做成：" + (err.message || "出错了，请稍后再试");
         }
@@ -1344,7 +1344,7 @@ if (typeof document !== "undefined") (function () {
 
   function init() {
     if (!token) {
-      showProblem("请从超级助手窗口打开积木库");
+      showProblem("请从应用窗口打开积木库");
       return;
     }
     getJson("/api/blocks/state").then(function (d) {

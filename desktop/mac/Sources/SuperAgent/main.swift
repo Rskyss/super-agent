@@ -13,7 +13,7 @@
 //         设置页也放在中间，打开时右栏临时收起。
 //   右栏：一张卡的流程和交接（只读项目的 .collab/），可以收起。
 // 页面都由本机数据服务提供；聊天地址要带窗口启动时生成的一次性口令。
-// 协作包与面板优先用源目录（编译时所在的仓库）里的那份，源目录不在时才用应用里自带的。
+// 协作包与面板只用应用里自带的那份（11-17 改名冻结）；带 --source-root 且源目录完整时才读源目录。
 //
 // 自测用参数（正常双击打开时用不到；都只对这一次有效，不改用户的任何设置）：
 //   --project <文件夹>          指定项目，不弹选择框
@@ -143,6 +143,17 @@ final class ViewSwitch: NSView {
 func isSelfTestRun(_ args: [String] = CommandLine.arguments) -> Bool {
     let exact: Set<String> = ["--snapshot", "--clerk-try", "--clerk-ui-test", "--clerk-key-file", "--clerk-key-dir"]
     return args.contains { $0.hasPrefix("--walk") || exact.contains($0) }
+}
+
+/// 协作包和面板用哪一份（11-17 改名冻结）：默认只用应用自带的那份；只有带 --source-root 且源目录完整才读源目录。
+/// 开发助手要开发自己这份源码，读源目录等于一边干活一边改自己。
+func pickSuperAgentRoot(_ args: [String], bundled: URL, source: URL, sourceComplete: Bool) -> URL {
+    return args.contains("--source-root") && sourceComplete ? source : bundled
+}
+
+/// 打开的项目是不是本产品源码：Mac 窗口外壳源码和后台服务都在才算（只凭一个通用文件名会误伤别的项目，Codex 复查 11-17）
+func isProductSource(_ project: String, exists: (String) -> Bool) -> Bool {
+    return exists(project + "/desktop/mac/Sources/SuperAgent/main.swift") && exists(project + "/desktop/server.py")
 }
 
 /// 页面里点了“新窗口打开”的链接：只有外部网页（http/https、不是本机服务）才交给默认浏览器。
@@ -497,13 +508,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent()
         let fm = FileManager.default
-        if CommandLine.arguments.contains("--source-root"),
-           fm.fileExists(atPath: source.appendingPathComponent("collab/规则.md").path),
-           fm.fileExists(atPath: source.appendingPathComponent("desktop/server.py").path) {
-            return source
-        }
-        // --bundled-root 现在就是默认，留着这个开关只为老的走查命令照样能用
-        return Bundle.main.resourceURL?.appendingPathComponent("super-agent") ?? source
+        let complete = fm.fileExists(atPath: source.appendingPathComponent("collab/规则.md").path)
+            && fm.fileExists(atPath: source.appendingPathComponent("desktop/server.py").path)
+        // 自带的那份按应用包位置拼，不靠 resourceURL（拿不到时也不能退回源目录）
+        let bundled = Bundle.main.bundleURL.appendingPathComponent("Contents/Resources/super-agent")
+        return pickSuperAgentRoot(CommandLine.arguments, bundled: bundled, source: source, sourceComplete: complete)
     }
 
     /// 运行一条协作包命令（接入、迁移），等它做完
@@ -529,7 +538,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
         let isOldPackage = fm.fileExists(atPath: oldPackage.appendingPathComponent("规则.md").path)
             && fm.fileExists(atPath: oldPackage.appendingPathComponent("cli.py").path)
             && oldPackage.standardizedFileURL.path != superAgentRoot().appendingPathComponent("collab").standardizedFileURL.path
-            && !fm.fileExists(atPath: p + "/desktop/server.py")  // 打开的就是本产品源码（冻结后它不再是“自带的那份”），不能当旧包迁移或删掉
+            && !isProductSource(p, exists: { fm.fileExists(atPath: $0) })  // 打开的就是本产品源码（冻结后它不再是“自带的那份”），不能当旧包迁移或删掉
 
         if isOldPackage {
             runCollab(["migrate", p] + (askRemoveOldPackage() ? ["--remove-old-package"] : []))

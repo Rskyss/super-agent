@@ -502,7 +502,7 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
     if not installed:
         if chat:
             return _chat_view(base, chat, tools, team_reviewer_on, dispatcher)
-        base["now"] = {"text": "这个项目还没装超级助手", "tone": "idle"}
+        base["now"] = {"text": "这个项目还没接入", "tone": "idle"}
         return base
 
     cards = list_cards(project)

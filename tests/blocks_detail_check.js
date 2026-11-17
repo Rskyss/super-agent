@@ -67,7 +67,7 @@ var gone = item("codex", "Codex", "tool", "没有", { fix: "跟管家说“帮�
 var lost = item("mytool", "我的工具", "tool", "找不到", { fix: "终端里已经装好，但超级助手还没认到：关掉超级助手再重新打开" });
 var both = B.healthView(scan([gone, lost]), [codexBlock, mine]);
 assert.strictEqual(both.line, "环境体检：基础层里有 2 个工具要处理：Codex、我的工具");
-assert.strictEqual(both.rows[1].text, "装了，但超级助手找不到");
+assert.strictEqual(both.rows[1].text, "装了，但这里找不到");
 var slow = item("codex", "Codex", "tool", "有", { note: "查版本超时" });
 var slowView = B.healthView(scan([slow]), [codexBlock]);
 assert.strictEqual(slowView.state, "problem");
@@ -159,7 +159,7 @@ Object.keys(names).forEach(function (p) {
 });
 
 // 10. 检测结果
-assert.deepStrictEqual(B.checkView(null), { state: "lost", text: "这次检测的结果没留下来（超级助手重开过），再点一次检测" });
+assert.deepStrictEqual(B.checkView(null), { state: "lost", text: "这次检测的结果没留下来（应用重开过），再点一次检测" });
 assert.deepStrictEqual(B.checkView({ kind: "check", done: false, result: null, error: "" }), { state: "running", text: "正在检测…" });
 assert.deepStrictEqual(B.checkView({ kind: "check", done: true, result: null, error: "后台任务出错了，请再试一次" }),
                        { state: "fail", text: "后台任务出错了，请再试一次" });
