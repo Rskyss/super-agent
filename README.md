@@ -83,11 +83,11 @@ bash docs/多agent协作包/联调冒烟测试.sh
 
 ```bash
 # 1. 下载到本机（默认位置；放到别处的话，把 skill/super-agent/SKILL.md 里的路径一起改掉）
-git clone https://github.com/Rskyss/super-agent.git ~/Desktop/project/super-agent
+git clone https://github.com/Rskyss/super-agent.git ~/Desktop/project/开发助手   # 11-17 工具分家：协作包和开发助手在这里；超级玩家的代码在 ~/Desktop/project/超级玩家/super-agent
 
 # 2. 安装 Claude Code 全局技能：之后在任何项目里说“用协作包”就会触发
 mkdir -p ~/.claude/skills/super-agent
-cp ~/Desktop/project/super-agent/skill/super-agent/SKILL.md ~/.claude/skills/super-agent/
+cp ~/Desktop/project/开发助手/skill/super-agent/SKILL.md ~/.claude/skills/super-agent/
 ```
 
 之后在任何项目里对 Claude 说“用协作包做 XXX”即可。
@@ -95,7 +95,7 @@ cp ~/Desktop/project/super-agent/skill/super-agent/SKILL.md ~/.claude/skills/sup
 **协作包不会复制进你的项目**（v0.2 起），始终只用上面下载的那一份。第一次在某个项目里用时会“接入”：
 
 ```bash
-python3 ~/Desktop/project/super-agent/collab init <项目路径>
+python3 ~/Desktop/project/开发助手/collab init <项目路径>
 ```
 
 接入只在项目里新增一个 `.collab/` 文件夹（施工过程记录，只留在本机），并把它加进项目的 `.gitignore`。用旧方式装过协作包的项目，执行 `migrate <项目路径>` 改成新方式；加 `--remove-old-package` 才会删掉项目里的旧副本。
@@ -103,7 +103,7 @@ python3 ~/Desktop/project/super-agent/collab init <项目路径>
 ### 桌面窗口（可选，仅 macOS）
 
 ```bash
-bash ~/Desktop/project/super-agent/desktop/mac/build.sh --install
+bash ~/Desktop/project/开发助手/desktop/mac/build.sh --install
 ```
 
 第一次会从 GitHub 下载开源终端组件 SwiftTerm（固定 1.99.0 版）并编译，生成 `~/Applications/开发助手.app`（2026-11-17 由“超级助手”改名，专门用来开发超级玩家）。**它是冻结的**：只用生成时装进应用里的那份代码，之后项目里的改动不会影响它；要用上新改动就重新运行上面的命令（临时调试可带 `--source-root` 读源目录）。打开后选一个项目文件夹：没接入过的会自动接入，旧方式装过的会先问你要不要删旧副本；第一次打开会先出**团队配置**：选调度员（Codex / Cursor / agy / 自定义命令，没有默认、必须你亲手选）和三位执行员（写测试、写代码、复查），逐个点每个角色后面的“检测生效”确认都能真干活（第一次要全部测通才能保存），再开始对话。以后点左栏底部的齿轮改，改了谁就测谁。调度员启动时会自动收到开场交代：第一次接入时熟悉项目、起草项目说明；以后每次先读交接、报进度。

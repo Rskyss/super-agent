@@ -8,7 +8,7 @@ import os
 import sys
 from pathlib import Path
 
-DSH = Path(sys.argv[1] if len(sys.argv) > 1 else Path.home() / "Desktop/project/dsh-base")
+DSH = Path(sys.argv[1] if len(sys.argv) > 1 else Path(__file__).resolve().parents[2] / "dsh-base")  # 本仓库同级的 dsh-base（11-17 工具分家）
 FLAG = "process.env.SUPERAGENT_DESKTOP"
 HEADLINE = "process.env.DSH_CLIENT_HERO_HEADLINE"
 FILES = {
