@@ -51,7 +51,8 @@ class ProjectWindowKept(unittest.TestCase):
         self.assertRegex(said, r"blocks\.is(Visible|Open)")
         # 只在拿到新端口那一次重连：放在 guard port == nil 之后，不然服务每说一段话就重载一次
         self.assertLess(said.index("guard port == nil"), said.index("blocks.load("))
-        self.assertIn("--open-blocks", self.main, "走查开关")
+        # 11-17 开发助手精简：积木库打不开了，“走查开关”--open-blocks 一并去掉（见 test_dev_assistant_lite.py）
+        self.assertNotIn('contains("--open-blocks")', self.main)
 
     def test_receipts_append_only(self):
         text = read(ROOT / "docs" / "积木库" / "施工单" / "回执.md")

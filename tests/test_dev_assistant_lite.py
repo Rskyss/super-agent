@@ -28,6 +28,25 @@ class NoBlocksEntry(unittest.TestCase):
         self.assertIn('"项目窗口"', line)
 
 
+class NoBackDoor(unittest.TestCase):
+    """积木库窗口不能再被任何办法打开：启动参数、链接路由、菜单动作（Codex 复查 11-17）。
+    窗口外壳里任何地方都不许再调用 blocks.show()。"""
+
+    def setUp(self):
+        self.main = MAIN.read_text(encoding="utf-8")
+
+    def test_no_show_call(self):
+        self.assertNotIn("blocks.show()", self.main)
+
+    def test_no_launch_flag_or_route(self):
+        self.assertNotIn('contains("--open-blocks")', self.main)
+        self.assertNotIn('case "blocks"', self.main)
+
+    def test_no_menu_action(self):
+        self.assertNotIn("func openBlocks(", self.main)
+        self.assertNotIn("openBlocks(_:)", self.main)
+
+
 class TeamButton(unittest.TestCase):
     def test_text_button(self):
         f = foot()

@@ -43,7 +43,6 @@
 //   --walk-list-look            只看左栏现在有什么，用来查重开软件后删掉的有没有回来
 //   --clerk-try <文件> [--clerk-base 地址]  用文件里的密钥走一次第一屏的测试和保存，结果写到“文件.result”
 //   --interrupt-answer <stay|leave>  调度员干活时切终端，代替用户回答提示
-//   --open-blocks               启动时顺手打开积木库窗口（走查截图用）
 import AppKit
 import Security
 import SwiftTerm
@@ -451,7 +450,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
         showLeft(firstLeft(), opening: withOpening)
         if let dir = argValue("--snapshot") { scheduleSnapshot(into: dir) }
         if let file = argValue("--walk") { scheduleWalk(into: file) }
-        if CommandLine.arguments.contains("--open-blocks") { blocks.show() }
         NSApp.activate(ignoringOtherApps: true)
     }
 
@@ -1143,7 +1141,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
         // 隐藏的设置页发出的操作可能在切项目之后才到：不是当前项目的一律丢掉，否则 A 的选择会写进 B
         if url.host?.hasPrefix("clerk-") == true, value("project") != project.path { return }
         switch url.host {
-        case "blocks": blocks.show()
         case "saved":
             // 没接入的文件夹：调度员存在窗口自己的设置里
             if let who = value("dispatcher"), !who.isEmpty {
@@ -2011,7 +2008,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
         return item
     }
 
-    @objc func openBlocks(_ sender: Any?) { blocks.show() }
 
     /// 项目窗口的菜单（文件、项目、对话、面板，含快捷键）只管项目窗口：积木库在前面或项目窗口藏着时，
     /// 先把项目窗口叫到前面，用户看得到发生了什么，弹层也不会挂在看不见的窗口上（用户 2026-11-09 定）
