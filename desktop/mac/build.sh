@@ -1,13 +1,13 @@
 #!/bin/bash
-# 生成“超级助手”Mac 应用：编译窗口 → 画图标 → 装进应用包 → 本机签名。
-# 用法：bash desktop/mac/build.sh            生成到 desktop/mac/build/超级助手.app
+# 生成“开发助手”（原“超级助手”，11-17 改名冻结）Mac 应用：编译窗口 → 画图标 → 装进应用包 → 本机签名。
+# 用法：bash desktop/mac/build.sh            生成到 desktop/mac/build/开发助手.app
 #       bash desktop/mac/build.sh --install  另外放一份到 ~/Applications（启动台、聚焦搜索里能找到）
 # 第一次运行会从 GitHub 下载终端组件 SwiftTerm（固定 1.99.0 版），需要联网，之后就不用了。
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
-APP="$HERE/build/超级助手.app"
+APP="$HERE/build/开发助手.app"
 
 echo "1/5 编译窗口程序…"
 swift build -c release --package-path "$HERE"
@@ -22,8 +22,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleName</key><string>超级助手</string>
-  <key>CFBundleDisplayName</key><string>超级助手</string>
+  <key>CFBundleName</key><string>开发助手</string>
+  <key>CFBundleDisplayName</key><string>开发助手</string>
   <key>CFBundleIdentifier</key><string>local.superagent.desktop</string>
   <key>CFBundleExecutable</key><string>SuperAgent</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
@@ -53,9 +53,10 @@ codesign --force --deep --sign - "$APP"
 
 if [ "${1:-}" = "--install" ]; then
   mkdir -p "$HOME/Applications"
-  rm -rf "$HOME/Applications/超级助手.app"
+  rm -rf "$HOME/Applications/超级助手.app"   # 改名前的旧应用，免得搜索里出现两个
+  rm -rf "$HOME/Applications/开发助手.app"
   cp -R "$APP" "$HOME/Applications/"
-  echo "完成：$HOME/Applications/超级助手.app"
+  echo "完成：$HOME/Applications/开发助手.app"
 else
   echo "完成：$APP"
 fi
