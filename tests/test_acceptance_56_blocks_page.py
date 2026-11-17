@@ -32,7 +32,7 @@ class PageTest(unittest.TestCase):
         html = read("blocks.html")
         for part in ("/static/theme.css", "/static/blocks.css", "/static/blocks.js", 'lang="zh-CN"'):
             self.assertIn(part, html)
-        self.assertIn("<title>超级助手 · 积木库</title>", html)
+        self.assertIn("<title>积木库</title>", html)
 
     def test_bind_card(self):
         html = read("blocks.html")

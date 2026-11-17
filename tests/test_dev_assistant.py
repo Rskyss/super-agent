@@ -141,6 +141,13 @@ class InstallOnlyRemovesOurApp(unittest.TestCase):
             self.assertNotEqual(self.run_remove(other).returncode, 0); self.assertTrue(other.exists())
             self.assertNotEqual(self.run_remove(plain).returncode, 0); self.assertTrue((plain / "x.txt").exists())
             self.assertEqual(self.run_remove(missing).returncode, 0)
+            # --check 只核对不删
+            again = d / "again.app"; self.make_app(again, "local.superagent.desktop")
+            import subprocess
+            script = ROOT / "desktop" / "mac" / "remove_app.sh"
+            self.assertEqual(subprocess.run(["bash", str(script), "--check", str(again)]).returncode, 0)
+            self.assertTrue(again.exists())
+            self.assertNotEqual(subprocess.run(["bash", str(script), "--check", str(other)], capture_output=True).returncode, 0)
 
     def test_build_uses_it(self):
         build = BUILD.read_text(encoding="utf-8")
@@ -148,11 +155,12 @@ class InstallOnlyRemovesOurApp(unittest.TestCase):
         self.assertIn('remove_app.sh" "$HOME/Applications/超级助手.app"', install)
         self.assertIn('remove_app.sh" "$HOME/Applications/开发助手.app"', install)
         self.assertNotIn("rm -rf", install)
+        # 两个都先核对，再开始删
+        first_delete = install.index('remove_app.sh" "$HOME')
+        self.assertLess(install.index('--check "$HOME/Applications/超级助手.app"'), first_delete)
+        self.assertLess(install.index('--check "$HOME/Applications/开发助手.app"'), first_delete)
         self.assertIn('cp -R "$APP" "$HOME/Applications/"', install)
 
-
-if __name__ == "__main__":
-    unittest.main()
 
 
 class NoOldNameShown(unittest.TestCase):
@@ -160,7 +168,7 @@ class NoOldNameShown(unittest.TestCase):
     内部标记【超级助手自动交代】、积木库资料夹名、注释不算。"""
 
     def test_no_old_name(self):
-        files = list((ROOT / "desktop" / "static").glob("*.js")) + [
+        files = list((ROOT / "desktop" / "static").glob("*.js")) + list((ROOT / "desktop" / "static").glob("*.html")) + [
             ROOT / "desktop" / n for n in ("chat.py", "view.py", "server.py")]
         bad = []
         for f in files:
@@ -172,3 +180,7 @@ class NoOldNameShown(unittest.TestCase):
         allowed = ['"from": "超级助手"', 'description="超级助手']
         bad = [b for b in bad if not any(a in b for a in allowed)]
         self.assertEqual(bad, [])
+
+
+if __name__ == "__main__":
+    unittest.main()

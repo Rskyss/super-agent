@@ -53,8 +53,11 @@ codesign --force --deep --sign - "$APP"
 
 if [ "${1:-}" = "--install" ]; then
   mkdir -p "$HOME/Applications"
+  # 先把两个目标都核对完（只认本应用的包），全部通过才开始删，免得删了旧的却装不上新的（复查第 2 轮）
+  bash "$HERE/remove_app.sh" --check "$HOME/Applications/超级助手.app"
+  bash "$HERE/remove_app.sh" --check "$HOME/Applications/开发助手.app"
   bash "$HERE/remove_app.sh" "$HOME/Applications/超级助手.app"   # 改名前的旧应用，免得搜索里出现两个
-  bash "$HERE/remove_app.sh" "$HOME/Applications/开发助手.app"   # 只删自己的应用包，同名的别的东西会停下
+  bash "$HERE/remove_app.sh" "$HOME/Applications/开发助手.app"
   cp -R "$APP" "$HOME/Applications/"
   echo "完成：$HOME/Applications/开发助手.app"
 else
