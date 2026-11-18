@@ -107,12 +107,14 @@ class DispatchFlowTest(unittest.TestCase):
             ("派活", "开发员"), ("回复", "调度员"),
             ("范围", "程序"), ("判定", "程序"),
             ("派活", "复查员"), ("回复", "调度员"),
+            ("复查结论", "程序"),  # 第二批 A3（11-18）：收口后记一条复查结论，右栏绿勾以它为准
             ("结束", "你"),  # 做完了交到你手上验收
         ])
         self.assertIn("2 个文件", events[4]["summary"])
         self.assertEqual(events[5]["result"], PASS)
         self.assertEqual(events[7]["summary"], "结论：通过")
-        self.assertIn("等你确认", events[8]["summary"])
+        self.assertEqual(events[8]["result"], "通过")
+        self.assertIn("等你确认", events[9]["summary"])
 
     def test_prompts_and_replies_are_kept_in_full(self):
         script = _Script(self.cdir, [PASS], outputs={"cursor": "改好了\n汇报：新增函数"})

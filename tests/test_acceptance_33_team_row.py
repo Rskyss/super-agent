@@ -11,7 +11,7 @@ class PageTest(unittest.TestCase):
         self.swift = SWIFT.read_text(encoding="utf-8")
 
     def test_clerk_is_the_first_row_and_not_optional(self):
-        self.assertLess(self.html.index('data-role="clerk"'), self.html.index('data-role="dispatcher"'))
+        self.assertLess(self.html.index('data-role="clerk"'), self.html.index('data-role="tester"'))
         self.assertNotIn("可选", self.html)
 
     def test_row_has_the_agreed_controls(self):

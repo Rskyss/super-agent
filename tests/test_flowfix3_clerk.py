@@ -12,7 +12,7 @@ class Rules(unittest.TestCase):
         self.assertIn("不用先读", desk.ROLE)
 
     def test_no_extra_question_after_box(self):
-        self.assertIn("开工和复查由调度员按流程安排", desk.ROLE)
+        self.assertIn("开工和复查由流程自动安排", desk.ROLE)
         reply = tasks._TASK_SHOWN
         self.assertIn("不要再问", reply)
         self.assertIn("开工", reply)

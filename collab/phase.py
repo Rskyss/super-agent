@@ -416,7 +416,7 @@ def card_phase(project: str, card_id: str) -> dict:
         later = _later_items(events)
         return {
             "code": "review", "label": "等你确认", "tone": "ok", "needs_you": True,
-            "detail": (f"复查另挑出 {len(later)} 件不急的事，记进了“以后再修”，这次不改（点确认时会列给你看）"
+            "detail": (f"另有 {len(later)} 件开工前就有的问题，已记进台账，这次不改"
                        if later else ""),
             "actions": ["accept", "revise", "discard"], "branch": branch, "later": later,
         }

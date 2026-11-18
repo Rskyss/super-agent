@@ -148,7 +148,7 @@ def cmd_status(args, **_):
 
 
 def _handover_worker(project):
-    """备交接资料的调度员（第二轮 ㉚）：用调度员这一岗的 Codex 模型和强度，只读；没装 Codex 就不备。"""
+    """备交接资料的后台作业（第二轮 ㉚）：固定 Codex、强度低（collab.config.plan_models，和写方案同一份），只读；没装 Codex 就不备。"""
     import shutil as _shutil
     if os.environ.get("SUPERAGENT_NO_HANDOVER") == "1" or not _shutil.which("codex"):
         return None  # 测试用假工具时关掉（假 Codex 分不出这是备资料的活）

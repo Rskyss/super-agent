@@ -33,18 +33,6 @@
     <button class="btn" type="button" id="clerkForget">删除这一家的密钥</button>
   </div>
 
-  <div class="member" data-role="dispatcher">
-    <div class="role">调度员</div>
-    <div class="pick">
-      <select class="tool-select" aria-label="调度员"></select>
-      <input type="text" class="custom" placeholder="启动调度员的命令，例如 qwen" aria-label="自定义调度员命令" hidden>
-      <div class="model-box" hidden></div>
-    </div>
-    <div class="state"><span class="dot"></span><span class="txt">还没检测</span></div>
-    <button class="check-one" type="button">检测</button>
-  </div>
-  <p class="note" id="dispNote"></p>
-
   <section id="workers">
     <div class="member" data-role="tester">
       <div class="role">写测试</div>
@@ -75,7 +63,7 @@
     </div>
     <p class="note warn" id="sameWarn" hidden>写代码和复查是同一家：复查就不够独立了（同样的盲区）。</p>
   </section>
-  <p class="note warn" id="noGit" hidden>这个文件夹还没有版本管理（git），不能派活；现在只能选一位调度员和它聊天。需要的话，让调度员帮你把版本管理建起来。</p>
+  <p class="note warn" id="noGit" hidden>这个文件夹还没有版本管理（git），不能派活；现在只能和行政聊天。要派活，先在这个文件夹里初始化 git。</p>
 
   <div class="bar">
     <button class="btn primary" type="button" id="save" disabled>保存并开始</button>

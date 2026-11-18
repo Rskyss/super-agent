@@ -22,7 +22,7 @@ class WindowTest(unittest.TestCase):
         ask = section(self.swift, "func askClerk()", "@objc func clerkSaveClicked")
         self.assertIn("配置行政人员", ask)
         self.assertNotIn("请先配置", ask)
-        self.assertIn("不填也能继续用 Codex 聊天", ask)
+        self.assertIn("行政是对话的入口，不配就没法在这里聊天", ask)  # 11-17 起没有退回去和调度员聊的路
         self.assertIn('addButton(withTitle: "取消")', ask)
         self.assertNotIn("runModal", ask)
 

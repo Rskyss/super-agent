@@ -13,9 +13,9 @@ from collab.state import Card
 
 _MAX_RESULT = 6000
 _CARD_ID = re.compile(r"^[A-Za-z0-9_-]+$")
-_ROLE_NAMES = {"dispatcher": "调度员", "tester": "写测试", "developer": "写代码", "reviewer": "复查"}
+_ROLE_NAMES = {"tester": "写测试", "developer": "写代码", "reviewer": "复查"}
 _TOOL_NAMES = {"codex": "Codex", "cursor": "Cursor", "agy": "agy", "none": "不复查"}
-_TEAM_ROLES = ("dispatcher", "tester", "developer", "reviewer")
+_TEAM_ROLES = ("tester", "developer", "reviewer")
 _TEAM_WORKER_TOOLS = ("codex", "cursor", "agy")
 _TEAM_REVIEWER_TOOLS = _TEAM_WORKER_TOOLS + ("none",)
 _DOC_NAMES = ("readme.md", "readme", "readme.txt", "claude.md", "agents.md")
@@ -68,7 +68,7 @@ TOOLS = [
         "name": "propose_team_change",
         "description": "向用户出示“改团队设置？”确认框。用户点确认后才写入配置。",
         "parameters": {"type": "object", "properties": {
-            "role": {"type": "string", "description": "dispatcher / tester / developer / reviewer"},
+            "role": {"type": "string", "description": "tester / developer / reviewer"},
             "tool": {"type": "string", "description": "codex / cursor / agy；复查可选 none"},
         }, "required": ["role", "tool"], "additionalProperties": False},
     }},
@@ -292,8 +292,6 @@ def team_incomplete_hint(project: str) -> str:
         return "团队配置读不出来：请在设置里先修好配置，或一项一项说清要改谁。"
     missing = []
     for role in _TEAM_ROLES:
-        if role == "dispatcher":  # 配了行政就不需要调度员
-            continue
         v = team.get(role)
         if v is None or (isinstance(v, str) and not v.strip()):
             missing.append(_ROLE_NAMES.get(role, role))

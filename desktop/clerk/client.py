@@ -146,7 +146,9 @@ class _TrackedHTTPSHandler(urllib.request.HTTPSHandler):
                     raise TimeoutError("timed out")
                 self.sock.do_handshake()
 
-        return self.do_open(_TrackedHTTPSConnection, req, context=self._context, check_hostname=self._check_hostname)
+        # Python 3.12 起去掉了 HTTPSHandler._check_hostname 和 HTTPSConnection 的 check_hostname 参数；
+        # 是否校验主机名由 context 决定（默认开启，3.9 和 3.15 都实测过）
+        return self.do_open(_TrackedHTTPSConnection, req, context=self._context)
 
 
 class _RequestCancelGuard:

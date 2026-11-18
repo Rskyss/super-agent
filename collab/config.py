@@ -1,8 +1,9 @@
 """项目配置：模型与团队。都存在目标项目的 .collab/配置.json（只在本机）。
 
 - 模型：包里给默认值，项目可以逐项覆盖。换模型只改这里，不改代码。
-- 团队：谁当调度员、谁写测试/写代码/复查。由用户在窗口里亲手配置；
-  协作包开工、桌面窗口、右边面板都读这一份。调度员没有默认值（必须用户自己选）。
+- 团队：谁写测试/写代码/复查。由用户在窗口里亲手配置；协作包开工、桌面窗口、右边面板都读这一份。
+  （11-17 起没有“调度员”岗：写方案、备交接资料是后台作业，用 plan_models 取模型。
+  老配置里残留的 team.dispatcher、role_models.dispatcher 读到时一律忽略，不报错、不主动改文件。）
 """
 from __future__ import annotations
 
@@ -16,9 +17,10 @@ from urllib.parse import urlparse
 from collab.providers import find
 
 WORKERS = ("codex", "cursor", "agy", "qwen")  # 能被协作包自动派活的工具；qwen = Codex 的壳接千问 Token Plan（用户 11-13 临时加）
-DISPATCHERS = ("codex", "cursor", "agy")      # 可当调度员的（另可“custom:命令”）；Claude 暂不进入
 DEFAULT_TEAM = {"tester": "codex", "developer": "cursor", "reviewer": "agy"}
-_ROLES = {"tester": "写测试", "developer": "写代码", "reviewer": "复查", "dispatcher": "调度员"}
+_ROLES = {"tester": "写测试", "developer": "写代码", "reviewer": "复查"}
+_LEGACY_ROLE = "dispatcher"   # 老配置里残留的岗位名：团队读写里一律忽略（只有下面 legacy_dispatcher 一个出口）
+_LEGACY_DISPATCHERS = ("codex", "cursor", "agy")
 
 DEFAULT_MODELS = {
     "cursor": "auto",              # Cursor CLI（agent）
@@ -54,6 +56,7 @@ _EFFORT_LABELS = {
 
 MODEL_OPTIONS = {
     "codex": [
+        {"value": "gpt-6.2-sol", "label": "GPT-6.2-Sol", "efforts": ["low", "medium", "high", "xhigh", "max", "ultra"]},  # 11-18 用户要
         {"value": "gpt-6.1-sol", "label": "GPT-6.1-Sol", "efforts": ["low", "medium", "high", "xhigh", "max", "ultra"]},
         {"value": "gpt-6-astra", "label": "GPT-6-Astra", "efforts": ["low", "medium", "high", "xhigh", "max", "ultra"]},
         {"value": "gpt-6.1-terra", "label": "GPT-6.1 Terra", "efforts": ["low", "medium", "high", "xhigh", "max", "ultra"]},
@@ -245,37 +248,41 @@ def load_models(project_dir) -> dict:
 
 
 def _check_member(role: str, value) -> None:
+    if role not in _ROLES:
+        raise ConfigError(f"团队里没有 {role!r} 这个岗位：只有写测试、写代码、复查")
     allowed = WORKERS + (("none",) if role == "reviewer" else ())
-    if role == "dispatcher":
-        if value in DISPATCHERS or (isinstance(value, str) and value.startswith("custom:") and value[7:].strip()):
-            return
-        raise ConfigError(f"调度员不能是 {value!r}：可选 Codex、Cursor、agy，或自定义命令")
     if value not in allowed:
         raise ConfigError(f"{_ROLES[role]}不能是 {value!r}：可选 {'、'.join(allowed)}（执行员必须是协作包能自动派活的工具）")
 
 
 def load_team(project_dir) -> dict:
-    """团队：{dispatcher, tester, developer, reviewer, configured}。没配的执行员用默认，调度员没配就是 None。"""
+    """团队：{tester, developer, reviewer, configured}。没配的执行员用默认。
+    configured：三位执行员都存过；或者是老项目（配置里还留着调度员），升级后不用重配。"""
     saved = _read(project_dir).get("team") or {}
     if not isinstance(saved, dict):
         raise ConfigError("团队配置格式不对")
-    team = dict(DEFAULT_TEAM, dispatcher=None)
-    for role in ("dispatcher", "tester", "developer", "reviewer"):
+    team = dict(DEFAULT_TEAM)
+    for role in _ROLES:
         if saved.get(role) is not None:
             _check_member(role, saved[role])
             team[role] = saved[role]
-    team["configured"] = bool(saved.get("dispatcher"))
+    team["configured"] = bool(saved.get(_LEGACY_ROLE)) or all(saved.get(role) for role in _ROLES)
     return team
 
 
 def save_team(project_dir, team: dict) -> None:
-    """检查后存进 .collab/配置.json，其他设置原样保留。"""
+    """检查后存进 .collab/配置.json，其他设置原样保留。传进来的老 dispatcher 项直接忽略；
+    配置里已经有的老调度员项原样留着（只有超级玩家那套“接调度员”检测在读，团队读写看不到它）。"""
     clean = {}
-    for role in ("dispatcher", "tester", "developer", "reviewer"):
+    for role in _ROLES:
         value = team.get(role)
         _check_member(role, value)
         clean[role] = value
     data = _read(project_dir)
+    old = data.get("team")
+    legacy = old.get(_LEGACY_ROLE) if isinstance(old, dict) else None
+    if legacy:
+        clean[_LEGACY_ROLE] = legacy
     data["team"] = clean
     path = _config_path(project_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -297,17 +304,41 @@ def save_team_member(project_dir, role: str, tool: str) -> None:
         if not isinstance(data, dict):
             raise ConfigError(f"{path} 顶层必须是对象")
     _check_member(role, tool)
+    _write_team_field(path, data, role, tool)
+
+
+def _write_team_field(path: Path, data: dict, role: str, value) -> None:
     team = data.get("team")
-    if not isinstance(team, dict):
-        team = {}
-    else:
-        team = dict(team)
-    team[role] = tool
+    team = dict(team) if isinstance(team, dict) else {}
+    team[role] = value
     data["team"] = team
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     tmp.replace(path)
+
+
+def legacy_dispatcher(project_dir) -> tuple:
+    """老配置里残留的调度员：(工具名, 岗位模型)，没有就是 ("", {})。
+    开发助手本身不再用它（团队里没有这一岗）；超级玩家那套“接调度员”检测（desktop/dsh_dispatcher.py）
+    还要读写它，所以只留这一对出口，别的地方不要用。"""
+    data = _read(project_dir)
+    team = data.get("team") if isinstance(data.get("team"), dict) else {}
+    tool = team.get(_LEGACY_ROLE)
+    tool = tool if isinstance(tool, str) else ""
+    if tool not in WORKERS:
+        return tool, {}
+    saved = data.get("role_models") if isinstance(data.get("role_models"), dict) else {}
+    return tool, _role_entry(saved, load_models(project_dir), _LEGACY_ROLE, tool)
+
+
+def save_legacy_dispatcher(project_dir, tool: str) -> None:
+    """合并写入老的调度员项（只给超级玩家那套“接调度员”检测用），其他设置原样保留。"""
+    if not (tool in _LEGACY_DISPATCHERS or (isinstance(tool, str) and tool.startswith("custom:") and tool[7:].strip())):
+        raise ConfigError(f"调度员不能是 {tool!r}：可选 Codex、Cursor、agy，或自定义命令")
+    path = _config_path(project_dir)
+    data = _read(project_dir)
+    _write_team_field(path, data, _LEGACY_ROLE, tool)
 
 
 def clean_models(models: dict) -> dict:
@@ -337,7 +368,7 @@ def save_models(project_dir, models: dict) -> None:
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
-_ALL_ROLES = ("dispatcher", "tester", "developer", "reviewer")
+_ALL_ROLES = tuple(_ROLES)
 _RUN_ROLES = {"test": ("tester", "测试员"), "dev": ("developer", "开发员"), "review": ("reviewer", "复查员")}
 
 
@@ -353,15 +384,20 @@ def load_role_models(project_dir, team: Optional[dict] = None) -> dict:
         tool = team.get(role)
         if tool not in WORKERS:
             continue
-        own = saved.get(role) if isinstance(saved.get(role), dict) else {}
-        mine = own.get("tool") == tool
-        entry = {"tool": tool, "model": str(own.get("model") or "").strip() if mine else ""}
-        entry["model"] = entry["model"] or tool_models[tool]
-        if tool == "codex":
-            effort = own.get("effort") if mine else None
-            entry["effort"] = effort if effort in CODEX_EFFORTS else tool_models["codex_effort"]
-        out[role] = entry
+        out[role] = _role_entry(saved, tool_models, role, tool)
     return out
+
+
+def _role_entry(saved: dict, tool_models: dict, role: str, tool: str) -> dict:
+    """一个岗位的模型：存过且工具没换就用存的，否则用这家工具的整体设置。"""
+    own = saved.get(role) if isinstance(saved.get(role), dict) else {}
+    mine = own.get("tool") == tool
+    entry = {"tool": tool, "model": str(own.get("model") or "").strip() if mine else ""}
+    entry["model"] = entry["model"] or tool_models[tool]
+    if tool == "codex":
+        effort = own.get("effort") if mine else None
+        entry["effort"] = effort if effort in CODEX_EFFORTS else tool_models["codex_effort"]
+    return entry
 
 
 def models_for(project_dir, role: str, tool: Optional[str] = None, team: Optional[dict] = None) -> dict:
@@ -372,6 +408,22 @@ def models_for(project_dir, role: str, tool: Optional[str] = None, team: Optiona
         models[mine["tool"]] = mine["model"]
         if mine["tool"] == "codex":
             models["codex_effort"] = mine["effort"]
+    return models
+
+
+PLAN_EFFORT = "low"   # 写方案、备交接资料的思考强度：固定低（去掉调度员岗后不再有人单独设）
+
+
+def plan_models(project_dir, team: Optional[dict] = None) -> dict:
+    """写方案、备交接资料用的整份模型设置：固定走 Codex、强度固定“低”；模型跟“写测试”那一岗。
+
+    不能直接落到整体设置：整体的 codex_effort 默认是“极高”，会让转抄施工单的活变慢变贵。
+    写测试不是 Codex 时，tester 岗存的模型不算数（models_for 会回到 Codex 整体设置）。"""
+    try:
+        models = models_for(project_dir, "tester", "codex", team)
+    except ConfigError:   # 团队那一段格式不对，但整体设置还读得出
+        models = load_models(project_dir)
+    models["codex_effort"] = PLAN_EFFORT
     return models
 
 
@@ -391,11 +443,13 @@ def clean_role_models(role_models: dict) -> dict:
         raise ConfigError("岗位模型格式不对")
     out = {}
     for role, item in role_models.items():
+        if role == _LEGACY_ROLE:
+            continue  # 老页面、老配置带来的调度员项：忽略，不存
         if role not in _ALL_ROLES or not isinstance(item, dict):
             raise ConfigError(f"不认识的岗位：{role!r}")
         tool = item.get("tool")
         if tool not in WORKERS:
-            continue  # 自定义调度员、不复查：没有模型可选
+            continue  # 不复查：没有模型可选
         model = str(item.get("model") or "").strip()
         if not model:
             raise ConfigError(f"{_ROLES[role]}的模型名不能为空")
@@ -414,7 +468,7 @@ def save_role_models(project_dir, role_models: dict) -> None:
     cleaned = clean_role_models(role_models)
     data = _read(project_dir)
     saved = data.get("role_models") if isinstance(data.get("role_models"), dict) else {}
-    saved = dict(saved)
+    saved = dict(saved)   # 老的调度员岗位模型也原样留着（超级玩家设置页只存一个执行员时不能把它带走）
     saved.update(cleaned)
     data["role_models"] = saved
     path = _config_path(project_dir)

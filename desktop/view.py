@@ -17,6 +17,7 @@ from collab.flow import card_title, read_flow, summarize, text_of, working_now
 from collab.phase import card_phase, process_is_alive
 from collab.judge import PASS
 from collab.state import Card
+from collab.token_usage import sum_tokens, usage_from_log
 
 QUIET_WARN_SECONDS = 10 * 60  # 超过 10 分钟没有任何动静，提示可能卡住
 TERMINAL_STATES = {"待验收", "已合并", "需Claude介入", "已放弃"}
@@ -37,11 +38,6 @@ def _name(tool) -> str:
 
 def _face(tool) -> str:
     return TOOL_FACES.get(tool or "", (tool or "?")[:2])
-
-
-def _mmss(seconds) -> str:
-    seconds = max(0, int(seconds or 0))
-    return f"{seconds // 60}:{seconds % 60:02d}"
 
 
 def _when(event):
@@ -345,10 +341,11 @@ def _dispatcher(saved) -> tuple:
 
 
 def _stations(tools: dict, reviewer_on: bool, dispatcher=None) -> list:
-    disp_who, disp_face = _dispatcher(dispatcher)
+    # dispatcher：老窗口、老项目还会传（以前选过调度员）；这一站现在固定是 Codex 写方案（去掉调度员），用不着它。
+    # 站位键 disp 不改名：前端、记录、测试里都在用。
     return [
         {"key": "you", "role": "提需求", "who": "你", "face": "你"},
-        {"key": "disp", "role": "调度", "who": disp_who, "face": disp_face},
+        {"key": "disp", "role": "写方案", "who": _name("codex"), "face": _face("codex")},
         {"key": "test", "role": "写测试", "who": _name(tools["测试员"]), "face": _face(tools["测试员"])},
         {"key": "dev", "role": "写代码", "who": _name(tools["开发员"]), "face": _face(tools["开发员"])},
         {"key": "check", "role": "跑测试", "who": "程序", "face": "检"},
@@ -361,38 +358,114 @@ def _stations(tools: dict, reviewer_on: bool, dispatcher=None) -> list:
 _STATION_ROLE = {"test": "测试员", "dev": "开发员", "rev": "复查员"}
 
 
-def _team_disp_model(project) -> tuple:
-    """团队设置里调度员这一岗的（工具, 模型（强度））。"""
+def _plan_model_label(project) -> str:
+    """写方案这一站的“模型（强度）”：没有写方案记录时用固定的低档设置（collab.config.plan_models）。"""
     try:
-        from collab.config import load_role_models, model_label
-        mine = load_role_models(project).get("dispatcher") or {}
+        from collab.config import model_label, plan_models
+        models = plan_models(project)
     except Exception:  # noqa: BLE001 — 配置读不出就不显示模型
-        return "", ""
-    tool = str(mine.get("tool") or "")
-    return tool, model_label(tool, {tool: mine.get("model"), "codex_effort": mine.get("effort")}) if tool else ""
+        return ""
+    return model_label("codex", {"codex": models.get("codex"), "codex_effort": models.get("codex_effort")})
 
 
 def _add_models(stations, events, project=None) -> None:
-    """右上角“工具 · 模型（强度）”（㉗ ㊳）：开跑时记下的各岗模型、写方案时记下的调度员模型；老卡没有就只写工具。"""
-    models, disp_model, disp_tool = {}, "", ""
+    """右上角“工具 · 模型（强度）”（㉗ ㊳）：开跑时记下的各岗模型、写方案时记下的模型；老卡没有就只写工具。
+    每个岗位优先用最后一次派活记下的实际模型（复查降档后要跟着变）；没有就回退到“开跑”记录。
+    写方案那一站固定是 Codex：优先用写方案记录里的模型，没有就用固定的低档设置。"""
+    models, dispatched, plan_model = {}, {}, ""
     for e in events:
         if e.get("kind") == "开跑" and isinstance(e.get("models"), dict):
             models.update({k: v for k, v in e["models"].items() if v})
+        if e.get("kind") == "派活" and e.get("dst") in _STATION_ROLE.values() and e.get("model"):
+            dispatched[e["dst"]] = e["model"]
         if e.get("kind") == "写方案" and e.get("model"):
-            disp_model, disp_tool = str(e["model"]), str(e.get("dst") or "")
+            plan_model = str(e["model"])
     for s in stations:
         if s["key"] == "disp":
-            if s.get("who") == "调度员" and disp_tool:
-                s["who"] = disp_tool  # 窗口没告诉是谁时，用写方案记下的那家
-            # 写方案的是 Codex；调度员换成别家时不能把 Codex 的模型安到它头上（复查 A 第 7 条），用团队设置里它自己的
-            label = disp_model if disp_tool and s.get("who") == disp_tool else ""
-            if not label and project is not None:
-                tool, team_label = _team_disp_model(project)
-                label = team_label if tool and _name(tool) == s.get("who") else ""
+            label = plan_model or (_plan_model_label(project) if project is not None else "")
         else:
-            label = models.get(_STATION_ROLE.get(s["key"], ""), "")
+            role = _STATION_ROLE.get(s["key"], "")
+            label = dispatched.get(role) or models.get(role, "")
         # 模型单独放一项，“who”照旧是工具名：点步骤看交接按工具名找（复查 A 第 2 条）
         s["model"] = label if label and s.get("who") not in ("", "不复查") else ""
+
+
+
+def _token_num(value) -> int:
+    """用量数字统一在这儿转：无穷大、NaN、非数字一律当 0，不让坏记录带垮汇总。"""
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
+def _add_tokens(stations, events, cdir: Path) -> dict:
+    """把各站位的用量加起来，另算交接资料、其他回复和辅助会话；只加 tokens 字段，不改原有字段。"""
+    answered = {e.get("reply_to") for e in events if e.get("kind") == "回复"}
+    station_total = 0
+    children = 0
+
+    def take_children(items):
+        nonlocal children
+        for item in items:
+            if isinstance(item, dict) and item.get("ok"):
+                children += _token_num(item.get("children"))
+
+    def put(key, items):
+        nonlocal station_total
+        if not items:
+            return
+        merged = sum_tokens(items)
+        if merged is None:
+            return
+        station = next((s for s in stations if s.get("key") == key), None)
+        if station is not None:
+            station["tokens"] = merged
+        if merged.get("ok"):
+            station_total += _token_num(merged.get("total"))
+        take_children(items)
+
+    plan_items = [e.get("tokens") for e in events
+                  if e.get("kind") == "方案" and isinstance(e.get("tokens"), dict)]
+    put("disp", plan_items)
+
+    for key, role in _STATION_ROLE.items():
+        items = []
+        for e in events:
+            if e.get("kind") != "回复" or e.get("src") != role:
+                continue
+            if e.get("tool") not in ("codex", "qwen"):
+                continue  # agy、Cursor 不做用量
+            tokens = e.get("tokens")
+            items.append(tokens if isinstance(tokens, dict)
+                         else {"ok": False, "reason": "这一步没有用量记录"})
+        for e in events:
+            if e.get("kind") != "派活" or e.get("dst") != role or e.get("tool") not in ("codex", "qwen"):
+                continue
+            if not e.get("live") or e.get("seq") in answered:
+                continue  # 已经交活的看回复记录，不再读日志重复累计
+            try:
+                tokens = usage_from_log(Path(cdir) / str(e["live"]))
+            except Exception as exc:  # noqa: BLE001 — 读实时用量失败不挡流程
+                tokens = {"ok": False, "reason": f"读实时用量时出问题（{exc}）"}
+            items.append(tokens if isinstance(tokens, dict)
+                         else {"ok": False, "reason": "实时用量读不到"})
+        put(key, items)
+
+    other = 0
+    for e in events:
+        tokens = e.get("tokens")
+        if not isinstance(tokens, dict) or not tokens.get("ok"):
+            continue
+        kind = e.get("kind")
+        counted = kind == "交接资料"
+        if kind == "回复" and e.get("src") not in _STATION_ROLE.values() and e.get("tool") in ("codex", "qwen"):
+            counted = True
+        if counted:
+            other += _token_num(tokens.get("total")) + _token_num(tokens.get("children"))
+
+    other += children
+    return {"total": station_total + other, "other": other}
 
 
 def _card_test_command(cdir: Path) -> str:
@@ -408,6 +481,21 @@ def _set(stations, key, state, detail="", **extra):
         if s["key"] == key:
             s.update({"state": state, "detail": detail, "live": False, "elapsed": None, "quiet": None})
             s.update(extra)
+
+
+def _review_conclusion(events, reply):
+    """最后一次复查员回复之后、和它对应的那条“复查结论”（第二批 A3）：老卡没有就返回 None。"""
+    if not isinstance(reply, dict):
+        return None
+    reply_seq = int(reply.get("seq") or 0)
+    found = None
+    for e in events:
+        if e.get("kind") != "复查结论" or int(e.get("reply") or 0) != reply_seq:
+            continue
+        if int(e.get("seq") or 0) <= reply_seq:
+            continue
+        found = e
+    return found
 
 
 def _is_deferred_plan(cdir: Path) -> bool:
@@ -493,10 +581,10 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
             team_reviewer_on = team["reviewer"] != "none"
             if team_reviewer_on:
                 tools["复查员"] = team["reviewer"]
-            dispatcher = dispatcher or team["dispatcher"]
     chat = chat_session.live_summary(now) if chat_session is not None else None
     base = {"installed": installed, "project": project.name, "card": None, "cards": [], "handoffs": [],
-            "back": False, "stale": False, "elapsed": 0, "stations": _stations(tools, team_reviewer_on, dispatcher)}
+            "back": False, "stale": False, "elapsed": 0, "tokens": {"total": 0, "other": 0},
+            "stations": _stations(tools, team_reviewer_on, dispatcher)}
     for s in base["stations"]:
         _set(base["stations"], s["key"], "idle")
     if not installed:
@@ -537,11 +625,12 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
             tools[e["dst"]] = e["tool"]
     stations = _stations(tools, reviewer_on, dispatcher)
     _add_models(stations, events, project)
+    tokens = _add_tokens(stations, events, cdir)
     card_test_cmd = _card_test_command(cdir)
     phase = card_phase(str(project), card_id)
     view = dict(base, card={"id": card_id, "title": _title(cdir, card_id), "state": state,
                             "rework": card.rework, "round": rnd, "phase": phase},
-                stations=stations, handoffs=_handoffs(events))
+                stations=stations, handoffs=_handoffs(events), tokens=tokens)
 
     if not events:
         _fallback(stations, state)
@@ -552,10 +641,11 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
         return view
 
     open_ev = working_now(events)
-    replies = {}
+    replies, reply_list = {}, {role: [] for role in ROLE_KEYS}
     for e in events:
         if e.get("kind") == "回复" and e.get("src") in ROLE_KEYS:
             replies[e["src"]] = e
+            reply_list[e["src"]].append(e)
     verdicts = [e for e in events if e.get("kind") in ("判定", "页面检查")]
     last_verdict = verdicts[-1] if verdicts else None
     escalations = [e for e in events if e.get("kind") == "转人工"]
@@ -596,14 +686,24 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
     elif phase.get("code") == "plan_ready":
         _set(stations, "disp", "wait", "方案写好了，等你批准")
     elif not _apply_plan_disp_station(stations, cdir, phase):
-        _set(stations, "disp", *disp.get(state, ("done", "派活后盯进度，有人卡住会叫你")))
+        _set(stations, "disp", *disp.get(state, ("done", "方案已定，后面有人卡住会叫你")))
 
     quiet = None
     for role, key in ROLE_KEYS.items():
         idle_text = {"test": "等开工", "dev": "等测试写完", "rev": "等测试通过" if reviewer_on else "这次不复查"}[key]
+        history = []
+        for reply in reply_list[role]:
+            tokens = reply.get("tokens")
+            history.append({
+                "seconds": reply.get("seconds"),
+                "tokens": tokens.get("total") if isinstance(tokens, dict) and tokens.get("ok") else None,
+            })
+        times = [h["seconds"] for h in history if h["seconds"] is not None]
+        spent = sum(times) if times else None
         if open_ev and open_ev.get("dst") == role:
             if interrupted_run:
-                _set(stations, key, "wait", "上次在这里中断，可让调度员继续", live=False)
+                _set(stations, key, "wait", "上次在这里中断，可让调度员继续", live=False,
+                     history=history, spent=spent, rounds=len(history) + 1)
             else:
                 started = _when(open_ev)
                 quiet = _quiet_seconds(project, card_id, cdir, open_ev, now)
@@ -611,12 +711,17 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
                                       test_command=card_test_cmd) if open_ev.get("live") else ""
                 _set(stations, key, "active", live_line or open_ev.get("summary", ""), live=True,
                      elapsed=int((now - started).total_seconds()) if started else None,
-                     quiet=int(quiet) if quiet is not None else None)
+                     quiet=int(quiet) if quiet is not None else None,
+                     history=history, spent=spent, rounds=len(history) + 1)
         elif role in replies:
             r = replies[role]
             failed = not r.get("ok", True) or r.get("summary", "").startswith("结论：不通过")
-            took = f" · 用了 {_mmss(r['seconds'])}" if r.get("seconds") is not None else ""
-            _set(stations, key, "fail" if failed else "done", r.get("summary", "") + took)
+            detail = r.get("summary", "")
+            conclusion = _review_conclusion(events, r) if role == "复查员" else None
+            if conclusion is not None and conclusion.get("result") == "通过":
+                failed, detail = False, conclusion.get("summary") or "复查通过"
+            _set(stations, key, "fail" if failed else "done", detail,
+                 history=history, spent=spent, rounds=len(history))
         else:
             _set(stations, key, "idle", idle_text)
 
@@ -685,6 +790,10 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
             st = next(x for x in stations if x["key"] == key)
             if ev and ev.get("seq", 0) < round_start and st.get("state") in ("done", "fail"):
                 _set(stations, key, "idle", f"{words}（上一轮结果在“交接”里）")
+    for st in stations:   # 最终没开始的环节不能残留轮数、用时、明细
+        if st.get("key") in ROLE_KEYS.values() and st.get("state") == "idle":
+            for field in ("history", "spent", "rounds"):
+                st.pop(field, None)
 
     if disp_busy_after:
         _set(stations, "accept", "idle", "等调度员最终核验完")

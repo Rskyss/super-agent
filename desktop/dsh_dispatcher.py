@@ -23,10 +23,9 @@ from collab.config import (
     DEFAULT_MODELS,
     ConfigError,
     load_model_options,
+    legacy_dispatcher,
     load_models,
-    load_role_models,
-    load_team,
-    save_team_member,
+    save_legacy_dispatcher,
 )
 from collab.phase import card_phase
 from desktop.clerk import tasks as clerk_tasks
@@ -109,10 +108,8 @@ def build_dispatcher_proposal(tool: str = "codex", card_id: str = "") -> dict:
 def _selected_model_for(project: str, tool: str) -> tuple[str, dict, dict]:
     """读取项目里给该工具/调度员配好的模型与附加选项，用于探测与指纹计算。"""
     models = load_models(project)
-    team = load_team(project)
-    role_models = load_role_models(project, team)
     model_opts = load_model_options(project)
-    role_entry = role_models.get("dispatcher") if isinstance(role_models.get("dispatcher"), dict) else {}
+    _tool, role_entry = legacy_dispatcher(project)   # 11-17 起团队里没有调度员岗，老配置里残留的这一份只在这里读
     tool_model = str(models.get(tool) or DEFAULT_MODELS.get(tool) or "").strip()
     if role_entry.get("tool") == tool and str(role_entry.get("model") or "").strip():
         chosen_model = str(role_entry.get("model") or "").strip()
@@ -249,8 +246,7 @@ class DispatcherDetector:
         return (self._clock() - cached_at) >= self._cache_ttl
 
     def _current_dispatcher(self, project: str, isolated_home: Path) -> tuple[str, str, tuple]:
-        team = load_team(project)
-        tool = str((team or {}).get("dispatcher") or "").strip().lower()
+        tool = legacy_dispatcher(project)[0].strip().lower()
         if tool not in ALLOWED_DISPATCHERS:
             fp = _fingerprint(project, isolated_home, tool, "", {})
             return tool, "", fp
@@ -312,8 +308,7 @@ class DispatcherDetector:
         isolated_home = require_isolated_blocks_home(explicit_blocks_home)
         if not project or not Path(project).is_dir():
             raise ValueError("项目目录不存在")
-        team = load_team(project)
-        tool = str((team or {}).get("dispatcher") or "").strip().lower()
+        tool = legacy_dispatcher(project)[0].strip().lower()
         if tool not in ALLOWED_DISPATCHERS:
             return {
                 "status": "missing",
@@ -482,7 +477,7 @@ def connect_dispatcher(
         },
         str(isolated_home),
     )
-    save_team_member(project, "dispatcher", clean_tool)
+    save_legacy_dispatcher(project, clean_tool)
     active_detector.mark_ready(project, str(isolated_home), clean_tool, detect_res)
 
     started_plan = False

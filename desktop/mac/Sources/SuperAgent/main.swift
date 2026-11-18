@@ -310,21 +310,10 @@ struct Dispatcher {
     static func key(for project: URL) -> String { "dispatcher:" + project.path }
 
     static func forProject(_ project: URL) -> Dispatcher? {
-        if let once = argValue("--dispatcher") { return Dispatcher(saved: once) }  // 自测：只这一次
-        let config = project.appendingPathComponent(".collab/配置.json")
-        if let data = try? Data(contentsOf: config),
-           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let team = json["team"] as? [String: Any], let who = team["dispatcher"] as? String, !who.isEmpty {
-            return Dispatcher(
-                saved: who,
-                codexModel: json["codex"] as? String,
-                codexEffort: json["codex_effort"] as? String,
-                cursorModel: json["cursor"] as? String,
-                agyModel: json["agy"] as? String
-            )
-        }
-        guard let s = UserDefaults.standard.string(forKey: key(for: project)), !s.isEmpty else { return nil }
-        return Dispatcher(saved: s)
+        // 11-17 起开发助手的团队里没有调度员，窗口只和行政对话：老配置、老设置里残留的调度员一律不读
+        // （没配行政就停在团队页）。只剩走查脚本用的 --dispatcher（自测：只这一次）。
+        if let once = argValue("--dispatcher") { return Dispatcher(saved: once) }
+        return nil
     }
 
     var name: String {
@@ -884,14 +873,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
         leftContent = NSView()
         pin(leftContent, in: leftBox, top: topBarHeight + 4)
         pin(buildTopBar(), in: leftBox, height: topBarHeight + 4)
-        chatWeb = makeWeb(message: "正在连接调度员…", background: "#17181b")
+        chatWeb = makeWeb(message: "正在连接…", background: "#17181b")
         configWeb = makeWeb(message: "正在打开团队配置…", background: "#17181b")
         configWeb.navigationDelegate = self
     }
 
     func updateTitle() {
-        let who = Dispatcher.forProject(project).map { "调度员：\($0.name)" } ?? "还没选调度员"
-        window?.title = "开发助手 · " + project.lastPathComponent + " · " + who
+        window?.title = "开发助手 · " + project.lastPathComponent
     }
 
     func makeTerminal() -> LocalProcessTerminalView {
@@ -1093,7 +1081,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
         let who = Dispatcher.forProject(project)
         guard let port = port, who != nil || clerkReady else {
             if chatLoadedKey == nil {
-                chatWeb.loadHTMLString(Self.message("正在连接调度员…", background: "#17181b"), baseURL: nil)
+                chatWeb.loadHTMLString(Self.message("正在连接…", background: "#17181b"), baseURL: nil)
             }
             return  // 数据服务起来后（serverSaid）会再调一次
         }
@@ -1111,7 +1099,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
         }
     }
 
-    func loadConfig() {
+    func loadConfig(needClerk: Bool = false, afterSave: Bool = true) {
         guard leftView == .config else { return }
         guard let port = port else {
             configWeb.loadHTMLString(Self.message("正在打开团队配置…", background: "#17181b"), baseURL: nil)
@@ -1119,7 +1107,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
         }
         let local = UserDefaults.standard.string(forKey: Dispatcher.key(for: project)) ?? ""
         let query = "project=\(urlEncode(project.path))&token=\(chatToken)&dispatcher=\(urlEncode(local))"
-            + "&clerk=\(clerkReady ? 1 : 0)"
+            + "&clerk=\(clerkReady ? 1 : 0)" + (needClerk ? "&need_clerk=\(afterSave ? 1 : 2)" : "")
             + (resolvedClerkChoice().map {
                 "&clerk_provider=\(urlEncode($0.provider))&clerk_base=\(urlEncode($0.base))&clerk_model=\(urlEncode($0.model))"
             } ?? "")
@@ -1128,7 +1116,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
         }
     }
 
-    /// 配置页保存后会跳到 superagent://saved：在这里接住，切到和调度员的对话
+    /// 配置页保存后会跳到 superagent://saved：在这里接住，行政接通了就切到对话，没接通就留在团队页
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
                  decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void) {
         guard let url = navigationAction.request.url, url.scheme == "superagent" else {
@@ -1142,11 +1130,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
         if url.host?.hasPrefix("clerk-") == true, value("project") != project.path { return }
         switch url.host {
         case "saved":
-            // 没接入的文件夹：调度员存在窗口自己的设置里
-            if let who = value("dispatcher"), !who.isEmpty {
-                UserDefaults.standard.set(who, forKey: Dispatcher.key(for: project))
-            }
             updateTitle()
+            // 设置页已经被关掉（团队再点一次）之后才到的保存结果：设置已经存好，下次连接时生效；
+            // 这里不能再把聊天连接断掉——断了没人接回去
+            if leftView != .config { return }
+            // 11-17 起行政必配，由这里一处把关（行政是不是真的接通了只有窗口知道）：没配好就留在团队页，
+            // 页面带 need_clerk 提示；以前还能退回去和调度员聊，现在没有这条路
+            if Dispatcher.forProject(project) == nil && !clerkReady {
+                loadConfig(needClerk: true)
+                return
+            }
             let firstConnect = (chatLoadedKey == nil)
             let place = project
             whenChatIdle { [weak self] idle in
@@ -1185,7 +1178,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
             newChat(nil)
             refreshNavThreads()
         case "settings":
-            showLeft(.config, opening: false)
+            if leftView == .config {
+                // 设置页开着时再点一次“团队”就是关掉，回到对话（用户 11-17）；没改完的会作为草稿留着，下次打开设置页恢复。
+                // 行政必配：行政没配好时没有可回的对话，留在团队页并说明，不能借“关掉”绕过去
+                if Dispatcher.forProject(project) != nil || clerkReady {
+                    showLeft(preferredLeft(), opening: false)
+                } else {
+                    loadConfig(needClerk: true, afterSave: false)   // 什么都没保存，提示里不能说“团队已保存”
+                }
+            } else {
+                showLeft(.config, opening: false)
+            }
         case "clerk-apply":
             applyWhenIdle(provider: value("provider") ?? "tencent",
                           base: value("base_url") ?? clerkBase,
@@ -1730,7 +1733,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
         clerkPromptPlace = project
         let alert = NSAlert()
         alert.messageText = "配置行政人员"
-        alert.informativeText = "这里填\(providerName(provider))的密钥，别家的密钥用不了。不填也能继续用 Codex 聊天。密钥只存在这台电脑的钥匙串里。"
+        alert.informativeText = "这里填\(providerName(provider))的密钥，别家的密钥用不了。行政是对话的入口，不配就没法在这里聊天。密钥只存在这台电脑的钥匙串里。"
         let key = NSSecureTextField()
         key.placeholderString = "API 密钥"
         key.frame = NSRect(x: 0, y: 0, width: 340, height: 24)
@@ -1764,7 +1767,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
         let alert = NSAlert()
         let place = project!
         alert.messageText = "停用行政人员？"
-        alert.informativeText = "之后这个项目的聊天会改回用调度员。密钥还留在这台电脑里，需要时可以再启用。"
+        // 11-17 起团队里没有调度员：新项目停用行政后没有可聊的对象；老项目配置里残留着调度员的，聊天仍会退回去用它
+        alert.informativeText = (Dispatcher.forProject(project) == nil
+            ? "停用后这个项目就没有可以对话的对象，要再聊天得重新启用行政。"
+            : "之后这个项目的聊天会改回用调度员。") + "密钥还留在这台电脑里，需要时可以再启用。"
         alert.addButton(withTitle: "停用")
         alert.addButton(withTitle: "取消")
         alert.beginSheetModal(for: window) { [weak self] response in
@@ -1833,7 +1839,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
             guard let self = self else { return }
             self.loadPanel()
             self.loadChat(opening: false)
-            if reloadPage, self.leftView == .config { self.loadConfig() }
+            if reloadPage, self.leftView == .config {
+                self.loadConfig()
+            } else if self.clerkReady {
+                // 页面没重载（填密钥并“检测”通过的路径）：告诉它行政真的接通了，保存按钮的状态才对
+                self.configWeb?.evaluateJavaScript(
+                    "window.SuperAgentTeam && window.SuperAgentTeam.clerkConnected && window.SuperAgentTeam.clerkConnected()",
+                    completionHandler: nil)
+            }
         }
     }
 
@@ -2035,7 +2048,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
         switch item.action {
         case #selector(openTeamConfig(_:)): item.state = leftView == .config ? .on : .off
         case #selector(continueChat(_:)), #selector(newChat(_:)):
-            return who != nil  // 还没配调度员时，先去团队配置
+            return who != nil || clerkReady  // 行政没配好时没有可聊的对象，先去团队配置
         case #selector(openRecent(_:)): item.state = (item.representedObject as? String) == project?.path ? .on : .off
         case #selector(showTerminalView(_:)):
             item.state = leftView == .terminal ? .on : .off
@@ -2046,6 +2059,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
     }
 
     @objc func continueChat(_ sender: Any?) {
+        guard Dispatcher.forProject(project) != nil || clerkReady else { return showLeft(.config, opening: false) }  // 左栏、快捷键都绕不过行政必配
         if leftView == .chat {
             loadChat(mode: "continue", opening: false)
         } else if preferredLeft() == .chat {
@@ -2056,6 +2070,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
     }
 
     @objc func newChat(_ sender: Any?) {
+        guard Dispatcher.forProject(project) != nil || clerkReady else { return showLeft(.config, opening: false) }  // 左栏“新对话”也绕不过行政必配
         if leftView == .chat {
             if chatLoadedKey != nil {
                 chatWeb.evaluateJavaScript("window.SuperAgentChat && window.SuperAgentChat.startFresh && window.SuperAgentChat.startFresh()", completionHandler: nil)

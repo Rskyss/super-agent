@@ -45,7 +45,7 @@ class SettingTest(ServerCase):
         self.assertNotIn("good-key", (Path(self.project) / ".collab" / "配置.json").read_text(encoding="utf-8"))
 
     def test_team_settings_survive(self):
-        team = {"dispatcher": "codex", "tester": "codex", "developer": "cursor", "reviewer": "agy"}
+        team = {"tester": "codex", "developer": "cursor", "reviewer": "agy"}   # 11-17 起没有调度员岗
         save_team(self.project, team)
         save_clerk(self.project, {"provider": "tencent", "model": "m"})
         self.assertEqual(self.config()["team"], team)

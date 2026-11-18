@@ -59,6 +59,9 @@ body { background: var(--bg-side); }
 .w { font-size: var(--fs-sm); color: var(--faint); white-space: normal; text-align: right; justify-self: end; overflow-wrap: anywhere; }
 .k { grid-column: 2 / -1; font-size: var(--fs-sm); line-height: 1.55; color: var(--faint); margin-top: 2px; }
 .k:empty { display: none; }
+/* 环节列表下面的本卡合计（CARD-001）：有数才显示，沿用流程的小字和淡色 */
+.token-total { margin: 14px 10px 0; padding: 10px 0 0 28px; border-top: 1px solid var(--hair); font-size: var(--fs-sm); line-height: 1.55; color: var(--faint); font-variant-numeric: tabular-nums; }
+.token-total[hidden] { display: none; }
 /* 写测试、写代码那步的进度（第四轮 53）：标题行和说明之间，条 + “通过 x/y” */
 .p { grid-column: 2 / -1; display: flex; align-items: center; gap: 8px; margin: 4px 0 2px; font-size: var(--fs-sm); color: var(--dim); }
 .p[hidden] { display: none; }
@@ -67,8 +70,8 @@ body { background: var(--bg-side); }
 .p .fill { display: block; height: 100%; width: 0; background: var(--ok); transition: width var(--t-fast) var(--ease); }
 .p .pt { flex: none; font-variant-numeric: tabular-nums; }
 .d { grid-column: 2 / -1; font-size: var(--fs-sm); line-height: 1.55; color: var(--dim); white-space: normal; overflow: hidden; overflow-wrap: anywhere; }
-/* 每步说明最多 3 行，多出来的鼠标停上去看全文（流程修理第二轮 ㊷） */
-.step .d { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
+/* 每步说明最多 2 行，多出来的鼠标停上去看全文（流程修理第二轮 ㊷） */
+.step .d { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .d:empty { display: none; }
 
 .pip { width: 6px; height: 6px; border-radius: 50%; background: var(--surface-3); }

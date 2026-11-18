@@ -1,7 +1,8 @@
 """右栏“写代码”那步的进度条（流程修理第四轮 53）。
 
-写代码时：程序最多每 2 分钟在一份副本里跑一次本卡的 .py 测试（只跑写测试交出的那几个文件），
-算“通过数/总数”写进 cards/<卡>/进度.json；写测试时：数本卡测试文件里有几个 def test_，写“已写 N 项”。
+写代码时：程序最多每 2 分钟在一份副本里跑一次本卡的测试——有本卡测试命令就按命令逐段跑，
+没有或命令不合法才只跑写测试交出的那几个 .py 文件；算“通过数/总数”写进 cards/<卡>/进度.json。
+写测试时：数本卡测试文件里有几个 def test_，写“已写 N 项”。
 副本跑，不碰写代码的那份、不和它自己跑测试抢；PATH 里藏起真的 AI 工具（照全量的办法）。
 说的是“测试过了多少”，不是时间进度。
 """
@@ -9,6 +10,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 import shutil
 import tempfile
 import threading
@@ -94,9 +96,10 @@ class ProgressJob:
     """一次派活一个：start() 开始，stop() 收掉（连同正在跑的测试）。"""
 
     def __init__(self, cdir, worktree, step: str, seq: int, test_files, gap: int = MIN_GAP,
-                 every: float = CHECK_EVERY):
+                 every: float = CHECK_EVERY, test_command: str = ""):
         self.cdir, self.worktree, self.step, self.seq = Path(cdir), Path(worktree), step, seq
         self.files = [f for f in (test_files or [])]
+        self.test_command = str(test_command or "").strip()
         self.py = [f for f in self.files if f.endswith(".py") and (Path(f).name.startswith("test_")
                                                                     or Path(f).name.endswith("_test.py"))]
         self.gap, self.every = gap, every
@@ -107,6 +110,24 @@ class ProgressJob:
         self.last_seen = None    # 上次算时的文件快照
         self.runs = 0
         self.before = None       # 写测试开工时已有的测试文件状态：只数新写、新改的（复查第 3 轮）
+
+    # ---- 本卡测试命令：每一段都得是 python/python3 -m unittest ...，否则整套回退 ----
+    def _card_commands(self):
+        if not self.test_command:
+            return None
+        commands = []
+        for piece in self.test_command.split("&&"):
+            piece = piece.strip()
+            if not piece:
+                return None
+            try:
+                argv = shlex.split(piece)
+            except ValueError:
+                return None
+            if len(argv) < 3 or argv[0] not in ("python", "python3") or argv[1:3] != ["-m", "unittest"]:
+                return None
+            commands.append(argv)
+        return commands or None
 
     # ---- 写测试：数 def test_ ----
     def _tester_files(self):
@@ -141,6 +162,24 @@ class ProgressJob:
             copy_tree(self.worktree, copy, self.event)
             env = safe_env(tmp / "bin")
             passed = total = 0
+            commands = self._card_commands()
+            if commands:
+                for argv in commands:
+                    if argv[0] == "python":   # 隔离环境只保证有 python3，本卡命令写 python 也要能跑（复查第 4 轮）
+                        argv = ["python3", *argv[1:]]
+                    v = run_command(argv, copy, env, RUN_TIMEOUT, self.event)
+                    if self.event.is_set():
+                        return {}
+                    if v.result in (TIMEOUT, ENV_ERROR):   # 超时、跑不起来不能装成正常进度（复查）
+                        return {"seq": self.seq, "step": self.step,
+                                "error": "测试跑超时了" if v.result == TIMEOUT else "测试跑不起来"}
+                    got = tally(v.output)
+                    if got is None or "unittest.loader._FailedTest" in (v.output or ""):
+                        # 导入就报错：照方案说“跑不起来”，不装成“通过 0/N”（复查第 2 轮）
+                        return {"seq": self.seq, "step": self.step,
+                                "error": "测试跑不起来（多半是代码还没写到能导入）"}
+                    passed, total = passed + got[0], total + got[1]
+                return {"seq": self.seq, "step": self.step, "passed": passed, "total": total}
             for rel in self.py:
                 p = Path(rel)
                 if not (copy / p).is_file():
@@ -171,7 +210,7 @@ class ProgressJob:
             write(self.cdir, {"seq": self.seq, "step": self.step,
                               "written": count_written(self.worktree, self._tester_files())})
             return
-        if not self.py:
+        if not self.py and not self._card_commands():
             return
         now = time.time()
         if self.last_run is not None and now - self.last_run < self.gap:
@@ -188,7 +227,7 @@ class ProgressJob:
     def _loop(self):
         if self.step == "写测试":
             self._tester_files()   # 开工时先记下已有的
-        if self.step != "写测试" and self.py:
+        if self.step != "写测试" and (self.py or self._card_commands()):
             write(self.cdir, {"seq": self.seq, "step": self.step, "computing": True})
         while not self.event.is_set():
             self.tick()

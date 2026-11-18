@@ -1,5 +1,5 @@
-/* 团队与模型配置页：选调度员和三位执行员 + 各家工具具体使用的模型 → 每行各自“检测生效”或直接保存 → 通知窗口切到对话。
-   调度员没有默认值：第一次必须用户亲手选。 */
+/* 团队与模型配置页：行政 + 三位执行员（写测试、写代码、复查）+ 各家工具具体使用的模型 → 每行各自“检测生效”或直接保存 → 通知窗口切到对话。
+   （11-17 起写方案、备交接资料是后台作业，不占团队里的一行。） */
 "use strict";
 
 /* 规则层：不碰页面，tests/team_page_check.js 用 node 直接检查。 */
@@ -62,7 +62,7 @@ var TeamCore = {
     var out = {};
     if (!draft || !draft.base || !draft.now || !draft.now.team) return out;
     var b = draft.base, n = draft.now, s = saved || {};
-    ["dispatcher", "tester", "developer", "reviewer"].forEach(function (r) {
+    ["tester", "developer", "reviewer"].forEach(function (r) {
       function row(x) { return JSON.stringify([x && x.team && x.team[r], (x && x.picks && x.picks[r]) || null]); }
       if (!(r in n.team)) return;
       if (row(n) !== row(b) && row(s) === row(b)) out[r] = { tool: n.team[r], pick: (n.picks && n.picks[r]) || null };
@@ -71,8 +71,7 @@ var TeamCore = {
   },
   // 团队有改动却存不了时，说清是谁还没测通（68b 前用户点保存，设置悄悄丢了，②）
   unsavedReason: function (s) {
-    var names = { dispatcher: "调度员", tester: "写测试", developer: "写代码", reviewer: "复查" };
-    if (!s.team.dispatcher) return "还没选调度员";
+    var names = { tester: "写测试", developer: "写代码", reviewer: "复查" };
     var need = s.active.filter(function (r) { return TeamCore.needsCheck(s.team, r); });
     var bad = need.filter(function (r) { return s.results[r] && !s.results[r].ok; });
     if (bad.length) return bad.map(function (r) { return names[r]; }).join("、") + "没测通";
@@ -80,9 +79,20 @@ var TeamCore = {
     if (!s.configured && unchecked.length) return unchecked.map(function (r) { return names[r]; }).join("、") + "还没检测";
     return "";
   },
+  // 行政保存成功后下一步：save-team 存团队并回对话；leave 不存团队直接回对话；team-unsaved 团队配过又改了却没测通，照实说
+  // （没接入的文件夹没有执行员可存，直接回对话；团队没配过，只用行政也能回对话）
+  afterClerkSaved: function (s) {
+    if (s.canSaveTeam) return "save-team";
+    if (!s.installed || !s.configured) return "leave";
+    return "team-unsaved";
+  },
+  // 行政是对话的入口，必配：没配好不放人离开设置页（11-17 起没有退回去和别人聊的路）；返回空串表示可以走
+  leaveBlockedReason: function (s) {
+    return s.clerkReady ? "" : "还差行政：先在上面配好行政（填密钥、检测通过），才能回到对话。";
+  },
   // 第一次配置要全员测通；已配置的项目没测的不拦，只拦标红的
   canSave: function (s) {
-    if (s.busy || !s.team.dispatcher) return false;
+    if (s.busy || !s.active.length) return false;   // 检测中、或没有执行员可存（没接入的文件夹）都不能存团队
     var need = s.active.filter(function (r) { return TeamCore.needsCheck(s.team, r); });
     if (need.some(function (r) { return s.results[r] && !s.results[r].ok; })) return false;
     return s.configured || need.every(function (r) { return s.results[r] && s.results[r].ok; });
@@ -93,10 +103,9 @@ if (typeof module !== "undefined") module.exports = TeamCore;
 if (typeof document !== "undefined") (function () {
   var params = new URLSearchParams(location.search);
   var project = params.get("project") || "", token = params.get("token") || "";
-  var savedDispatcher = params.get("dispatcher") || "";   // 没接入的文件夹，调度员存在窗口自己的设置里
   var clerkReady = params.get("clerk") === "1";
-  var ROLE = { dispatcher: "调度员", tester: "写测试", developer: "写代码", reviewer: "复查" };
-  var ALL_ROLES = ["dispatcher", "tester", "developer", "reviewer"];
+  var ROLE = { tester: "写测试", developer: "写代码", reviewer: "复查" };
+  var ALL_ROLES = ["tester", "developer", "reviewer"];
   var rows = {}, info = null, results = {}, installed = true;
   var pending = {}, runSeq = 0;   // pending：岗位 -> 正在等第几次检测的结果；改了这一行就不再等
   var currentModels = { codex: "gpt-6.1-sol", codex_effort: "xhigh", cursor: "auto", agy: "gemini-4-argon-high", qwen: "deepseek-v4.1-flash" };  // 每家工具的整体设置（岗位没单独选时用它）
@@ -216,17 +225,9 @@ if (typeof document !== "undefined") (function () {
   function fill(role, options, value) {
     var sel = toolSelect(role);
     sel.innerHTML = "";
-    if (role === "dispatcher") options = [{ value: "", label: "请选择…" }].concat(options, [{ value: "custom", label: "自定义命令…" }]);
     options.forEach(function (o) { var op = document.createElement("option"); op.value = o.value; op.textContent = o.label; sel.appendChild(op); });
-    if (role === "dispatcher" && value && value.indexOf("custom:") === 0) {
-      sel.value = "custom";
-      var box = rows.dispatcher.querySelector(".custom");
-      box.hidden = false; box.value = value.slice(7);
-    } else {
-      sel.value = value || "";
-    }
+    sel.value = value || "";
     sel.addEventListener("change", function () {
-      if (role === "dispatcher") rows.dispatcher.querySelector(".custom").hidden = sel.value !== "custom";
       renderRoleModelBox(role);
       invalidate([role]);
     });
@@ -444,7 +445,7 @@ if (typeof document !== "undefined") (function () {
   function rolePicks() {
     var t = team(), out = {};
     ALL_ROLES.forEach(function (r) {
-      var tool = r === "dispatcher" ? t.dispatcher : t[r];
+      var tool = t[r];
       if (tool === "codex" || tool === "cursor" || tool === "agy" || tool === "qwen") out[r] = pickOf(r, tool);
     });
     return out;
@@ -469,17 +470,12 @@ if (typeof document !== "undefined") (function () {
   }
 
   function team() {
-    var disp = toolSelect("dispatcher").value;
-    if (disp === "custom") {
-      var cmd = rows.dispatcher.querySelector(".custom").value.trim();
-      disp = cmd ? "custom:" + cmd : "";
-    }
-    return { dispatcher: disp, tester: toolSelect("tester").value,
+    return { tester: toolSelect("tester").value,
              developer: toolSelect("developer").value, reviewer: toolSelect("reviewer").value };
   }
-  function activeRoles() { return installed ? ALL_ROLES : ["dispatcher"]; }
+  function activeRoles() { return installed ? ALL_ROLES : []; }   // 没接入（不是 git）的文件夹没有执行员可配，只有行政
   function isAlreadyConfigured() {
-    return (installed && info && info.team && info.team.configured) || (!installed && !!savedDispatcher);
+    return installed ? !!(info && info.team && info.team.configured) : clerkReady;
   }
 
   function setState(role, cls, text, how) {
@@ -493,7 +489,7 @@ if (typeof document !== "undefined") (function () {
   function setIdle(role, changed) {
     var t = team();
     if (!TeamCore.needsCheck(t, role)) setState(role, "", "不复查，不用检测");
-    else if (!isAlreadyConfigured() || (role === "dispatcher" && !t.dispatcher)) setState(role, "", "还没检测");
+    else if (!isAlreadyConfigured()) setState(role, "", "还没检测");
     else if (changed) setState(role, "", "已调整，还没检测");
     else setState(role, "ok", "已配置");
   }
@@ -504,12 +500,12 @@ if (typeof document !== "undefined") (function () {
     ALL_ROLES.forEach(function (r) {
       var b = rows[r].querySelector(".check-one");
       b.hidden = !TeamCore.needsCheck(t, r);
-      b.disabled = !!pending[r] || (r === "dispatcher" && !t.dispatcher);
+      b.disabled = !!pending[r];
       b.textContent = pending[r] ? "检测中…" : "检测";
       b.setAttribute("aria-label", ROLE[r] + (pending[r] ? "检测中" : "检测生效"));
     });
     $("save").textContent = configured ? "保存并返回对话" : "保存并开始";
-    $("save").disabled = !TeamCore.canSave({ team: t, active: active, results: results, configured: configured, busy: busy }) && !clerkChanged() && !(clerkReady && !configured);
+    $("save").disabled = !TeamCore.canSave({ team: t, active: active, results: results, configured: configured, busy: busy }) && !clerkChanged() && !(clerkReady && (!installed || !configured));
 
     var need = active.filter(function (r) { return TeamCore.needsCheck(t, r); });
     var bad = need.filter(function (r) { return results[r] && !results[r].ok; });
@@ -520,8 +516,6 @@ if (typeof document !== "undefined") (function () {
     else sum.textContent = "";
 
     $("sameWarn").hidden = !(installed && t.developer === t.reviewer);
-    var d = t.dispatcher || "";
-    $("dispNote").textContent = d.indexOf("custom:") === 0 ? "自定义调度员检测只能查“装没装”。" : "";
   }
 
   // 改了选择：只清这几行的结果；还在路上的检测结果也不再要（它测的是改之前的选择）
@@ -597,9 +591,15 @@ if (typeof document !== "undefined") (function () {
     refresh();
   }
 
-  function done(dispatcher) {
-    // 在超级助手窗口里，这个地址会被窗口接住：切到和调度员的对话
-    location.href = "superagent://saved" + (dispatcher ? "?dispatcher=" + encodeURIComponent(dispatcher) : "");
+  var needClerkNotice = false;   // 顶部那条“还差行政”是不是现在挂着
+  function hideNeedClerkNotice() {   // 行政接通了就撤掉它；别的提示（配置有问题、工具升级了）不动
+    if (!needClerkNotice) return;
+    needClerkNotice = false;
+    $("problem").hidden = true;
+  }
+  function done() {
+    // 在开发助手窗口里，这个地址会被窗口接住：行政接通了就切回对话；没接通它会把本页带着 need_clerk 重开，不会放人进对话
+    location.href = "superagent://saved";
     setTimeout(function () { $("summary").className = "summary ok"; $("summary").textContent = "已保存。"; }, 300);
   }
 
@@ -614,7 +614,7 @@ if (typeof document !== "undefined") (function () {
   }
   function saveTeamThenDone() {
     var t = team();
-    if (!installed) { done(t.dispatcher); return; }
+    if (!installed) { done(); return; }
     post("/api/team/save", { team: t, models: currentModels, role_models: rolePicks() }).then(function () { dropDraft(); done(); })
       .catch(function (err) { $("summary").className = "summary bad"; $("summary").textContent = err.message; });
   }
@@ -630,14 +630,7 @@ if (typeof document !== "undefined") (function () {
       var roles = Object.keys(rowsToApply).filter(function (r) { return rowNow(r) === rowAtLoad(r); });
       if (!roles.length) return;
       roles.forEach(function (r) {
-        var v = rowsToApply[r].tool;
-        if (r === "dispatcher" && v && v.indexOf("custom:") === 0) {
-          toolSelect(r).value = "custom";
-          var box = rows.dispatcher.querySelector(".custom");
-          box.hidden = false; box.value = v.slice(7);
-        } else {
-          toolSelect(r).value = v || "";
-        }
+        toolSelect(r).value = rowsToApply[r].tool || "";
         if (rowsToApply[r].pick) picks[r] = rowsToApply[r].pick;
       });
       renderAllModelBoxes();
@@ -653,17 +646,24 @@ if (typeof document !== "undefined") (function () {
   }
 
   window.SuperAgentTeam = {
+    clerkConnected: function () {   // 填密钥并“检测”通过后，窗口真的把行政接通了（页面没重载）：跟着知道
+      clerkReady = true;
+      hideNeedClerkNotice();
+      refresh();
+    },
     clerkResult: function (ok, reason) {
       clerkWaiting = false;
       lockClerkRow(false);
       if (ok) {
         clerkReady = true;
+        hideNeedClerkNotice();
         clerkStopped = false;
         $("clerkClear").textContent = "停用";
         clerkBaseline = clerkSent || clerkSnapshot(clerkChoice());
         setClerkState("ok", "已配置");
-        if (canSaveTeam()) saveTeamThenDone();
-        else if (!isAlreadyConfigured()) leaveWithoutTeam();   // 团队还没配：只用行政也能回到对话
+        var next = TeamCore.afterClerkSaved({ canSaveTeam: canSaveTeam(), installed: installed, configured: isAlreadyConfigured() });
+        if (next === "save-team") saveTeamThenDone();
+        else if (next === "leave") leaveWithoutTeam();   // 没接入的文件夹、或团队还没配：只用行政也能回到对话
         else {
           refresh();
           $("summary").className = "summary bad";
@@ -745,7 +745,6 @@ if (typeof document !== "undefined") (function () {
     setClerkState("run", "正在测试并保存…");
     location.href = "superagent://clerk-apply?" + clerkQuery(clerkChoice());
   });
-  rows.dispatcher.querySelector(".custom").addEventListener("input", function () { invalidate(["dispatcher"]); });
 
   if (!project || !token) {
     $("problem").hidden = false;
@@ -765,7 +764,6 @@ if (typeof document !== "undefined") (function () {
         $("problem").hidden = false;
         $("problem").textContent = d.upgraded.join("；");
       }
-      fill("dispatcher", d.options.dispatcher, installed ? d.team.dispatcher : savedDispatcher);
       fill("tester", d.options.worker, d.team.tester);
       fill("developer", d.options.worker, d.team.developer);
       fill("reviewer", d.options.reviewer, d.team.reviewer);
@@ -773,6 +771,12 @@ if (typeof document !== "undefined") (function () {
       reset();
       savedSnapshot = snapshot();
       restoreDraft();
+      var needClerk = params.get("need_clerk");   // 1：保存团队后想回对话被拦；2：没保存，只是再点“团队”想关掉被拦
+      if ((needClerk === "1" || needClerk === "2") && !clerkReady) {   // 行政还没配好：窗口把本页带着提示重开
+        needClerkNotice = true;
+        $("problem").hidden = false;
+        $("problem").textContent = (needClerk === "1" ? "团队已保存。" : "") + TeamCore.leaveBlockedReason({ clerkReady: false });
+      }
       return loadClerkRow();
     }).catch(function (err) { $("problem").hidden = false; $("problem").textContent = "读不到团队配置：" + err.message; });
   }

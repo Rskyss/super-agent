@@ -156,8 +156,10 @@ class TestIsWrong(Base):
                   "2. 编号写错也能出草稿。")
         card, calls = self.run_with([review, "结论：通过"])
         self.assertEqual(card.state, "待验收")
-        self.assertEqual(len(calls["tester"]), 2, "写测试 1 次 + 改测试 1 次")
+        # 第二批 A4（11-18）：第 2 条是功能问题，退回时还要先派写测试的补测试守住，所以多一次
+        self.assertEqual(len(calls["tester"]), 3, "写测试 1 次 + 改测试 1 次 + 补测试 1 次")
         self.assertIn("web-search", calls["tester"][1])
+        self.assertIn("编号写错也能出草稿", calls["tester"][2])
         self.assertIn("只改测试", calls["tester"][1])
         self.assertNotIn("编号写错也能出草稿", calls["tester"][1], "不是测试的问题不交给写测试的")
         self.assertIn("测试已由写测试的改好", calls["dev"][1])

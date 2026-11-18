@@ -64,27 +64,27 @@ class TeamServerTest(unittest.TestCase):
     def test_read_defaults_then_save_and_read_back(self):
         data = self._get("/api/team", project=str(self.project))
         self.assertEqual(data["team"]["developer"], "cursor")
-        self.assertIsNone(data["team"]["dispatcher"])
+        self.assertNotIn("dispatcher", data["team"])   # 11-17 起没有调度员岗
         self.assertTrue(data["git"])
-        self.assertEqual([o["value"] for o in data["options"]["dispatcher"]], ["codex", "cursor", "agy"])
+        self.assertNotIn("dispatcher", data["options"])
         self.assertIn("models", data)
         self.assertIn("model_options", data)
-        team = {"dispatcher": "agy", "tester": "codex", "developer": "cursor", "reviewer": "none"}
+        team = {"tester": "codex", "developer": "cursor", "reviewer": "none"}
         models = {"codex": "gpt-5.6-sol", "codex_effort": "high", "cursor": "gpt-5.6-sol-xhigh", "agy": "claude-opus-5-5-high"}
         self.assertTrue(self._post("/api/team/save", {"project": str(self.project), "team": team, "models": models})["ok"])
         after = self._get("/api/team", project=str(self.project))
-        self.assertEqual(after["team"]["dispatcher"], "agy")
+        self.assertEqual(after["team"]["reviewer"], "none")
         self.assertEqual(after["models"]["codex"], "gpt-5.6-sol")
         self.assertEqual(after["models"]["codex_effort"], "high")
         self.assertEqual(after["models"]["cursor"], "gpt-5.6-sol-xhigh")
         self.assertEqual(after["models"]["agy"], "claude-opus-5-5-high")
 
     def test_bad_choice_is_refused_in_plain_words(self):
-        team = {"dispatcher": "claude", "tester": "codex", "developer": "cursor", "reviewer": "agy"}
+        team = {"tester": "claude", "developer": "cursor", "reviewer": "agy"}
         with self.assertRaises(urllib.error.HTTPError) as ctx:
             self._post("/api/team/save", {"project": str(self.project), "team": team})
         self.assertEqual(ctx.exception.code, 400)
-        self.assertIn("调度员", json.loads(ctx.exception.read())["error"])
+        self.assertIn("写测试", json.loads(ctx.exception.read())["error"])
 
     def _wait(self, run):
         end = time.time() + 20
@@ -98,14 +98,14 @@ class TeamServerTest(unittest.TestCase):
         return {r["role"]: r for r in data["results"]}
 
     def test_check_runs_in_background_and_reports_each_member(self):
-        team = {"dispatcher": "codex", "tester": "codex", "developer": "cursor", "reviewer": "agy"}
+        team = {"tester": "codex", "developer": "cursor", "reviewer": "agy"}
         run = self._post("/api/team/check", {"project": str(self.project), "team": team})["run"]
         roles = self._wait(run)
-        self.assertEqual(set(roles), {"dispatcher", "tester", "developer", "reviewer"})
+        self.assertEqual(set(roles), {"tester", "developer", "reviewer"})
         self.assertTrue(all(r["ok"] for r in roles.values()))
 
     def test_checking_one_member_leaves_the_others_alone(self):
-        team = {"dispatcher": "codex", "tester": "cursor", "developer": "agy", "reviewer": "none"}
+        team = {"tester": "cursor", "developer": "agy", "reviewer": "none"}
         run = self._post("/api/team/check", {"project": str(self.project), "team": team, "roles": ["tester"]})["run"]
         self.assertEqual(set(self._wait(run)), {"tester"})
 
@@ -151,8 +151,8 @@ class TeamPageTest(unittest.TestCase):
     def test_every_role_has_its_own_button_and_the_shared_one_is_gone(self):
         html = (self.static / "team.html").read_text(encoding="utf-8")
         self.assertNotIn('id="check"', html)
-        self.assertEqual(html.count('class="check-one"'), 4)
-        self.assertEqual(html.count('class="member"'), 4)
+        self.assertEqual(html.count('class="check-one"'), 3)   # 写测试、写代码、复查（11-17 起没有调度员那一行）
+        self.assertEqual(html.count('class="member"'), 3)
 
 
 class PanelShowsTeamTest(unittest.TestCase):
@@ -160,9 +160,9 @@ class PanelShowsTeamTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
             init_collab(project)
-            save_team(project, {"dispatcher": "agy", "tester": "cursor", "developer": "codex", "reviewer": "none"})
+            save_team(project, {"tester": "cursor", "developer": "codex", "reviewer": "none"})
             stations = {s["key"]: s for s in card_view(project)["stations"]}
-            self.assertEqual(stations["disp"]["who"], "agy")
+            self.assertEqual(stations["disp"]["who"], "Codex")   # 写方案这一站固定是 Codex
             self.assertEqual(stations["test"]["who"], "Cursor")
             self.assertEqual(stations["dev"]["who"], "Codex")
             self.assertEqual(stations["rev"]["who"], "不复查")

@@ -149,8 +149,8 @@ class ReviewWindow(Source):
             self.assertNotIn(word, self.swift)
 
     def test_can_leave_settings_once_the_clerk_is_ready(self):
-        """没选调度员、只配了行政时，按钮要能点，能回到对话。"""
-        self.assertIn("clerkReady && !configured", self.js)
+        """团队没配、只配了行政时，按钮要能点，能回到对话；没接入（不是 git）的文件夹也一样（11-17 起没有调度员）。"""
+        self.assertIn("clerkReady && (!installed || !configured)", self.js)
         self.assertIn("segment.setEnabled", self.section("func updateViewSwitch", "func showLeft"))
         self.assertIn("updateViewSwitch()", self.section("func afterClerkKeyChange", "@objc func clerkSaveClicked"))
 

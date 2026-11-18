@@ -144,7 +144,8 @@ class StopJudgement(Base):
         test_bad = "结论：不通过\n1. 【测试的问题】【中等】测试把编号写错了。"
         card, calls = self.go([bad, bad, test_bad, "结论：通过"])
         self.assertEqual(card.state, "待验收", "测试的问题先交写测试的改，再让写代码的改一次")
-        self.assertEqual(len(calls["tester"]), 2)
+        # 第二批 A4（11-18）：前两次功能问题退回各先补一次测试：写测试 1 + 补测试 2 + 改测试 1
+        self.assertEqual(len(calls["tester"]), 4)
         self.assertEqual(len(self.events("转人工")), 0)
 
 

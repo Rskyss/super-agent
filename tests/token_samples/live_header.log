@@ -1,0 +1,14 @@
+Reading additional input from stdin...
+OpenAI Codex v0.167.0
+--------
+workdir: /w/CARD-001
+model: gpt-6.1-sol
+provider: openai
+approval: never
+sandbox: workspace-write
+reasoning effort: high
+reasoning summaries: none
+session id: 11111111-2222-7333-8444-555555555555
+--------
+user
+按要求先写测试

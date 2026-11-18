@@ -21,8 +21,8 @@ from collab.config import load_models, load_role_models, load_team
 
 COMMANDS = {"codex": "codex", "cursor": "agent", "agy": "agy", "qwen": "codex"}   # Cursor 的命令行叫 agent；千问用 Codex 的壳
 TOOL_NAMES = {"codex": "Codex", "cursor": "Cursor", "agy": "agy", "qwen": "千问", "none": "不复查"}
-ROLE_ORDER = ("dispatcher", "tester", "developer", "reviewer")
-ROLE_NAMES = {"dispatcher": "调度员", "tester": "写测试", "developer": "写代码", "reviewer": "复查"}
+ROLE_ORDER = ("tester", "developer", "reviewer")
+ROLE_NAMES = {"tester": "写测试", "developer": "写代码", "reviewer": "复查"}
 PROBE_FILE = "连通检测.txt"
 QUESTION_FILE = "题目.txt"
 # 一件小活（第四轮 55）：读文件、写文件、跑命令三样都要真做到——旧检测只建一个文件，千问 4 被拒、DeepSeek 反复压缩都测不出
@@ -221,7 +221,7 @@ def version_changes(project_dir, team=None) -> list:
 
 def check_team(project_dir, team=None, timeout: float = DEFAULT_TIMEOUT, on_result=None,
                roles=None, models=None, role_models=None) -> list:
-    """检测整个团队，按 调度员、写测试、写代码、复查 的顺序返回；每出一个结果就回调一次 on_result。
+    """检测整个团队，按 写测试、写代码、复查 的顺序返回；每出一个结果就回调一次 on_result。
     roles：只测这几个岗位（点某一行的“检测生效”时用）。
     role_models：页面上每个岗位此刻选的模型（还没保存的也算）；同一家工具、同样设置的几个岗位只测一次。"""
     team = team or load_team(project_dir)
@@ -266,10 +266,7 @@ def check_team(project_dir, team=None, timeout: float = DEFAULT_TIMEOUT, on_resu
         if roles is not None and role not in roles:
             continue
         tool = team.get(role)
-        if role == "dispatcher" and not tool:
-            report(role, None, {"ok": False, "status": "unset", "reason": "还没选调度员", "how": "先选一位调度员",
-                                "seconds": 0})
-        elif role == "reviewer" and tool == "none":
+        if role == "reviewer" and tool == "none":
             report(role, tool, {"ok": True, "status": "skipped", "reason": "不复查，不用检测", "how": "", "seconds": 0})
         else:
             mine = models_of(role, tool) if tool in COMMANDS else models

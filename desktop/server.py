@@ -86,8 +86,8 @@ from desktop.shell_path import adopt_terminal_path, merged_path, terminal_path  
 from desktop.view import card_view, event_text, list_cards, set_archived  # noqa: E402
 
 _TOOLS = [{"value": "codex", "label": "Codex"}, {"value": "cursor", "label": "Cursor"}, {"value": "agy", "label": "agy"}]
-_WORKER_TOOLS = _TOOLS + [{"value": "qwen", "label": "千问"}]  # 千问只能干活，不当调度员（临时，用户 11-13）
-_TEAM_OPTIONS = {"dispatcher": _TOOLS, "worker": _WORKER_TOOLS,
+_WORKER_TOOLS = _TOOLS + [{"value": "qwen", "label": "千问"}]  # 千问（临时，用户 11-13）
+_TEAM_OPTIONS = {"worker": _WORKER_TOOLS,
                  "reviewer": _WORKER_TOOLS + [{"value": "none", "label": "不复查"}]}
 
 STATIC = Path(__file__).resolve().parent / "static"
@@ -1540,7 +1540,7 @@ class Handler(BaseHTTPRequestHandler):
                 models = load_models(project)
                 role_models = load_role_models(project, team)
             except ConfigError as exc:
-                team, models, problem = dict(DEFAULT_TEAM, dispatcher=None, configured=False), dict(DEFAULT_MODELS), str(exc)
+                team, models, problem = dict(DEFAULT_TEAM, configured=False), dict(DEFAULT_MODELS), str(exc)
                 role_models = {}
             else:
                 problem = ""

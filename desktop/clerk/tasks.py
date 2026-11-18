@@ -37,7 +37,7 @@ COLLAB_PACKAGE = Path(__file__).resolve().parent.parent.parent / "collab"
 FOLDER = Path(".collab") / "行政提议"
 _FIELDS = ("title", "do", "not_do", "done_when")
 _FIELD_NAMES = {"title": "标题", "do": "要做什么", "not_do": "不做什么", "done_when": "怎么算做完"}
-_TEAM_ROLES = frozenset({"dispatcher", "tester", "developer", "reviewer"})
+_TEAM_ROLES = frozenset({"tester", "developer", "reviewer"})
 _TEAM_TOOLS = frozenset({"codex", "cursor", "agy"})
 _TEAM_REVIEWER_TOOLS = _TEAM_TOOLS | {"none"}
 _PROFILE_LABELS = ("做什么", "怎么启动", "怎么测试", "禁区", "技术栈")
@@ -163,7 +163,7 @@ def propose(conv, arguments: dict) -> str:
 
 
 _TASK_SHOWN = ("已向用户出示确认框，等用户点确认或先不做。还没建卡。"
-               "跟用户只说一句“点确认就建卡，之后调度员写方案给你批”，不要再问开工、复查这类事（调度员按流程安排，第三批 ㊵）。")
+               "跟用户只说一句“点确认就建卡，之后写方案给你批”，不要再问开工、复查这类事（流程自动安排，第三批 ㊵）。")
 _BLOCK_KINDS = ("install", "connect", "connect_api", "web_install", "connect_search")
 _STRIKES = 3  # 一段对话里行政起草的接法说明连续检测不通过几次就停
 _HTTPS_URL = re.compile(r"https://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[^\s]*)?")
@@ -697,7 +697,7 @@ def propose_team_change(conv, arguments: dict) -> str:
     role = str(args.get("role") or "").strip()
     tool = str(args.get("tool") or "").strip()
     if role not in _TEAM_ROLES:
-        return "角色必须是调度员、写测试、写代码、复查之一，先问用户要改哪一项。"
+        return "角色必须是写测试、写代码、复查之一，先问用户要改哪一项。"
     allowed = _TEAM_REVIEWER_TOOLS if role == "reviewer" else _TEAM_TOOLS
     if tool not in allowed:
         return "工具不对：复查可选 Codex、Cursor、agy 或 none；其他角色只能是 codex、cursor、agy。先问用户。"

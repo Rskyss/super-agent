@@ -1,6 +1,7 @@
-"""流程修理第二轮 A 组：右栏每一步都写“工具 · 模型（强度）”和计时（㉗ ㊳），说明大白话、最多 3 行、不放命令代码路径（㊷）。
+"""流程修理第二轮 A 组：右栏每一步都写“工具 · 模型（强度）”和计时（㉗ ㊳），说明大白话、不放命令代码路径（㊷）。
 
 用户 11-13：“每一步右上角都写哪个工具 · 哪个模型（强度）”“最多三行字，涵盖现在在干嘛，自然语言大白话”“放这么多代码对我意义不大”。
+11-17 施工单 B 更新：右栏每步说明最多两行，中间对话区的行数限制保持三行。
 """
 import json
 import os
@@ -199,15 +200,20 @@ class ReviewRound1A(StationsShowModelAndTime):
         self.assertEqual(_station(view, "check")["state"], "idle")
         self.assertIn("交接", _station(view, "rev")["detail"])
 
-    def test_other_dispatcher_shows_its_own_model(self):
-        """别家调度员不安 Codex 的模型（第 1 轮 A7），也不留空：用团队设置里它自己的（第 2 轮 A5）"""
-        from collab.config import save_role_models, save_team
-        save_team(self.project, {"dispatcher": "agy", "tester": "codex", "developer": "agy", "reviewer": "codex"})
-        save_role_models(self.project, {"dispatcher": {"tool": "agy", "model": "gemini-3.8-flash-low"}})
+    def test_old_config_with_another_dispatcher_still_shows_the_codex_plan_model(self):
+        """去掉调度员后：老配置里选过别家调度员，写方案这一站也固定是 Codex，模型用写方案记录里的（原第 1 轮 A7、第 2 轮 A5）"""
+        from collab.config import save_team
+        save_team(self.project, {"tester": "codex", "developer": "agy", "reviewer": "codex"})
+        cfg = self.collab / "配置.json"
+        data = json.loads(cfg.read_text(encoding="utf-8"))
+        data["team"]["dispatcher"] = "agy"   # 老项目里残留的
+        data["role_models"] = {"dispatcher": {"tool": "agy", "model": "gemini-3.8-flash-low"}}
+        cfg.write_text(json.dumps(data), encoding="utf-8")
         Card("CARD-003", state="待派发").save(self.cdir / "状态.json")
         record(self.cdir, "写方案", src="程序", dst="Codex", summary="开始写方案", model="GPT-6.1-Sol（低）")
         view = card_view(self.project, dispatcher="agy")
-        self.assertEqual(_station(view, "disp")["model"], "Gemini 3.8 Flash（低）")
+        disp = _station(view, "disp")
+        self.assertEqual((disp["who"], disp["model"]), ("Codex", "GPT-6.1-Sol（低）"))
 
     def test_after_rework_handed_in_old_review_stays_hidden(self):
         """第 2 轮 A2：写代码的交了活、复查还没出新结论时，上一轮的红叉也不能冒回来"""
@@ -265,7 +271,8 @@ class WalkFixes(unittest.TestCase):
         self.assertIn('<span class="k"></span>', js)
         part = js.split("function stepText(s)")[1].split("}")[0]
         self.assertNotIn("已干", part, "说明那行不带计时")
-        self.assertIn('querySelector(".k").textContent = clockText(s)', js)
+        # 11-17 第一批调整：原来这里按原文盯着拼计时的那一句，换写法就红。计时在第三行（.k）、
+        # 不进说明行，改由 test_flowfix_b_display.PanelText.test_first_draw_and_refresh_agree 按效果检查。
 
     def test_who_is_not_cut(self):
         css = (ROOT / "desktop" / "static" / "panel.css").read_text(encoding="utf-8")
@@ -274,11 +281,11 @@ class WalkFixes(unittest.TestCase):
         self.assertNotIn("nowrap", rule)
 
 
-class ThreeLines(unittest.TestCase):
-    def test_step_detail_and_now_line_clamped_to_three_lines(self):
+class LineLimits(unittest.TestCase):
+    def test_step_detail_two_lines_and_now_line_three_lines(self):
         panel = (ROOT / "desktop" / "static" / "panel.css").read_text(encoding="utf-8")
         chat = (ROOT / "desktop" / "static" / "chat.css").read_text(encoding="utf-8")
-        self.assertRegex(panel, r"\.step \.d\s*\{[^}]*-webkit-line-clamp:\s*3")
+        self.assertRegex(panel, r"\.step \.d\s*\{[^}]*-webkit-line-clamp:\s*2\s*;")
         self.assertRegex(chat, r"-webkit-line-clamp:\s*3")
 
 

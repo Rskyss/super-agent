@@ -159,15 +159,13 @@ class ViewTest(unittest.TestCase):
         self.assertEqual(view["now"]["tone"], "warn")
         self.assertIn("可能卡住", view["now"]["text"])
 
-    def test_dispatcher_shown_is_the_one_the_user_picked(self):
+    def test_plan_station_is_always_codex_whatever_the_window_passes(self):
+        # 去掉调度员后：这一站固定是 Codex 写方案；老窗口、老项目还会传来调度员的名字，一律不起作用
         cdir = self._card()
         self._start(cdir)
-        codex = _station(card_view(self.project, dispatcher="codex"), "disp")
-        self.assertEqual((codex["who"], codex["face"]), ("Codex", "Cx"))
-        custom = _station(card_view(self.project, dispatcher="custom:qwen --yolo"), "disp")
-        self.assertEqual(custom["who"], "qwen")
-        # 没告诉面板是谁时，不乱猜，只写“调度员”
-        self.assertEqual(_station(card_view(self.project), "disp")["who"], "调度员")
+        for kwargs in ({}, {"dispatcher": "codex"}, {"dispatcher": "custom:qwen --yolo"}):
+            disp = _station(card_view(self.project, **kwargs), "disp")
+            self.assertEqual((disp["role"], disp["who"], disp["face"]), ("写方案", "Codex", "Cx"), kwargs)
 
     def test_no_cards_yet(self):
         view = card_view(self.project)

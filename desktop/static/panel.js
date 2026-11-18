@@ -3,6 +3,18 @@
 "use strict";
 
 /* 规则层：不碰页面，tests/nav_page_check.js 用 node 直接检查。 */
+function tokenThousands(n) {
+  return String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+// 不到 1 万写原数（千分位），1 万到 1 亿写“N.N 万”，1 亿以上写“N.N 亿”
+function tokenAmount(n) {
+  n = Number(n) || 0;
+  if (n >= 100000000) return (n / 100000000).toFixed(1) + " 亿";
+  if (n >= 10000) return (n / 10000).toFixed(1) + " 万";
+  return tokenThousands(n);
+}
+function mmss(sec) { sec = Math.max(0, Math.round(sec)); return Math.floor(sec / 60) + ":" + (sec % 60 < 10 ? "0" : "") + (sec % 60); }
+function ago(sec) { sec = Math.max(0, Math.round(sec)); return sec < 60 ? sec + " 秒" : Math.floor(sec / 60) + " 分钟"; }
 var PanelCore = {
   stepClass: function (state) { return ["done", "active", "wait", "fail"].indexOf(state) >= 0 ? state : "idle"; },
   // 去掉记录里的内部前缀，只留内容
@@ -43,12 +55,59 @@ var PanelCore = {
   reviseDraft: function (current, draft) {
     return String(current || "").trim() ? current : String(draft || "");
   },
-  // 点“确认没问题，放进项目”前：复查记进“以后再修”的事列给用户看（第四轮 57）；没有就不问
-  acceptConfirm: function (later) {
-    if (!later || !later.length) return null;
-    return "复查另挑出这些不急的事，记进了“以后再修”，这次不改：\n" +
-      later.map(function (t, i) { return (i + 1) + ". " + t; }).join("\n") +
-      "\n\n要现在修就点“取消”，再点“不满意，继续改”。确认放进项目吗？";
+  // 第三行：轮数、计时、动静、用量，缺哪段就不写哪段；首次绘制和定时刷新都用这一份
+  metaText: function (s, since) {
+    if (!s || s.state === "idle") return "";
+    var parts = [], gap = since || 0;
+    if (s.state === "active") {
+      if (s.rounds > 1) parts.push("第 " + s.rounds + " 轮");
+      if (s.elapsed != null) parts.push("已干 " + mmss(s.elapsed + gap));
+      if (s.quiet != null) parts.push(ago(s.quiet + gap) + "前有动静");
+    } else if (s.state === "done" || s.state === "fail") {
+      if (s.rounds > 1) parts.push("共 " + s.rounds + " 轮");
+      if (s.spent != null) parts.push(mmss(s.spent));
+    }
+    var t = s.tokens;
+    if (t != null) {
+      var usage = t.ok ? tokenAmount(t.total) + " token"
+        : "用量 —（" + (t.reason || "读不到") + "）";
+      if (t.ok && t.missing > 0) usage += "（有 " + t.missing + " 轮没读到）";
+      parts.push(usage);
+    }
+    return parts.join(" · ");
+  },
+  // 鼠标提示：说明全文、每轮明细（多轮才列）、用量明细
+  stepTitle: function (s) {
+    if (!s) return "";
+    var lines = [], detail = PanelCore.cleanDetail(s.detail);
+    if (detail) lines.push(detail);
+    if (s.rounds > 1 && s.history != null && s.history.length) {
+      for (var i = 0; i < s.history.length; i++) {
+        var h = s.history[i] || {}, line = "第 " + (i + 1) + " 轮";
+        if (h.seconds != null) line += " " + mmss(h.seconds);
+        if (h.tokens != null) line += (h.seconds != null ? " · " : " ") + tokenAmount(h.tokens) + " token";
+        lines.push(line);
+      }
+    }
+    var tip = PanelCore.tokenTitle(s.tokens);
+    if (tip) lines.push(tip);
+    return lines.join("\n");
+  },
+  // 鼠标提示里的明细：输入、缓存读取、输出、新消耗（不含缓存读取）
+  tokenTitle: function (t) {
+    if (!t || !t.ok) return "";
+    var input = Number(t.input) || 0, cached = Number(t.cached) || 0, output = Number(t.output) || 0;
+    return "输入 " + tokenAmount(input) + "（其中缓存读取 " + tokenAmount(cached) + "）· 输出 " +
+      tokenAmount(output) + " · 新消耗 " + tokenAmount(input - cached + output) + "（不含缓存读取）";
+  },
+  // 环节列表下面的本卡合计；细项进鼠标提示
+  totalText: function (v) {
+    if (!v || !v.total) return "";
+    return "本卡合计 " + tokenAmount(v.total) + " token";
+  },
+  totalTitle: function (v) {
+    if (!v || !(v.other > 0)) return "";
+    return "其中交接资料等其他 " + tokenAmount(v.other) + " token";
   },
   // 点“接受剩下的问题”前给用户看的话：剩下什么、接受后还要再点什么
   acceptIssuesConfirm: function (detail) {
@@ -81,8 +140,6 @@ if (typeof document !== "undefined") (function () {
       return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
     });
   }
-  function mmss(sec) { sec = Math.max(0, Math.round(sec)); return Math.floor(sec / 60) + ":" + (sec % 60 < 10 ? "0" : "") + (sec % 60); }
-  function ago(sec) { sec = Math.max(0, Math.round(sec)); return sec < 60 ? sec + " 秒" : Math.floor(sec / 60) + " 分钟"; }
   function since() { return (Date.now() - fetchedAt) / 1000; }
 
   function cardHeaders() {
@@ -202,10 +259,6 @@ if (typeof document !== "undefined") (function () {
         field.focus();
       }
       return;
-    }
-    if (act === "accept") {
-      var ask = PanelCore.acceptConfirm(view.card.phase && view.card.phase.later);
-      if (ask && !window.confirm(ask)) return;
     }
     if (act === "discard" && !window.confirm("这次的改动不会进入项目，你的项目不会变。改好的版本也会删除。")) return;
     if (act === "accept_issues" && !window.confirm(PanelCore.acceptIssuesConfirm(view.card.phase && (view.card.phase.issues || view.card.phase.detail)))) return;
@@ -364,14 +417,6 @@ if (typeof document !== "undefined") (function () {
     return PanelCore.cleanDetail(s.detail);
   }
 
-  // 计时单独一行，不跟说明挤在一起（第二轮走查：用户截图“已干 4:57 · 58 秒前有动静”被折成两半）
-  function clockText(s) {
-    var parts = [];
-    if (s.state === "active" && s.elapsed != null) parts.push("已干 " + mmss(s.elapsed + since()));
-    if (s.state === "active" && s.quiet != null) parts.push(ago(s.quiet + since()) + "前有动静");
-    return parts.join(" · ");
-  }
-
   function renderFlow(v) {
     v.stations.forEach(function (s, idx) {
       var b = steps[idx], kind = PanelCore.stepClass(s.state);
@@ -389,10 +434,17 @@ if (typeof document !== "undefined") (function () {
         pbox.querySelector(".pt").textContent = prog.text;
       }
       b.querySelector(".d").textContent = kind === "idle" ? "" : stepText(s);
-      b.querySelector(".k").textContent = kind === "idle" ? "" : clockText(s);
-      b.title = PanelCore.cleanDetail(s.detail);
+      b.querySelector(".k").textContent = kind === "idle" ? "" : PanelCore.metaText(s, since());
+      b.title = PanelCore.stepTitle(s);
       b.setAttribute("aria-label", s.role + " " + s.who + "，看交接");
     });
+    var total = PanelCore.totalText(v.tokens);
+    var totalBox = $("tokenTotal");
+    if (totalBox) {
+      totalBox.textContent = total;
+      totalBox.title = PanelCore.totalTitle(v.tokens);
+      totalBox.hidden = !total;
+    }
   }
 
   // ---------- 没有卡片时 ----------
@@ -406,7 +458,10 @@ if (typeof document !== "undefined") (function () {
   function tick() {
     if (!view) return;
     view.stations.forEach(function (s, idx) {
-      if (s.state === "active") steps[idx].querySelector(".k").textContent = clockText(s);
+      if (s.state === "active") {
+        // 和首次绘制走同一个拼法，不能在这里另拼一套
+        steps[idx].querySelector(".k").textContent = PanelCore.metaText(s, since());
+      }
     });
   }
 

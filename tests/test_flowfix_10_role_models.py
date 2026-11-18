@@ -14,7 +14,7 @@ from collab.dispatch import run_card
 from collab.judge import PASS, Verdict
 from collab.state import Card
 
-TEAM = {"dispatcher": "codex", "tester": "codex", "developer": "cursor", "reviewer": "codex"}
+TEAM = {"tester": "codex", "developer": "cursor", "reviewer": "codex"}
 
 
 class Base(unittest.TestCase):
@@ -32,17 +32,15 @@ class Base(unittest.TestCase):
 class Storage(Base):
     def test_old_config_fills_every_role(self):
         got = load_role_models(self.project)
-        self.assertEqual(got["dispatcher"], {"tool": "codex", "model": "gpt-6.1-sol", "effort": "xhigh"})
+        self.assertEqual(got["tester"], {"tool": "codex", "model": "gpt-6.1-sol", "effort": "xhigh"})
         self.assertEqual(got["developer"], {"tool": "cursor", "model": "auto"})
 
     def test_each_role_keeps_its_own(self):
         save_role_models(self.project, {
-            "dispatcher": {"tool": "codex", "model": "gpt-6.1-sol", "effort": "medium"},
             "tester": {"tool": "codex", "model": "gpt-6.1-sol", "effort": "high"},
             "reviewer": {"tool": "codex", "model": "gpt-6.1-sol", "effort": "xhigh"},
         })
         got = load_role_models(self.project)
-        self.assertEqual(got["dispatcher"]["effort"], "medium")
         self.assertEqual(got["tester"]["effort"], "high")
         self.assertEqual(got["reviewer"]["effort"], "xhigh")
         self.assertEqual(models_for(self.project, "tester", "codex")["codex_effort"], "high")
@@ -99,10 +97,11 @@ class Dispatch(Base):
 
 
 class Planner(Base):
-    def test_plan_uses_dispatcher_setting(self):
+    def test_plan_effort_is_fixed_low_whatever_the_roles_use(self):
+        # 去掉调度员岗后：写方案不再读哪一岗的强度，固定低（写测试设成高也不跟着变）
         from collab.planner import plan_models
-        save_role_models(self.project, {"dispatcher": {"tool": "codex", "model": "gpt-6.1-sol", "effort": "medium"}})
-        self.assertEqual(plan_models(self.project)["codex_effort"], "medium")
+        save_role_models(self.project, {"tester": {"tool": "codex", "model": "gpt-6.1-sol", "effort": "high"}})
+        self.assertEqual(plan_models(self.project)["codex_effort"], "low")
 
 
 class Check(Base):
@@ -113,15 +112,17 @@ class Check(Base):
         def fake(tool, models, timeout=None):
             calls.append((tool, models.get("codex_effort")))
             return {"ok": True, "status": "ok", "reason": "通了", "how": "", "seconds": 0}
+        team = dict(TEAM, developer="codex")
         role_models = {"tester": {"tool": "codex", "model": "gpt-6.1-sol", "effort": "high"},
                        "reviewer": {"tool": "codex", "model": "gpt-6.1-sol", "effort": "xhigh"},
-                       "dispatcher": {"tool": "codex", "model": "gpt-6.1-sol", "effort": "high"}}
+                       "developer": {"tool": "codex", "model": "gpt-6.1-sol", "effort": "high"}}
         with mock.patch.object(check, "check_tool", side_effect=fake):
-            out = check.check_team(self.project, team=TEAM, roles=["dispatcher", "tester", "reviewer"],
+            out = check.check_team(self.project, team=team, roles=["tester", "developer", "reviewer"],
                                    role_models=role_models)
         self.assertEqual(sorted(calls), [("codex", "high"), ("codex", "xhigh")], "设置一样的只测一次")
         shared = {r["role"]: r.get("shared_with") for r in out}
-        self.assertEqual(shared["tester"], "dispatcher")
+        self.assertEqual(shared["developer"], "tester")
+        self.assertIsNone(shared["tester"])
         self.assertIsNone(shared["reviewer"])
 
 

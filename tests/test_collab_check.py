@@ -57,7 +57,7 @@ class CheckTest(unittest.TestCase):
         self._keys.append(f"FAKE_{name}")
 
     def team(self, **kw):
-        t = {"dispatcher": "codex", "tester": "codex", "developer": "cursor", "reviewer": "agy"}
+        t = {"tester": "codex", "developer": "cursor", "reviewer": "agy"}
         t.update(kw)
         save_team(self.project, t)
 
@@ -76,10 +76,10 @@ class CheckTest(unittest.TestCase):
     def test_same_tool_in_two_roles_is_checked_once(self):
         for c in ("codex", "agent", "agy"):
             self.tool(c, "ok")
-        self.team()
+        self.team(reviewer="codex")
         r = self.by_role(check_team(self.project, timeout=10))
-        self.assertEqual(r["tester"]["shared_with"], "dispatcher")  # Codex 当调度员和写测试，只测一次
-        self.assertIsNone(r["dispatcher"]["shared_with"])
+        self.assertEqual(r["reviewer"]["shared_with"], "tester")  # Codex 当写测试和复查，只测一次
+        self.assertIsNone(r["tester"]["shared_with"])
 
     def test_missing_tool_is_reported_without_waiting(self):
         self.tool("codex", "ok")
@@ -131,16 +131,14 @@ class CheckTest(unittest.TestCase):
         self.assertEqual(r["reviewer"]["status"], "skipped")
         self.assertTrue(r["reviewer"]["ok"])
 
-    def test_custom_dispatcher_is_only_checked_for_being_installed(self):
-        self.tool("codex", "ok")
-        self.tool("agent", "ok")
-        self.tool("agy", "ok")
+    def test_custom_command_is_only_checked_for_being_installed(self):
+        # 去掉调度员后，团队里已经没有能填自定义命令的岗位；检测函数里这条老分支还在，行为保持不变
+        from collab.check import check_tool
         (self.bin / "qwen").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
         (self.bin / "qwen").chmod(0o755)
-        self.team(dispatcher="custom:qwen --yolo")
-        r = self.by_role(check_team(self.project, timeout=10))
-        self.assertTrue(r["dispatcher"]["ok"])
-        self.assertIn("只能检查装没装", r["dispatcher"]["reason"])
+        r = check_tool("custom:qwen --yolo", {}, timeout=10)
+        self.assertTrue(r["ok"])
+        self.assertIn("只能检查装没装", r["reason"])
 
     def test_results_arrive_one_by_one(self):
         for c in ("codex", "agent", "agy"):
@@ -148,7 +146,7 @@ class CheckTest(unittest.TestCase):
         self.team()
         seen = []
         check_team(self.project, timeout=10, on_result=seen.append)
-        self.assertEqual(sorted(r["role"] for r in seen), ["developer", "dispatcher", "reviewer", "tester"])
+        self.assertEqual(sorted(r["role"] for r in seen), ["developer", "reviewer", "tester"])
 
     def test_retry_checks_only_the_chosen_roles(self):
         for c in ("codex", "agent", "agy"):
@@ -179,7 +177,7 @@ class CheckTest(unittest.TestCase):
             data = json.loads(buf.getvalue())
         except ValueError:
             self.fail("检测结果不是格式数据：\n" + buf.getvalue()[:2000] + "\n报错输出：\n" + err.getvalue()[:2000])
-        self.assertEqual(len(data), 4)
+        self.assertEqual(len(data), 3)
 
 
 if __name__ == "__main__":

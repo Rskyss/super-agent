@@ -3,6 +3,8 @@
 69b 复查一轮比一轮细：断网重问 → 切换对话那一瞬间 → 结果文件被人删掉。退回过以后的复查，每条标
 【这次改的】【原来就有的】：这次改的严重、中等照样退回；原来就有的（除了严重）和所有轻微记进“以后再修”，不退回；
 连着两轮在同一处冒新问题，第二次退回改成“先找共同原因”。
+2026-11-18 第二批（跑卡规矩，用户批准）改口径：每一轮复查都标；这次改的不分轻重一律退回；
+只有原来就有的（除了严重）记进“以后再修”，点确认时不再列给用户，只记台账。
 """
 import json
 import shutil
@@ -65,19 +67,21 @@ class Triage(unittest.TestCase):
                  "【中等】【原来就有的】切换对话时卡住。", "【轻微】【这次改的】字小了。",
                  "【中等】没标是哪种。", "【测试的问题】【轻微】【原来就有的】测试编号写错。"]
         back, later = _triage(items)
-        self.assertEqual(back, [items[0], items[1], items[4], items[5]])
-        self.assertEqual(later, [items[2], items[3]])
+        # 第二批 A1（11-18 用户批准）：这次改的轻微也退回，只有原来就有的（非严重）记进以后再修
+        self.assertEqual(back, [items[0], items[1], items[3], items[4], items[5]])
+        self.assertEqual(later, [items[2]])
 
 
 class Converge(Base):
-    def test_first_review_has_no_tags(self):
+    def test_every_review_has_tags(self):
+        # 第二批 A1：第 1 轮也要标（原来只有退回过以后才标）
         _, calls = self.go([R1, "结论：通过"])
-        self.assertNotIn("【原来就有的】", calls["review"][0])
-        self.assertIn("【原来就有的】", calls["review"][1], "退回过以后的复查要标")
+        self.assertIn("【原来就有的】", calls["review"][0])
+        self.assertIn("【原来就有的】", calls["review"][1])
 
-    def test_only_old_and_minor_counts_as_pass(self):
-        r2 = ("结论：不通过\n1. 【中等】【原来就有的】切换对话时卡在正在取回。\n"
-              "2. 【轻微】【这次改的】提示字太小。")
+    def test_only_old_counts_as_pass(self):
+        # 第二批 A1：这次改的轻微不再算放行，这里只留原来就有的
+        r2 = "结论：不通过\n1. 【中等】【原来就有的】切换对话时卡在正在取回。"
         card, calls = self.go([R1, r2])
         self.assertEqual(card.state, "待验收")
         self.assertEqual(len(calls["dev"]), 2)
@@ -126,17 +130,9 @@ class LaterShown(unittest.TestCase):
             record(cdir, "结束", src="程序", dst="你", state="待验收", summary="做完了")
             ph = card_phase(str(project), "CARD-001")
             self.assertEqual(ph["later"], ["切换对话时卡住", "提示字小"])
-            self.assertIn("以后再修", ph["detail"])
+            self.assertIn("台账", ph["detail"])   # 第二批 A2：说明改成“已记进台账”，不再说点确认时列给你看
 
-    @unittest.skipUnless(shutil.which("node"), "需要 Node")
-    def test_accept_confirm_lists_later(self):
-        script = ("const P=require('./desktop/static/panel.js');"
-                  "const t=P.acceptConfirm(['切换对话时卡住','提示字小']);"
-                  "if(!t.includes('切换对话时卡住')||!t.includes('以后再修'))process.exit(1);"
-                  "if(P.acceptConfirm([])!==null)process.exit(2);")
-        done = subprocess.run(["node", "-e", script], cwd=Path(__file__).resolve().parents[1],
-                              capture_output=True, text=True)
-        self.assertEqual(done.returncode, 0, done.stderr)
+    # test_accept_confirm_lists_later 已删：第二批 A2 点确认不再弹以后再修清单，改由 test_flowfix_c1_acceptance 检查
 
 
 if __name__ == "__main__":

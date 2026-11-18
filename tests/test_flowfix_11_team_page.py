@@ -52,14 +52,13 @@ class Server(unittest.TestCase):
             return json.loads(r.read().decode("utf-8"))
 
     def test_role_models_round_trip(self):
-        team = {"dispatcher": "codex", "tester": "codex", "developer": "cursor", "reviewer": "codex"}
-        picks = {"dispatcher": {"tool": "codex", "model": "gpt-6.1-sol", "effort": "medium"},
-                 "tester": {"tool": "codex", "model": "gpt-6.1-sol", "effort": "high"},
+        team = {"tester": "codex", "developer": "cursor", "reviewer": "codex"}
+        picks = {"tester": {"tool": "codex", "model": "gpt-6.1-sol", "effort": "high"},
                  "developer": {"tool": "cursor", "model": "auto"},
                  "reviewer": {"tool": "codex", "model": "gpt-6.1-sol", "effort": "xhigh"}}
         self.assertTrue(self.post("/api/team/save", {"project": str(self.project), "team": team, "role_models": picks})["ok"])
         got = self.get("/api/team")
-        self.assertEqual(got["role_models"]["dispatcher"]["effort"], "medium")
+        self.assertEqual(got["role_models"]["tester"]["effort"], "high")
         self.assertEqual(got["role_models"]["reviewer"]["effort"], "xhigh")
         self.assertEqual(got["check_timeout"], 120)
 

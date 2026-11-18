@@ -1,4 +1,4 @@
-"""团队配置：谁当调度员、谁写测试/写代码/复查。存在项目的 .collab/配置.json，协作包、窗口、面板都读这一份。"""
+"""团队配置：谁写测试/写代码/复查（11-17 起没有调度员岗）。存在项目的 .collab/配置.json，协作包、窗口、面板都读这一份。"""
 import io
 import json
 import subprocess
@@ -26,36 +26,35 @@ class TeamConfigTest(unittest.TestCase):
     def test_defaults_when_nothing_is_configured(self):
         team = load_team(self.project)
         self.assertEqual((team["tester"], team["developer"], team["reviewer"]), ("codex", "cursor", "agy"))
-        self.assertIsNone(team["dispatcher"])  # 调度员必须用户亲手选，没有默认
+        self.assertNotIn("dispatcher", team)  # 11-17 起没有调度员岗
         self.assertFalse(team["configured"])
 
     def test_saved_team_is_read_back_and_other_settings_kept(self):
         cfg = self.project / ".collab" / "配置.json"
         cfg.write_text(json.dumps({"codex": "gpt-x", "project_profile_confirmed": True}), encoding="utf-8")
-        save_team(self.project, {"dispatcher": "agy", "tester": "agy", "developer": "codex", "reviewer": "none"})
+        save_team(self.project, {"tester": "agy", "developer": "codex", "reviewer": "none"})
         team = load_team(self.project)
-        self.assertEqual(team["dispatcher"], "agy")
+        self.assertEqual(team["tester"], "agy")
         self.assertEqual(team["reviewer"], "none")
         self.assertTrue(team["configured"])
         data = json.loads(cfg.read_text(encoding="utf-8"))
         self.assertEqual(data["codex"], "gpt-x")
         self.assertTrue(data["project_profile_confirmed"])
 
-    def test_custom_command_can_dispatch_but_not_work(self):
-        save_team(self.project, {"dispatcher": "custom:qwen --yolo", "tester": "codex", "developer": "cursor", "reviewer": "agy"})
-        self.assertEqual(load_team(self.project)["dispatcher"], "custom:qwen --yolo")
+    def test_custom_command_cannot_work(self):
+        # 自定义命令以前只能当调度员；调度员岗去掉后，哪个岗位都不能填自定义命令
         with self.assertRaises(ConfigError):
-            save_team(self.project, {"dispatcher": "codex", "tester": "custom:qwen", "developer": "cursor", "reviewer": "agy"})
+            save_team(self.project, {"tester": "custom:qwen", "developer": "cursor", "reviewer": "agy"})
 
     def test_claude_is_not_offered(self):
-        for role in ("dispatcher", "tester", "developer", "reviewer"):
-            team = {"dispatcher": "codex", "tester": "codex", "developer": "cursor", "reviewer": "agy", role: "claude"}
+        for role in ("tester", "developer", "reviewer"):
+            team = {"tester": "codex", "developer": "cursor", "reviewer": "agy", role: "claude"}
             with self.assertRaises(ConfigError):
                 save_team(self.project, team)
 
     def test_reviewer_may_be_none_but_others_may_not(self):
         with self.assertRaises(ConfigError):
-            save_team(self.project, {"dispatcher": "codex", "tester": "none", "developer": "cursor", "reviewer": "agy"})
+            save_team(self.project, {"tester": "none", "developer": "cursor", "reviewer": "agy"})
 
     def test_broken_saved_value_is_reported(self):
         (self.project / ".collab" / "配置.json").write_text(json.dumps({"team": {"developer": "word"}}), encoding="utf-8")
@@ -63,7 +62,7 @@ class TeamConfigTest(unittest.TestCase):
             load_team(self.project)
 
     def test_run_tools_prefers_command_line_then_team_then_default(self):
-        save_team(self.project, {"dispatcher": "codex", "tester": "agy", "developer": "codex", "reviewer": "none"})
+        save_team(self.project, {"tester": "agy", "developer": "codex", "reviewer": "none"})
         self.assertEqual(run_tools(self.project), {"test": "agy", "dev": "codex", "review": None})
         self.assertEqual(run_tools(self.project, dev="cursor", review="agy"), {"test": "agy", "dev": "cursor", "review": "agy"})
 
@@ -96,7 +95,7 @@ class RunUsesTeamTest(unittest.TestCase):
             cli("new-card", str(project), "CARD-001", "--requirement", str(req))
             (project / ".collab" / "cards" / "CARD-001" / "方案.md").write_text("两步", encoding="utf-8")
             cli("approve", str(project), "CARD-001")
-            save_team(project, {"dispatcher": "codex", "tester": "agy", "developer": "codex", "reviewer": "cursor"})
+            save_team(project, {"tester": "agy", "developer": "codex", "reviewer": "cursor"})
 
             calls = []
 

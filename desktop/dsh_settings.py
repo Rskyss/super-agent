@@ -174,7 +174,8 @@ def team_rows(project) -> dict:
                    **({"efforts": list(o["efforts"])} if o.get("efforts") else {})}
                   for o in options.get(t, [])] for t in WORKERS}
     efforts = [{"value": e, "label": _EFFORT_LABELS.get(e, e)} for e in CODEX_EFFORTS]
-    dispatcher = str(team.get("dispatcher") or "")
+    from collab.config import legacy_dispatcher   # 老配置里残留的调度员（11-17 起团队读取不再返回它）
+    dispatcher = legacy_dispatcher(project)[0]
     return {"roles": roles, "picks": picks, "dispatcher": _TOOL_NAMES.get(dispatcher, dispatcher), "problem": "",
             "options": {"tester": worker, "developer": worker, "reviewer": worker + [{"value": "none", "label": "不复查"}]},
             "models": models, "efforts": efforts}
