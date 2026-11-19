@@ -17,6 +17,7 @@ from collab.judge import FAIL, PASS, Verdict
 from collab.phase import card_phase
 from collab.state import Card
 from desktop.view import card_view
+from review_fmt import listed_ask  # C1.5：老测试的随手复查意见补上固定清单（tests/review_fmt.py）
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -78,7 +79,7 @@ class FlowCase(unittest.TestCase):
 
         return run_card(
             card or Card("CARD-003", state="待派发"), self.collab, self.worktree,
-            "true", "qwen", "codex", ask_fn=ask,
+            "true", "qwen", "codex", ask_fn=listed_ask(ask),
             judge_fn=judge or (lambda *a, **k: Verdict(PASS, 0, "ok")),
             reviewer_adapter="codex", role_models=role_models, **options,
         )
@@ -180,7 +181,8 @@ class ReviewConclusions(FlowCase):
         self.assertEqual(self.events("复查结论"), [])
 
     def test_review_return_limit_stays_two(self):
-        card, _ = self.flow([MODERATE, MODERATE, MODERATE])
+        severe = MODERATE.replace("【中等】", "【严重】")  # C1.6：不严重的退满会自动进待验收 / 第 2 轮起新冒出的不严重问题不退回；这里测原来那件事，问题改成严重的
+        card, _ = self.flow([severe, severe, severe])
         self.assertEqual(card.state, "需Claude介入")
         self.assertEqual(len(self.calls_for("review")), 3)
         self.assertEqual(len(self.calls_for("dev")), 3, "首轮开发加两次退回，不能再派第四次")

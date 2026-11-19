@@ -13,6 +13,7 @@ from collab.dispatch import _programs_in, cursor_permissions, run_card
 from collab.judge import PASS, Verdict
 from collab.scope import is_cache, out_of_scope
 from collab.state import Card
+from review_fmt import listed_ask  # C1.5：老测试的随手复查意见补上固定清单（tests/review_fmt.py）
 
 CMD = ["/bin/bash", "-o", "pipefail", "-c", "python3 -m unittest tests.test_x"]
 
@@ -73,7 +74,7 @@ class OnlyForCursor(unittest.TestCase):
             def ask_fn(adapter, prompt, cwd, **kw):
                 seen[adapter] = (Path(cwd) / ".cursor" / "cli.json").is_file()
                 return AgentResult(ok=True, output="", attempts=1, final="结论：通过" if "只读复查" in prompt else "好了")
-            run_card(Card("CARD-001", state="待派发"), root / ".collab", wt, CMD, "cursor", "codex", ask_fn=ask_fn,
+            run_card(Card("CARD-001", state="待派发"), root / ".collab", wt, CMD, "cursor", "codex", ask_fn=listed_ask(ask_fn),
                      judge_fn=lambda *a, **k: Verdict(PASS, 0, "ok"), reviewer_adapter="codex")
             self.assertTrue(seen["cursor"], "Cursor 干活时设置在")
             self.assertFalse(seen["codex"], "复查员看不到它（端到端试跑里复查员把它当越界打回）")
@@ -94,7 +95,7 @@ class NotCounted(unittest.TestCase):
 
             def ask_fn(adapter, prompt, cwd, **kw):
                 return AgentResult(ok=True, output="", attempts=1, final="结论：通过" if "只读复查" in prompt else "好了")
-            run_card(Card("CARD-001", state="待派发"), root / ".collab", wt, CMD, "cursor", "codex", ask_fn=ask_fn,
+            run_card(Card("CARD-001", state="待派发"), root / ".collab", wt, CMD, "cursor", "codex", ask_fn=listed_ask(ask_fn),
                      judge_fn=lambda *a, **k: Verdict(PASS, 0, "ok"), reviewer_adapter="codex", allowed=["calc.py"],
                      changed_fn=lambda w: ["calc.py", ".cursor/cli.json"], revert_fn=lambda w, p: None)
             scope = [e for e in read_flow(cdir) if e.get("kind") == "范围"][0]

@@ -10,6 +10,11 @@ from collab.flow import record
 from desktop.view import card_view
 
 
+def core(history):
+    """只比每轮的用时和用量：token 第二版每轮多了“是谁、没读到的原因”（Claude 按新口径改，登记见 docs/token用量第二版/老测试改写登记.md）。"""
+    return None if history is None else [{"seconds": h.get("seconds"), "tokens": h.get("tokens")} for h in history]
+
+
 def usage(total):
     return dict(ok=True, total=total, input=total, cached=0, output=0,
                 reasoning=0, children=0)
@@ -44,7 +49,7 @@ class HistoryEdges(ProjectCase):
         dev = self.station("dev")
         self.assertEqual(dev.get("rounds"), 2)
         self.assertIsNone(dev.get("spent"))
-        self.assertEqual(dev.get("history"), [
+        self.assertEqual(core(dev.get("history")), [
             {"seconds": None, "tokens": 23}, {"seconds": None, "tokens": None}])
 
     def test_partial_time_and_zero_usage_survive_in_order(self):
@@ -53,7 +58,7 @@ class HistoryEdges(ProjectCase):
         self.reply(seconds=61, tokens={"ok": False, "total": 999})
         dev = self.station("dev")
         self.assertEqual(dev.get("spent"), 61)
-        self.assertEqual(dev.get("history"), [
+        self.assertEqual(core(dev.get("history")), [
             {"seconds": 0, "tokens": 0}, {"seconds": None, "tokens": None},
             {"seconds": 61, "tokens": None}])
 
@@ -77,7 +82,7 @@ class HistoryEdges(ProjectCase):
                 station = self.station(key)
                 self.assertEqual(station.get("rounds"), rounds)
                 self.assertEqual(station.get("spent"), spent)
-                self.assertEqual(station.get("history"), history)
+                self.assertEqual(core(station.get("history")), history)
                 self.assertEqual(station["detail"], detail)
 
     def test_failed_worker_reply_is_still_a_completed_round(self):
@@ -86,7 +91,7 @@ class HistoryEdges(ProjectCase):
         self.assertEqual(dev["state"], "fail")
         self.assertEqual(dev["detail"], "连接中断")
         self.assertEqual(dev.get("rounds"), 1)
-        self.assertEqual(dev.get("history"), [{"seconds": 7, "tokens": 12}])
+        self.assertEqual(core(dev.get("history")), [{"seconds": 7, "tokens": 12}])
 
     def test_first_active_round_has_no_made_up_finished_time(self):
         self.send(summary="正在检查刷新")
@@ -95,7 +100,7 @@ class HistoryEdges(ProjectCase):
         self.assertEqual(dev["detail"], "正在检查刷新")
         self.assertEqual(dev.get("rounds"), 1)
         self.assertIsNone(dev.get("spent"))
-        self.assertEqual(dev.get("history"), [])
+        self.assertEqual(core(dev.get("history")), [])
 
     def test_interrupted_round_is_counted_and_resume_keeps_finished_history(self):
         self.reply(seconds=11, tokens=usage(120))
@@ -106,14 +111,14 @@ class HistoryEdges(ProjectCase):
             self.assertEqual(dev["state"], "wait")
             self.assertEqual(dev.get("rounds"), 2)
             self.assertEqual(dev.get("spent"), 11)
-            self.assertEqual(dev.get("history"), [{"seconds": 11, "tokens": 120}])
+            self.assertEqual(core(dev.get("history")), [{"seconds": 11, "tokens": 120}])
         record(self.cdir, "回复", src="开发员", dst="调度员", tool="codex", step="开发",
                reply_to=sent["seq"], ok=True, summary="继续后已完成", seconds=9, tokens=usage(80))
         with mock.patch("desktop.view.process_is_alive", return_value=True):
             dev = self.station("dev")
         self.assertEqual(dev.get("rounds"), 2, "交活后不能又多算一轮")
         self.assertEqual(dev.get("spent"), 20)
-        self.assertEqual(dev.get("history"), [
+        self.assertEqual(core(dev.get("history")), [
             {"seconds": 11, "tokens": 120}, {"seconds": 9, "tokens": 80}])
         self.assertEqual(dev["detail"], "继续后已完成")
 

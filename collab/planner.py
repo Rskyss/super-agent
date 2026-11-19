@@ -14,6 +14,7 @@ from typing import Optional, Tuple
 
 from collab.card_attachments import attachment_prompt
 from collab.config import plan_models  # noqa: F401 — 写方案、备交接资料共用这一份（别的地方也从这里取）
+from collab.dispatch import _READ_RULES
 from collab.flow import record as flow_record
 from collab.state import Card
 from collab.token_usage import usage_from_text
@@ -203,24 +204,58 @@ def _replace_allowed_section(requirement_text: str, allowed_paths: list) -> str:
     return requirement_text.rstrip() + "\n\n" + "\n".join(new_scope) + "\n"
 
 
-_ORDER_PATH = re.compile(r"[\w./\-\u4e00-\u9fff]*施工单[\w./\-\u4e00-\u9fff]*\.md")
+_ORDER_PATH = re.compile(r"[^\n，。；、：！？\"'“”‘’（）()《》【】]+?\.md")
+
+
+def _order_candidates(chunk: str):
+    """从一段含 .md 的文字里，按从长到短试可能的路径（兼容空格和项目内绝对路径）。"""
+    starts = {0}
+    for index, char in enumerate(chunk):
+        if char.isspace() or char in "，。；、：（）()《》“”\"'`":   # 反引号括起来的路径也认（C2 复查第 3 轮）
+            starts.add(index + 1)
+        if char == "/":
+            starts.add(index + 1)
+    for index in sorted(starts):
+        candidate = chunk[index:].strip().strip("\"'“”‘’`")
+        if "施工单" in candidate and candidate.endswith(".md"):
+            yield candidate
+
+
+def _order_relative(root: Path, candidate: str):
+    path = Path(candidate)
+    if path.is_absolute():
+        try:
+            path = path.resolve().relative_to(root.resolve())
+        except (OSError, ValueError):
+            return None
+    else:
+        if ".." in path.parts:
+            return None
+        path = Path(*[part for part in path.parts if part not in ("", ".")])
+    rel = path.as_posix()
+    if not rel or rel.startswith("../"):
+        return None
+    return rel if (root / rel).is_file() else None
 
 
 def existing_orders(project, requirement_text: str) -> list:
     """任务卡片里提到的、项目里真实存在的施工单文件（相对项目根）。"""
-    found = []
     root = Path(project) if project else None
-    for raw in _ORDER_PATH.findall(requirement_text or ""):
-        rel = raw.strip("./")
-        if root is None or not rel or ".." in rel.split("/"):
-            continue
-        if (root / rel).is_file() and rel not in found:
-            found.append(rel)
+    if root is None:
+        return []
+    found = []
+    for chunk in _ORDER_PATH.findall(requirement_text or ""):
+        for candidate in _order_candidates(chunk):
+            rel = _order_relative(root, candidate)
+            if rel and rel not in found:
+                found.append(rel)
+                break
     return found
 
 
 def _build_prompt(card_dir: Path, requirement_text: str, need_profile: bool, project=None) -> str:
     lines = [
+        _READ_RULES,
         "你可以用只读命令查看项目，但不要修改任何文件。",
         "根据下面的任务卡片，用大白话写一份拆解方案。这份方案是写给后面干活的人看的。",
         "「不要修改文件」只约束你写方案这一步；方案内容里不要写这一条，也不要写“本次只输出方案”。",
@@ -234,9 +269,11 @@ def _build_prompt(card_dir: Path, requirement_text: str, need_profile: bool, pro
         "- questions：字符串数组；没有问题就写空数组。问题里要带推荐答案。",
         "- allowed：字符串数组，尽量窄，列出允许改动的相对路径（相对项目根）。",
         "- test_command：一条测试命令字符串。",
+        "方案步骤里不要让施工方跑全部测试，全部测试由程序在复查时跑；test_command 只写本卡的测试。",
         "- view_how：大白话说明打开后看哪里、看什么。用户点按钮就能打开，不要让用户运行命令。",
         "- view_command：本机启动命令；网页类项目填写，用 --host 127.0.0.1 这类写法绑定本机地址，端口不要和项目日常开的相同；不是网页就填空字符串。",
         "- view_url：打开的地址，网页类填 http://127.0.0.1 开头的地址；不是网页就填空字符串。",
+        "- view_command、view_url 要照项目代码里真实的启动入口和地址写（先查项目里启动网页的代码和路由），不要猜；查不到就都填空字符串。",
     ]
     if need_profile:
         lines.append(

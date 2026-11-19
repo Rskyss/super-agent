@@ -7,7 +7,7 @@ import subprocess
 import unittest
 from pathlib import Path
 
-from acceptance_helpers import STATIC, needs_node
+from acceptance_helpers import STATIC, needs_node, wait_until
 from collab.flow import read_flow, record
 from collab.phase import card_phase
 from collab.state import Card
@@ -43,7 +43,8 @@ class Button(Case):
         cdir = self.blocked(REVIEW_STOP)
         status, answer = self.act("accept_issues")
         self.assertEqual(status, 200, answer)
-        self.assertEqual(self.state(), "待验收")
+        # 全量卡（11-18）：点了先在后台跑全部测试，全过才进待确认（原来是点了立刻进）
+        wait_until(lambda: self.state() == "待验收", 60, "全部测试过了却没进待确认")
         took = [e for e in read_flow(cdir) if e.get("kind") == "接受"]
         self.assertEqual(len(took), 1)
         self.assertEqual(took[0]["src"], "你")

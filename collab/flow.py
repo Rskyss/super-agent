@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -64,7 +65,8 @@ def record(card_dir, kind: str, src: str = "", dst: str = "", summary: str = "",
 
 def _record_locked(cdir: Path, kind, src, dst, summary, text, live, extra) -> dict:
     seq = _next_seq(cdir)
-    event = {"seq": seq, "time": datetime.now().isoformat(timespec="seconds"), "kind": kind,
+    # 只记跟时区无关的秒数、不记几点几分：后台和窗口时区不同也算得对（用户 11-19 定，“已干 787 分”）
+    event = {"seq": seq, "ts": round(time.time(), 1), "kind": kind,
              "src": src, "dst": dst, "summary": summarize(summary)}
     event.update({k: v for k, v in extra.items() if v is not None})
     if text is not None:

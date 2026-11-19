@@ -17,6 +17,7 @@ from collab.state import Card
 from collab.workspace import init_collab
 from collab import tasks as collab_tasks
 from desktop.clerk import tasks as clerk_tasks
+from review_fmt import listed_ask  # C1.5：老测试的随手复查意见补上固定清单（tests/review_fmt.py）
 
 
 class _Script:
@@ -82,7 +83,7 @@ class QueueTest(unittest.TestCase):
     def _run(self, script, **extra):
         card = Card("CARD-001", state="待派发")
         run_card(card, collab_dir=self.collab, worktree=self.tmp.name, test_command=["t"],
-                 dev_adapter="cursor", test_adapter="codex", ask_fn=script.ask,
+                 dev_adapter="cursor", test_adapter="codex", ask_fn=listed_ask(script.ask),
                  judge_fn=script.judge, reviewer_adapter="agy", **extra)
         return card
 
@@ -193,7 +194,7 @@ class QueueReviewFixTest(QueueTest):
         script = _Script([PASS, "没过", PASS], outputs={"agy": "结论：通过"}, on_ask=on_ask)
         card = Card("CARD-001", state="待派发", rework=3)
         run_card(card, collab_dir=self.collab, worktree=self.tmp.name, test_command=["t"], dev_adapter="cursor",
-                 test_adapter="codex", ask_fn=script.ask, judge_fn=script.judge, reviewer_adapter="agy")
+                 test_adapter="codex", ask_fn=listed_ask(script.ask), judge_fn=script.judge, reviewer_adapter="agy")
         self.assertEqual(card.state, "待验收", "新要求这一轮第一次测试没过，要有返工机会")
 
     def test_review_notes_kept_when_change_arrives_during_rejected_review(self):

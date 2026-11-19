@@ -14,6 +14,7 @@ from collab.flow import read_flow, record
 from collab.judge import PASS, Verdict
 from collab.progress import ProgressJob, count_written, read, tally
 from collab.state import Card
+from review_fmt import listed_ask  # C1.5：老测试的随手复查意见补上固定清单（tests/review_fmt.py）
 
 TEST_PY = ("import sys, unittest\nsys.path.insert(0, '.')\nimport money\n\nclass T(unittest.TestCase):\n"
            "    def test_add(self):\n        self.assertEqual(money.add(1, 2), 3)\n"
@@ -137,7 +138,7 @@ class InFlow(unittest.TestCase):
             return AgentResult(ok=True, output="", attempts=1, final="汇报：改了")
 
         run_card(Card("CARD-001", state="待派发"), self.collab, self.worktree, "true", "qwen", "codex",
-                 ask_fn=ask_fn, judge_fn=lambda *a, **k: Verdict(PASS, 0, "ok"), reviewer_adapter="codex",
+                 ask_fn=listed_ask(ask_fn), judge_fn=lambda *a, **k: Verdict(PASS, 0, "ok"), reviewer_adapter="codex",
                  progress=progress)
         return seen
 

@@ -69,10 +69,16 @@ var PanelCore = {
     }
     var t = s.tokens;
     if (t != null) {
-      var usage = t.ok ? tokenAmount(t.total) + " token"
-        : "用量 —（" + (t.reason || "读不到") + "）";
-      if (t.ok && t.missing > 0) usage += "（有 " + t.missing + " 轮没读到）";
-      parts.push(usage);
+      if (t.pending) {
+        var pendingText = t.reason || "这一轮结束后出数";
+        if (t.missing > 0) pendingText += "（有 " + t.missing + " 轮没读到）";
+        parts.push(pendingText);
+      } else {
+        var usage = t.ok ? tokenAmount(t.total) + " token"
+          : "用量 —（" + (t.reason || "读不到") + "）";
+        if (t.ok && t.missing > 0) usage += "（有 " + t.missing + " 轮没读到）";
+        parts.push(usage);
+      }
     }
     return parts.join(" · ");
   },
@@ -83,10 +89,12 @@ var PanelCore = {
     if (detail) lines.push(detail);
     if (s.rounds > 1 && s.history != null && s.history.length) {
       for (var i = 0; i < s.history.length; i++) {
-        var h = s.history[i] || {}, line = "第 " + (i + 1) + " 轮";
-        if (h.seconds != null) line += " " + mmss(h.seconds);
-        if (h.tokens != null) line += (h.seconds != null ? " · " : " ") + tokenAmount(h.tokens) + " token";
-        lines.push(line);
+        var h = s.history[i] || {}, segs = [];
+        if (h.who) segs.push(h.who);
+        if (h.seconds != null) segs.push(mmss(h.seconds));
+        if (h.tokens != null) segs.push(tokenAmount(h.tokens) + " token");
+        else if (h.missing) segs.push("用量 —（" + (h.reason || "读不到") + "）");
+        lines.push("第 " + (i + 1) + " 轮" + (segs.length ? " " + segs.join(" · ") : ""));
       }
     }
     var tip = PanelCore.tokenTitle(s.tokens);
@@ -102,8 +110,10 @@ var PanelCore = {
   },
   // 环节列表下面的本卡合计；细项进鼠标提示
   totalText: function (v) {
-    if (!v || !v.total) return "";
-    return "本卡合计 " + tokenAmount(v.total) + " token";
+    if (!v || (!v.total && !(v.missing > 0))) return "";
+    var text = "本卡合计 " + tokenAmount(v.total || 0) + " token";
+    if (v.missing > 0) text += "（不含没读到的 " + v.missing + " 轮）";
+    return text;
   },
   totalTitle: function (v) {
     if (!v || !(v.other > 0)) return "";
@@ -113,6 +123,9 @@ var PanelCore = {
   acceptIssuesConfirm: function (detail) {
     return "复查员还剩这些问题：\n" + String(detail || "（没有写明）") +
       "\n\n接受后卡片进入待确认，你还要再点“确认没问题，放进项目”才会放进项目。要接受吗？";
+  },
+  startDialogText: function (count) {
+    return count > 0 ? "有 " + count + " 处改动还没存进项目，施工会看不到它们。" : null;
   },
 };
 if (typeof module !== "undefined") module.exports = PanelCore;
@@ -129,6 +142,7 @@ if (typeof document !== "undefined") (function () {
   var opened = {}, texts = {};
   var planCache = null;
   var actionBusy = false;
+  var startRequest = 0, startPending = null;
   var previewBusy = false;
   var previewFor = "";   // 正在打开预览的是哪张卡：切卡后回来的结果不能算到新卡头上
   var previewClosing = false;
@@ -246,6 +260,48 @@ if (typeof document !== "undefined") (function () {
     });
   }
 
+  function startButtons(disabled) {
+    ["startSave", "startGo", "startCancel"].forEach(function (id) { $(id).disabled = disabled; });
+  }
+
+  function closeStartDialog() {
+    startRequest += 1;  // 切卡或取消后，旧的清单和失败回包不能再弹框
+    startPending = null;
+    $("startBox").hidden = true;
+    startButtons(false);
+    actionBusy = false;
+    renderActions();
+  }
+
+  $("startCancel").addEventListener("click", closeStartDialog);
+  $("startGo").addEventListener("click", function () {
+    if (!startPending) return;
+    var cardId = startPending.card;
+    closeStartDialog();
+    runCardAction("approve", cardId);
+  });
+  $("startSave").addEventListener("click", function () {
+    if (!startPending) return;
+    var pending = startPending, request = startRequest;
+    startButtons(true);
+    function failed(reason) {
+      if (request !== startRequest) return;
+      $("startText").textContent = PanelCore.startDialogText(pending.count) + "\n" + reason;
+      startButtons(false);
+    }
+    fetch("/api/clerk/save_pending", { method: "POST", headers: cardHeaders(),
+      body: JSON.stringify({ project: project, card: pending.card }) })
+      .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
+      .then(function (res) {
+        if (!res.ok || !res.d || !res.d.ok) {
+          failed((res.d && res.d.reason) || "没存成：请重试");
+          return;
+        }
+        if (request === startRequest) closeStartDialog();
+        runCardAction("approve", pending.card);
+      }).catch(function () { failed("没存成：请检查服务后重试"); });
+  });
+
   $("actions").addEventListener("click", function (ev) {
     var b = ev.target.closest("button[data-act]");
     if (!b || !view || !view.card || actionBusy) return;
@@ -266,13 +322,22 @@ if (typeof document !== "undefined") (function () {
     if (act === "approve") {
       actionBusy = true;
       renderActions();
-      fetch("/api/clerk/uncommitted?project=" + encodeURIComponent(project) + "&token=" + encodeURIComponent(token))
+      var request = ++startRequest;
+      fetch("/api/clerk/uncommitted?project=" + encodeURIComponent(project) + "&card=" + encodeURIComponent(cardId) + "&token=" + encodeURIComponent(token))
         .then(function (r) { return r.ok ? r.json() : null; })
         .catch(function () { return null; })
         .then(function (d) {
-          if (d && d.count > 0) {
-            var msg = "你的项目有 " + d.count + " 个文件还没提交，这次施工看不到它们，改好的版本里也没有。先提交，或者继续？";
-            if (!window.confirm(msg)) { actionBusy = false; renderActions(); return; }
+          if (request !== startRequest) return;
+          var files = d && Array.isArray(d.files) ? d.files : [];
+          if (files.length) {
+            startPending = { card: cardId, count: files.length };
+            $("startText").textContent = PanelCore.startDialogText(files.length);
+            var shown = files.slice(0, 10);
+            if (files.length > 10) shown.push("还有 " + (files.length - 10) + " 个");
+            $("startFiles").textContent = shown.join("\n");
+            startButtons(false);
+            $("startBox").hidden = false;
+            return;
           }
           runCardAction(act, cardId);
         });
@@ -518,6 +583,7 @@ if (typeof document !== "undefined") (function () {
 
   // ---------- 取数据 ----------
   var lastLogKey = "";
+  var shownCard = null;
   function poll() {
     var asked = selected;
     var url = "/api/view?project=" + encodeURIComponent(project) + "&dispatcher=" + encodeURIComponent(dispatcher) +
@@ -527,6 +593,11 @@ if (typeof document !== "undefined") (function () {
       $("offline").hidden = true;
       if (v.error) { $("blank").hidden = false; $("blank").textContent = v.error; return; }
       view = v; fetchedAt = Date.now();
+      var cardNow = v.card ? v.card.id : null;
+      if (cardNow !== shownCard) {   // 自动跟到另一张卡时，上一张卡的开工小框不能留着
+        closeStartDialog();
+        shownCard = cardNow;
+      }
       renderShell(v); renderFlow(v); tick();
       renderActions();
       renderAccept();
@@ -557,6 +628,7 @@ if (typeof document !== "undefined") (function () {
     show: function (id) {
       if ((id || null) === selected) return;
       selected = id || null;
+      closeStartDialog();
       $("reviseBox").hidden = true;   // 没提交的修改不能发到另一张卡
       $("reviseText").value = "";
       $("reviseFiles").value = "";

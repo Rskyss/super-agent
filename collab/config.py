@@ -16,7 +16,7 @@ from urllib.parse import urlparse
 
 from collab.providers import find
 
-WORKERS = ("codex", "cursor", "agy", "qwen")  # 能被协作包自动派活的工具；qwen = Codex 的壳接千问 Token Plan（用户 11-13 临时加）
+WORKERS = ("codex", "cursor", "agy", "qwen", "tencent")  # 能被协作包自动派活的工具；qwen = Codex 的壳接千问 Token Plan（用户 11-13 临时加）
 DEFAULT_TEAM = {"tester": "codex", "developer": "cursor", "reviewer": "agy"}
 _ROLES = {"tester": "写测试", "developer": "写代码", "reviewer": "复查"}
 _LEGACY_ROLE = "dispatcher"   # 老配置里残留的岗位名：团队读写里一律忽略（只有下面 legacy_dispatcher 一个出口）
@@ -28,12 +28,40 @@ DEFAULT_MODELS = {
     "codex_effort": "xhigh",       # Codex 推理强度
     "agy": "gemini-4-argon-high",  # agy 备选开发
     "qwen": "deepseek-v4.1-flash",  # 千问 Token Plan 上的模型
+    "tencent": "hy4",  # 腾讯云 TokenHub 上的模型（行政那把密钥，11-19；DeepSeek 两个免费额度已用完）
 }
 
 # 千问（临时，用户 11-13）：Codex 的壳 + 千问 Token Plan 地址。密钥放本机文件，不进项目、不进代码记录
 QWEN_BASE_URL = "https://token-plan.maas.qianwenaiapi.com/compatible-mode/v1"
 QWEN_KEY_ENV = "SUPERAGENT_QWEN_KEY"   # 派活时放进这个环境变量交给 Codex，命令行里不出现密钥
 QWEN_KEY_FILE = Path.home() / ".config" / "super-agent" / "qwen-token-plan.key"
+
+
+# 腾讯云（用户 11-19）：Codex 的壳 + 腾讯云 TokenHub（responses 接法实测通）。密钥就用行政那一把，
+# 平时从钥匙串读；测试用 SUPERAGENT_TENCENT_KEY_FILE 换成文件，绝不碰真钥匙串
+TENCENT_BASE_URL = "https://tokenhub.tencentmaas.com/v1"
+TENCENT_KEY_ENV = "SUPERAGENT_TENCENT_KEY"
+TENCENT_KEY_FILE = Path.home() / ".config" / "super-agent" / "tencent-tokenhub.key"
+TENCENT_KEYCHAIN = ("local.superagent.clerk", "tencent")   # 行政存密钥的钥匙串服务名、账号
+
+
+def tencent_key() -> str:
+    """腾讯云密钥：给了 SUPERAGENT_TENCENT_KEY_FILE 就只读那个文件（测试用）；否则本机文件，再否则行政在钥匙串里那把。"""
+    given = os.environ.get("SUPERAGENT_TENCENT_KEY_FILE")
+    for path in ([Path(given)] if given else [TENCENT_KEY_FILE]):
+        try:
+            text = path.read_text(encoding="utf-8").strip()
+        except OSError:
+            text = ""
+        if text or given:
+            return text
+    import subprocess
+    try:
+        done = subprocess.run(["security", "find-generic-password", "-s", TENCENT_KEYCHAIN[0],
+                               "-a", TENCENT_KEYCHAIN[1], "-w"], capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return (done.stdout or "").strip() if done.returncode == 0 else ""
 
 
 def qwen_key() -> str:
@@ -74,6 +102,13 @@ MODEL_OPTIONS = {
         {"value": "qwen3.8-flash", "label": "Qwen3.8 Flash"},
         {"value": "glm-5.3", "label": "GLM-5.3"},
         {"value": "qwen4-max-preview", "label": "Qwen4 Max Preview"},
+    ],
+    "tencent": [  # 11-19 从腾讯云 TokenHub 模型清单里挑的能写代码的（行政那把密钥能用）
+        {"value": "hy4", "label": "混元 HY4"},
+        {"value": "hy4-flash", "label": "混元 HY4 Flash"},
+        # 11-19 实测 402：这两个的免费试用额度用完、没开后付费（V4.1 Flash 下午还能用，两次复查后用完）
+        {"value": "deepseek-v4.1-flash", "label": "DeepSeek V4.1 Flash（需在腾讯云开通后付费）"},
+        {"value": "deepseek-v4-pro", "label": "DeepSeek V4 Pro（需在腾讯云开通后付费）"},
     ],
     "cursor": [
         {"value": "auto", "label": "Auto（自动推荐 · 默认）"},

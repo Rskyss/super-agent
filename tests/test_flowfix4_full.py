@@ -13,6 +13,7 @@ from collab.flow import read_flow
 from collab.fullrun import STOPPED, culprits, failing_files, run_command, safe_env
 from collab.judge import ENV_ERROR, FAIL, PASS, TIMEOUT, Verdict
 from collab.state import Card
+from review_fmt import listed_ask  # C1.5：老测试的随手复查意见补上固定清单（tests/review_fmt.py）
 
 FAIL_OUT = ("FAIL: test_a (test_old.T)\n----\nTraceback\n"
             "Ran 10 tests in 1s\n\nFAILED (failures=1)\n")
@@ -71,7 +72,7 @@ class Base(unittest.TestCase):
             return AgentResult(ok=True, output="", attempts=1, final="汇报：改了")
 
         card, _ = run_card(Card("CARD-001", state="待派发"), self.collab, self.worktree, "true", "qwen", "codex",
-                           ask_fn=ask_fn, judge_fn=lambda *a, **k: Verdict(PASS, 0, "ok"),
+                           ask_fn=listed_ask(ask_fn), judge_fn=lambda *a, **k: Verdict(PASS, 0, "ok"),
                            reviewer_adapter=reviewer, full_runner=runner)
         return card, calls
 
@@ -148,7 +149,7 @@ class FullInFlow(Base):
             return AgentResult(ok=True, output="", attempts=1, final="汇报：改了")
 
         card, _ = run_card(Card("CARD-001", state="待派发"), self.collab, self.worktree, "true", "qwen", "codex",
-                           ask_fn=ask_fn, judge_fn=lambda *a, **k: Verdict(PASS, 0, "ok"),
+                           ask_fn=listed_ask(ask_fn), judge_fn=lambda *a, **k: Verdict(PASS, 0, "ok"),
                            reviewer_adapter="codex", full_runner=runner)
         self.assertEqual(runner.calls, 0)
         self.assertEqual(card.state, "待验收")

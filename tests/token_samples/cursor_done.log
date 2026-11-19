@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "0e9144e1-0000-4000-8000-000000000002", "model": "auto"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "先看测试"}]}, "session_id": "0e9144e1-0000-4000-8000-000000000002"}
+{"type": "tool_call", "subtype": "started", "call_id": "c1", "tool_call": {"readToolCall": {"args": {"path": "a.py"}}}, "session_id": "0e9144e1-0000-4000-8000-000000000002"}
+{"type": "result", "subtype": "success", "is_error": false, "duration_ms": 384810, "result": "改好了。\n汇报：改好了", "session_id": "0e9144e1-0000-4000-8000-000000000002", "request_id": "r1", "usage": {"inputTokens": 114811, "outputTokens": 13984, "cacheReadTokens": 964864, "cacheWriteTokens": 1000, "reasoningTokens": 9115}}

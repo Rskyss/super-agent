@@ -414,12 +414,16 @@ class RecordingFailures(IsolatedHome):
         self.assert_unreadable(event["tokens"])
 
     def test_unsupported_handovers_do_not_record_tokens(self):
+        # token 第二版按新口径改（Claude，登记见 docs/token用量第二版/老测试改写登记.md）：agy、Cursor 备交接资料也记用量；这里的假输出不是它们的格式，所以记“读不到”并写原因
         from collab.dispatch import _make_handover
         put_session(self.home)
         for adapter in ("agy", "cursor"):
             with self.subTest(adapter=adapter):
                 _make_handover(self.ask(), self.cdir, adapter, {}, self.needs, self.work)
-                self.assertNotIn("tokens", self.last("交接资料"))
+                got = self.last("交接资料").get("tokens")
+                self.assertIsInstance(got, dict)
+                self.assertFalse(got.get("ok"))
+                self.assertTrue(str(got.get("reason") or "").strip())
 
 
 class PlanFailureIsolation(ProjectCase):
@@ -533,34 +537,41 @@ class PanelAccumulation(ProjectCase):
                 sent = self.sent(role="测试员", tool=tool)
                 (self.cdir / sent["live"]).write_text(HEADER, encoding="utf-8")
                 self.replied(sent)
+        # token 第二版按新口径改（Claude，登记见 docs/token用量第二版/老测试改写登记.md）：老卡记录里没有用量的轮，读它当时的实时输出补上（原来是“不补、算没读到”）
         view = self.view()
         usage = self.station(view, "test")["tokens"]
-        self.assertFalse(usage["ok"])
-        self.assertEqual(usage["missing"], 2)
-        self.assertIn("用量记录", usage["reason"])
-        self.assertEqual(view["tokens"], {"total": 0, "other": 0})
+        self.assertTrue(usage["ok"])
+        self.assertEqual(usage["total"], 9999 * 2)
+        self.assertFalse(usage.get("missing"))
+        self.assertEqual((view["tokens"]["total"], view["tokens"]["other"]), (9999 * 2, 0))
 
     def test_supported_and_unsupported_rounds_only_count_supported_usage(self):
         self.replied(self.sent(tool="qwen"), tokens(200))
         for tool in ("agy", "cursor"):
             self.replied(self.sent(tool=tool), tokens(9999, 9999))
         self.replied(self.sent(tool="codex"), {"ok": False, "reason": "会话没找到"})
+        # token 第二版按新口径改（Claude，登记见 docs/token用量第二版/老测试改写登记.md）：agy、Cursor 也算进环节合计，辅助会话照旧算进“其他”
         view = self.view()
         usage = self.station(view, "dev")["tokens"]
         self.assertTrue(usage["ok"])
-        self.assertEqual(usage["total"], 200)
+        self.assertEqual(usage["total"], 200 + 9999 * 2)
         self.assertEqual(usage["missing"], 1)
-        self.assertEqual(view["tokens"], {"total": 200, "other": 0})
+        self.assertEqual((view["tokens"]["total"], view["tokens"]["other"]), (200 + 9999 * 2 + 9999 * 2, 9999 * 2))
 
     def test_unsupported_live_steps_show_no_usage_even_with_codex_header(self):
         put_session(self.home, total=9999)
         for role, tool, key in (("测试员", "agy", "test"), ("开发员", "cursor", "dev")):
             sent = self.sent(role=role, tool=tool)
             (self.cdir / sent["live"]).write_text(HEADER, encoding="utf-8")
+        # token 第二版按新口径改（Claude，登记见 docs/token用量第二版/老测试改写登记.md）：在跑的 agy 读实时输出（这里不是它的格式 → 读不到并写原因），Cursor 在跑 → 写“这一轮结束后出数”
         view = self.view()
-        for key in ("test", "dev"):
-            self.assertNotIn("tokens", self.station(view, key))
-        self.assertEqual(view["tokens"], {"total": 0, "other": 0})
+        test = self.station(view, "test")["tokens"]
+        self.assertFalse(test.get("ok"))
+        self.assertTrue(str(test.get("reason") or "").strip())
+        dev = self.station(view, "dev")["tokens"]   # Cursor 在跑、记录还不是它的格式：写原因（等出数或认不出都行），不编数
+        self.assertFalse(dev.get("ok"))
+        self.assertTrue(str(dev.get("reason") or "").strip())
+        self.assertEqual(view["tokens"]["total"], 0)
 
     def test_handover_draft_and_all_children_are_other_once(self):
         record(self.cdir, "方案", src="Codex", tokens=tokens(100, 2))

@@ -29,9 +29,9 @@ class _Stop(Exception):
         self.detail = detail
 
 
-def _git(cwd, *args, check=True):
+def _git(cwd, *args, check=True, text=True):
     try:
-        proc = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True,
+        proc = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=text,
                               stdin=subprocess.DEVNULL, timeout=_GIT_TIMEOUT)
     except subprocess.TimeoutExpired as exc:
         raise _Stop("git 一直没有结束，这次先停下", str(exc)) from exc
@@ -163,10 +163,11 @@ def _load_progress(cdir: Path):
     return data if isinstance(data, dict) and data.get("base") and data.get("merged") else None
 
 
-def _save_progress(cdir: Path, base: str, branch: str, merged: str) -> None:
+def _save_progress(cdir: Path, base: str, branch: str, merged: str, details=None) -> None:
     path = cdir / PROGRESS
     spare = path.with_suffix(".tmp")
-    spare.write_text(json.dumps({"base": base, "branch": branch, "merged": merged}, ensure_ascii=False),
+    data = dict(details or {}, base=base, branch=branch, merged=merged)
+    spare.write_text(json.dumps(data, ensure_ascii=False),
                      encoding="utf-8")
     spare.replace(path)
 
@@ -228,35 +229,53 @@ def undo_interrupted(project, card_id: str) -> str:
     return "已退回放进去之前的提交。"
 
 
-def _commit_work(project: Path, worktree: Path, cdir: Path, card_id: str, base: str) -> None:
+def _commit_work(project: Path, worktree: Path, cdir: Path, card_id: str, base: str) -> dict:
     left = unresolved_conflicts(worktree, cdir)
     if left:
         raise _Stop("这些文件还有没解决的冲突：" + "、".join(left) + "。点“不满意，继续改”让开发员处理。")
     files = _selected(worktree, cdir)
+    if not files and _ahead(worktree, base) == 0:
+        raise _Stop("这张卡没有改动可以放进项目")
+    archive_files, archive_dir = [], ""
+    try:
+        target = archive_card(project, card_id, _title(cdir, card_id),
+                              root=worktree, final_state="已放进项目")
+        archive_dir = target.relative_to(worktree).as_posix() + "/"
+        listed = json.loads((cdir / "归档文件.json").read_text(encoding="utf-8"))
+        archive_files = [name for name in listed if isinstance(name, str)
+                         and name.startswith(archive_dir) and ".." not in Path(name).parts]
+    except Exception as exc:
+        archive_files, archive_dir = [], ""
+        _note(cdir, "记录没能存入项目文档", str(exc))
+    pending = set(_changed_list(worktree))
+    files = sorted((set(files) | set(archive_files)) & pending)
+    # 归档生成的记录已经选进提交，不算用户漏选的文件。
+    omitted = sorted({name for name in pending
+                      if name not in files and _keep(name, [name], set())})
     if files:
         _stage(worktree, files)
         done = _git(worktree, *_identity_args(project), "commit", "-qm", f"{card_id}：{_title(cdir, card_id)}",
+                    "--only", "--", *files,
                     check=False)
         if done.returncode != 0:
             raise _Stop("提交没成功：项目的提交检查没过，详情在这张卡的记录里",
                         (done.stderr or done.stdout or "").strip())
-    if not files and _ahead(worktree, base) == 0:
-        raise _Stop("这张卡没有改动可以放进项目")
     changed = _names(worktree, "diff", "--name-only", f"{base}...HEAD")
     # 卡片版本和项目现在一模一样的文件不算这张卡带来的改动（中途补的测试先进了项目、再搬进副本，68b ㉔）
     differs = set(_names(worktree, "diff", "--name-only", base, "HEAD"))
     changed = [name for name in changed if name in differs]
     allowed, tester = _scope(cdir)
-    stray = [name for name in changed if not _keep(name, allowed, tester)]
+    stray = [name for name in changed if name not in archive_files and not _keep(name, allowed, tester)]
     if stray:
         raise _Stop("这张卡的提交里有不该进项目的文件：" + "、".join(stray) + "。这次没有放进项目。")
     marked = [name for name in changed if has_conflict_marks(worktree / name)]
     if marked:
         raise _Stop("这些文件还有没解决的冲突：" + "、".join(marked) + "。点“不满意，继续改”让开发员处理。")
+    return {"archive_dir": archive_dir, "omitted": omitted}
 
 
 def _check_overlap(project: Path, card_id: str) -> None:
-    names = _git(project, "diff", "--name-only", f"HEAD...card/{card_id}", check=False).stdout.splitlines()
+    names = _names(project, "diff", "--name-only", f"HEAD...card/{card_id}")
     dirty = set(_changed_list(project))
     overlap = [name for name in names if name in dirty]
     if overlap:
@@ -265,7 +284,7 @@ def _check_overlap(project: Path, card_id: str) -> None:
 
 
 def _fast_forward(project: Path, worktree: Path, cdir: Path, card_id: str, base: str, branch: str,
-                  command: str) -> None:
+                  command: str, details=None) -> None:
     card_ref = f"card/{card_id}"
     behind = _git(project, "merge-base", "--is-ancestor", base, card_ref, check=False).returncode != 0
     if behind:
@@ -281,7 +300,7 @@ def _fast_forward(project: Path, worktree: Path, cdir: Path, card_id: str, base:
         if verdict.result != PASS:
             raise _Stop("同步项目新内容后测试没过，先不放进项目", verdict.output or "")
     tip = _git(project, "rev-parse", card_ref).stdout.strip()
-    _save_progress(cdir, base, branch, tip)
+    _save_progress(cdir, base, branch, tip, details)
     fast = _git(project, "merge", "--ff-only", card_ref, check=False)
     if fast.returncode != 0:
         _clear_progress(cdir)
@@ -425,9 +444,9 @@ def _merge(project: Path, card_id: str) -> None:
             raise _Stop(f"这张卡同步的是 {synced} 分支的内容，现在项目在 {branch} 分支。先切回 {synced} 再放进项目，"
                         "不然那个分支的提交会一起进来。")
         base = _git(project, "rev-parse", "HEAD").stdout.strip()
-        _commit_work(project, worktree, cdir, card_id, base)
+        details = _commit_work(project, worktree, cdir, card_id, base)
         _check_overlap(project, card_id)
-        _fast_forward(project, worktree, cdir, card_id, base, branch, command)
+        _fast_forward(project, worktree, cdir, card_id, base, branch, command, details)
 
     verdict = _run_tests(command, project)
     if verdict.result != PASS:
@@ -435,15 +454,22 @@ def _merge(project: Path, card_id: str) -> None:
 
     card.transition("已合并")
     card.save(state_path)
+    details = _load_progress(cdir) or {}
     _clear_progress(cdir)
     render_board(project / ".collab")
+    archive_dir = details.get("archive_dir")
+    if archive_dir:
+        summary = f"记录已存入项目文档 {archive_dir}"
+        record(cdir, "归档", src="程序", dst="你", summary=summary)
+        ledger_add(project, f"{card_id}：{summary}")
+    omitted = details.get("omitted") or []
+    if omitted:
+        shown = "、".join(omitted[:5]) + ("等" if len(omitted) > 5 else "")
+        record(cdir, "提醒", src="程序", dst="你",
+               summary=f"副本里有 {len(omitted)} 个文件没带进项目：{shown}", text="\n".join(omitted))
     summary = f"已放进 {branch}"
     record(cdir, "合并", src="程序", dst="你", summary=summary)
     ledger_add(project, f"{card_id}：{summary}")
-    try:
-        archive_card(project, card_id, _title(cdir, card_id))
-    except Exception as exc:
-        _note(cdir, "记录没能存入项目文档", str(exc))
     remove_copy(project, card_id)
 
 

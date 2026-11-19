@@ -82,7 +82,9 @@ class HappyPath(MergeCase):
         (self.worktree / "tests" / "test_new.py").write_text("# 测试", encoding="utf-8")
         (cdir / "测试文件.json").write_text(json.dumps(["tests/test_new.py"]), encoding="utf-8")
         self.assertTrue(self.merge()["ok"])
-        names = self.out("show", "--name-only", "--format=", "HEAD").splitlines()
+        names = self.out("-c", "core.quotepath=off", "show", "--name-only", "--format=", "HEAD").splitlines()
+        # C2：卡片记录和代码进同一次提交，记录文件夹不算“范围外”
+        names = [n for n in names if not n.startswith("docs/改按钮/")]
         self.assertEqual(sorted(names), ["src/app.py", "tests/test_new.py"])
 
     def test_project_without_git_identity_can_still_merge(self):

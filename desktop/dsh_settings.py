@@ -139,7 +139,7 @@ def block_rows(home) -> list:
     return rows
 
 
-_TOOL_NAMES = {"codex": "Codex", "cursor": "Cursor", "agy": "agy", "qwen": "千问"}
+_TOOL_NAMES = {"codex": "Codex", "cursor": "Cursor", "agy": "agy", "qwen": "千问", "tencent": "腾讯云"}
 _PICK_ROLES = ("tester", "developer", "reviewer")
 
 

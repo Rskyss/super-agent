@@ -33,7 +33,7 @@ if str(ROOT) not in sys.path:  # 直接用 python3 desktop/server.py 启动时�
 
 from collab.check import DEFAULT_TIMEOUT as CHECK_TIMEOUT, check_team, version_changes  # noqa: E402
 from collab.cli import cmd_approve, cmd_confirm_profile  # noqa: E402
-from collab.dispatch import uncommitted_count  # noqa: E402
+from collab.dispatch import save_paths  # noqa: E402
 from collab.config import (  # noqa: E402
     DEFAULT_MODELS,
     DEFAULT_TEAM,
@@ -50,9 +50,10 @@ from collab.config import (  # noqa: E402
     clean_models,
     save_team,
 )
-from collab.flow import read_flow, record as flow_record  # noqa: E402
+from collab.flow import card_title, read_flow, record as flow_record  # noqa: E402
 from collab.ledger import ledger_add  # noqa: E402
-from collab.merge import merge_unfinished, remove_copy, undo_interrupted  # noqa: E402
+from collab.merge import (_Stop, _git, _identity_args, merge_unfinished, remove_copy,
+                          undo_interrupted)  # noqa: E402
 from collab.phase import card_phase  # noqa: E402
 from collab.scope import read_allowed  # noqa: E402
 from collab.state import Card, InvalidTransition  # noqa: E402
@@ -86,7 +87,7 @@ from desktop.shell_path import adopt_terminal_path, merged_path, terminal_path  
 from desktop.view import card_view, event_text, list_cards, set_archived  # noqa: E402
 
 _TOOLS = [{"value": "codex", "label": "Codex"}, {"value": "cursor", "label": "Cursor"}, {"value": "agy", "label": "agy"}]
-_WORKER_TOOLS = _TOOLS + [{"value": "qwen", "label": "千问"}]  # 千问（临时，用户 11-13）
+_WORKER_TOOLS = _TOOLS + [{"value": "qwen", "label": "千问"}, {"value": "tencent", "label": "腾讯云"}]  # 千问（临时，用户 11-13）
 _TEAM_OPTIONS = {"worker": _WORKER_TOOLS,
                  "reviewer": _WORKER_TOOLS + [{"value": "none", "label": "不复查"}]}
 
@@ -108,6 +109,35 @@ def _blocks_connected(result: dict) -> bool:
 # 和 Mac 窗口 BlocksWindow.isValidAccount 一样；tavily 和 cli:编号:名字 是沙盒接入 64 号单加的
 _SAVED_ACCOUNT = re.compile(r"tencent|bailian|other:[a-z0-9.-]{1,253}|tavily|cli:[a-z0-9][a-z0-9-]{0,39}:[A-Z][A-Z0-9_]{1,63}")
 _TERMINAL_TTL = 60       # 终端路径一分钟内只读一次
+
+
+def _staged_entries(project, paths) -> tuple:
+    """保存前记下这些文件在暂存区里的样子（第 4 轮复查：保存失败要原样还回去）。
+
+    暂存的删除在 ls-files 里没有条目，单独记一份，不然失败后会退回上次提交的样子。
+    按字节读：文本模式会把文件名里的回车换成换行，还原时就对不上原来的文件了。
+    """
+    proc = _git(project, "-c", "core.quotepath=off", "ls-files", "-s", "-z", "--", *paths, text=False)
+    entries = []
+    for item in proc.stdout.decode("utf-8", "surrogateescape").split("\0"):
+        meta, _, name = item.partition("\t")
+        parts = meta.split()
+        if name and len(parts) == 3 and parts[2] == "0":
+            entries.append((parts[0], parts[1], name))
+    gone = _git(project, "-c", "core.quotepath=off", "diff", "--cached", "--name-only", "--no-renames",
+                "--diff-filter=D", "-z", "--", *paths, text=False)
+    deleted = sorted({name for name in gone.stdout.decode("utf-8", "surrogateescape").split("\0") if name})
+    return entries, deleted
+
+
+def _restore_index(project, paths, staged) -> None:
+    """把暂存区退回保存前的样子：先撤掉这次暂存，再放回用户原先特意暂存的版本和删除。"""
+    entries, deleted = staged
+    _git(project, "reset", "-q", "--", *paths, check=False)
+    for mode, sha, name in entries:
+        _git(project, "update-index", "--add", "--cacheinfo", f"{mode},{sha},{name}", check=False)
+    for name in deleted:
+        _git(project, "update-index", "--force-remove", "--", name, check=False)
 
 
 def end_drafting(project: str, card_id: str, cdir: Path = None) -> bool:
@@ -216,26 +246,20 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"ok": True, **({"message": note} if isinstance(note, str) and note else {})})
             return
 
-        if action not in actions:
-            self._card_action_error("现在不能做这个操作，请先看我说的阶段。")
-            return
-
         if action == "accept_issues":
-            # 用户接受复查剩下的问题（流程修理 ㉒）：卡片进入待确认，照常点“确认没问题，放进项目”才放进去
-            # 留档存复查员原话（全部问题，不是截短的摘要，也不是只列大白话的那几条）
-            issues = phase.get("issues_raw") or phase.get("issues") or phase.get("detail") or ""
-            try:
-                card.transition("待验收")
-            except InvalidTransition:
+            if action not in actions:
                 self._card_action_error("这张卡现在不能这样做。")
                 return
-            card.save(state_path)
-            flow_record(cdir, "接受", src="你", dst="程序", summary="接受剩下的问题，进入待确认", text=issues)
-            flow_record(cdir, "结束", src="程序", dst="你", state="待验收",
-                        summary="你接受了复查剩下的问题，等你确认放进项目")
-            render_board(Path(project) / ".collab")
-            ledger_add(project, f"{card_id}：接受复查剩下的问题，进入待确认")
+            try:
+                launch(project, "accept", card_id, ["accept-issues", project, card_id])
+            except (TaskBusy, OSError):
+                self._card_action_error("正在跑全部测试，等它结束再试")
+                return
             self._json({"ok": True})
+            return
+
+        if action not in actions:
+            self._card_action_error("现在不能做这个操作，请先看我说的阶段。")
             return
 
         if action == "discard":
@@ -1666,7 +1690,12 @@ class Handler(BaseHTTPRequestHandler):
             if not project:
                 self._json({"error": "需要项目"}, 400)
                 return
-            self._json({"count": uncommitted_count(project)})
+            card_id = query.get("card", "")
+            if card_id and not _CARD_ID.fullmatch(card_id):
+                self._json({"error": "卡片编号不对"}, 400)
+                return
+            files = save_paths(project, card_id)[0]
+            self._json({"count": len(files), "files": files})
         else:
             self._json({"error": "没有这个地址"}, 404)
 
@@ -1682,6 +1711,49 @@ class Handler(BaseHTTPRequestHandler):
     def _clerk_post(self, path: str, body: dict) -> None:
         """窗口把行政人员的密钥交给本机服务：只放内存，不写文件，也不回传。"""
         desk, project, conversation = self.server.desk, str(body.get("project") or ""), str(body.get("conversation") or "")
+        if path == "/api/clerk/save_pending":
+            card_id = str(body.get("card") or "").strip()
+            if not project or not Path(project).is_dir():
+                self._json({"error": "项目文件夹不存在"}, 400)
+                return
+            if not _CARD_ID.fullmatch(card_id):
+                self._json({"error": "卡片编号不对"}, 400)
+                return
+            if running(project, "merge") is not None or merge_unfinished(project):
+                # 另一张卡放进项目还在验收：这时多一个提交，验收失败就退不回去了（C2 复查第 3 轮）
+                self._json({"ok": False, "reason": "另一张卡还在放进项目，等它结束再存"}, 409)
+                return
+            try:
+                unmerged = _git(project, "ls-files", "-u", check=False).stdout.strip()
+            except OSError:
+                unmerged = ""
+            if unmerged:
+                self._json({"ok": False, "reason": "项目里有没解决的冲突，先处理完冲突再开工"}, 409)
+                return
+            files, renamed = save_paths(project, card_id)
+            if not files:
+                self._json({"ok": True, "saved": 0})
+                return
+            cdir = Path(project) / ".collab" / "cards" / card_id
+            title = card_title(cdir, card_id)
+            paths = files + renamed
+            staged = None
+            try:
+                staged = _staged_entries(project, paths)
+                _git(project, "add", "-A", "--", *files)
+                _git(project, *_identity_args(Path(project)), "commit", "-qm",
+                     f"开工前先存：{card_id} {title}", "--only", "--", *paths)
+            except (OSError, _Stop) as exc:
+                reason = (exc.detail or exc.reason) if isinstance(exc, _Stop) else str(exc)
+                if staged is not None:  # 还没看清暂存区就先别动它
+                    try:
+                        _restore_index(project, paths, staged)
+                    except (OSError, _Stop):
+                        pass
+                self._json({"ok": False, "reason": "没存成：" + reason[:200]}, 409)
+                return
+            self._json({"ok": True, "saved": len(files)})
+            return
         if blocks_tools.is_blocks_home(project):
             Path(project).mkdir(parents=True, exist_ok=True)
             if path == "/api/clerk/send":  # 积木库的行政有自己的连接，不受项目窗口“属于另一个项目”的限制

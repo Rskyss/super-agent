@@ -9,6 +9,7 @@ import unittest
 from pathlib import Path
 
 from collab.agents import QuietTimeout, watched_runner
+from review_fmt import listed_ask  # C1.5：老测试的随手复查意见补上固定清单（tests/review_fmt.py）
 
 TALKER = "import time,sys\nfor i in range(30):\n    print('思考中', i, flush=True)\n    time.sleep(0.1)\n"
 SILENT = "import time\ntime.sleep(3)\n"
@@ -73,7 +74,7 @@ class ReminderReachesRecords(unittest.TestCase):
                 if "编写自动化测试" not in prompt and "只读复查" not in prompt and on_quiet:
                     on_quiet(300)
                 return AgentResult(ok=True, output="", attempts=1, final="结论：通过" if "只读复查" in prompt else "好了")
-            run_card(Card("CARD-001", state="待派发"), root / ".collab", wt, "true", "cursor", "codex", ask_fn=ask_fn,
+            run_card(Card("CARD-001", state="待派发"), root / ".collab", wt, "true", "cursor", "codex", ask_fn=listed_ask(ask_fn),
                      judge_fn=lambda *a, **k: Verdict(PASS, 0, "ok"), reviewer_adapter="codex")
             tips = [e for e in read_flow(cdir) if e.get("kind") == "提醒"]
             self.assertEqual(len(tips), 1)

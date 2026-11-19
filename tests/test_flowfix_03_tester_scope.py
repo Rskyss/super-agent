@@ -15,6 +15,7 @@ from collab.flow import read_flow, record
 from collab.judge import PASS, Verdict
 from collab.state import Card
 from collab.tasks import revise_card
+from review_fmt import listed_ask  # C1.5：老测试的随手复查意见补上固定清单（tests/review_fmt.py）
 
 CMD = ["/bin/bash", "-o", "pipefail", "-c", "python3 -m unittest tests.test_x"]
 
@@ -69,7 +70,7 @@ class Base(unittest.TestCase):
                 dev(Path(cwd))
             return AgentResult(ok=True, output="", attempts=1, final="汇报：改了")
         card = card or Card("CARD-001", state="待派发")
-        return run_card(card, self.collab, self.wt, CMD, "cursor", "codex", ask_fn=ask_fn,
+        return run_card(card, self.collab, self.wt, CMD, "cursor", "codex", ask_fn=listed_ask(ask_fn),
                         judge_fn=lambda *a, **k: Verdict(PASS, 0, "ok"), reviewer_adapter="codex",
                         require_tests=True)[0]
 

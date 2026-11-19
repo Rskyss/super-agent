@@ -10,6 +10,7 @@ PASS = "过"
 FAIL = "没过"
 ENV_ERROR = "环境错误"
 TIMEOUT = "超时"
+STALE = "作废"
 
 _OUTPUT_LIMIT = 4000
 

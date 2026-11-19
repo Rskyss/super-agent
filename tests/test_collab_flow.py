@@ -13,6 +13,7 @@ from collab.flow import read_flow, record, text_of, working_now
 from collab.judge import FAIL, PASS, Verdict
 from collab.state import Card
 from collab.workspace import init_collab
+from review_fmt import listed_ask  # C1.5：老测试的随手复查意见补上固定清单（tests/review_fmt.py）
 
 
 class RecordTest(unittest.TestCase):
@@ -29,7 +30,7 @@ class RecordTest(unittest.TestCase):
         events = read_flow(self.cdir)
         self.assertEqual([e["seq"] for e in events], [1, 2])
         self.assertEqual([e["kind"] for e in events], ["需求", "批准"])
-        self.assertIn("time", events[0])
+        self.assertIn("ts", events[0])   # 11-19 用户定只记运行时间：秒数 ts，不记钟点
 
     def test_full_text_is_saved_beside_the_record(self):
         ev = record(self.cdir, "派活", src="调度员", dst="测试员", summary="写测试", text="完整的派活原文")
@@ -94,7 +95,7 @@ class DispatchFlowTest(unittest.TestCase):
     def _run(self, script, **extra):
         card = Card("CARD-001", state="待派发")
         run_card(card, collab_dir=self.collab, worktree=self.tmp.name, test_command=["t"],
-                 dev_adapter="cursor", test_adapter="codex", ask_fn=script.ask,
+                 dev_adapter="cursor", test_adapter="codex", ask_fn=listed_ask(script.ask),
                  judge_fn=script.judge, **extra)
         return card
 
@@ -169,7 +170,7 @@ class DispatchFlowTest(unittest.TestCase):
             return AgentResult(ok=False, output="看门人：超过 15 分钟没有任何文件变化，已停止", attempts=1)
         card = Card("CARD-001", state="待派发")
         run_card(card, collab_dir=self.collab, worktree=self.tmp.name, test_command=["t"],
-                 dev_adapter="cursor", test_adapter="codex", ask_fn=ask, judge_fn=None)
+                 dev_adapter="cursor", test_adapter="codex", ask_fn=listed_ask(ask), judge_fn=None)
         events = read_flow(self.cdir)
         self.assertEqual([e["kind"] for e in events], ["派活", "回复", "转人工"])
         self.assertFalse(events[1]["ok"])
@@ -177,7 +178,7 @@ class DispatchFlowTest(unittest.TestCase):
 
     def test_review_rejection_is_escalated_with_reason(self):
         # 流程修理（11-12）：复查不通过先自动退回写代码的 2 次，第 3 次还不通过才停下
-        script = _Script(self.cdir, [PASS, PASS, PASS], outputs={"agy": "结论：不通过\n改错了地方"})
+        script = _Script(self.cdir, [PASS, PASS, PASS], outputs={"agy": "结论：不通过\n【严重】改错了地方"})  # C1.6：不严重的退满会自动进待验收，这里测停下，问题改成严重的
         card = self._run(script, reviewer_adapter="agy")
         events = read_flow(self.cdir)
         self.assertEqual(events[-1]["kind"], "转人工")
@@ -207,7 +208,7 @@ class DispatchFlowTest(unittest.TestCase):
 
         card = Card("CARD-001", state="开发中")
         card, _ = run_card(card, collab_dir=self.collab, worktree=self.tmp.name, test_command=["t"],
-                           dev_adapter="cursor", test_adapter="codex", ask_fn=ask,
+                           dev_adapter="cursor", test_adapter="codex", ask_fn=listed_ask(ask),
                            judge_fn=lambda cmd, **kw: Verdict(PASS, 0, "ok"))
         self.assertEqual(called_roles, ["cursor"])  # 没再叫 codex 写测试
         self.assertEqual(card.state, "待验收")

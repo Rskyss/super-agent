@@ -129,7 +129,16 @@ class ViewTest(unittest.TestCase):
         view = card_view(self.project)
         self.assertEqual(view["now"]["tone"], "bad")
         self.assertIn("复查不通过", view["now"]["text"])
+        # 11-18 用户定：开工后才停下的，停下原因只在顶部说，不挂在“写方案”那步（原断言 fail，按新口径改，登记见台账）
+        self.assertEqual(_station(view, "disp")["state"], "done")
+        self.assertNotIn("复查不通过", _station(view, "disp")["detail"])
+
+    def test_stop_during_planning_still_marks_the_plan_step(self):
+        cdir = self._card(state="需Claude介入")
+        record(cdir, "转人工", src="程序", dst="调度员", summary="写方案没写出来")
+        view = card_view(self.project)
         self.assertEqual(_station(view, "disp")["state"], "fail")
+        self.assertIn("写方案没写出来", _station(view, "disp")["detail"])
 
     def test_waiting_for_plan_approval(self):
         cdir = self._card(state="待对齐")

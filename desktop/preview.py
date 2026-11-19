@@ -16,6 +16,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any, Dict, Optional
+from urllib.parse import quote
 
 from collab.phase import card_phase, process_is_alive, process_start
 from collab.planner import is_local_url
@@ -40,6 +41,17 @@ def _reachable(url: str) -> bool:
         return True  # 有回应就算起来了
     except Exception:
         return False
+
+
+def _response_status(url: str):
+    """启动后区分找不到页面和暂时连不上；中文路由先转成 HTTP 能发送的地址。"""
+    try:
+        with _NO_PROXY.open(quote(url, safe=":/?&=%#+@[]!$'()*;,"), timeout=1) as response:
+            return response.status
+    except urllib.error.HTTPError as exc:
+        return exc.code
+    except Exception:
+        return None
 
 
 def _ignored_in_project(project: Path, rel: str) -> bool:
@@ -278,7 +290,10 @@ class PreviewHub:
                 return dict(folder, ok=False, reason="这次预览已经取消了。")
             if proc.poll() is not None and not _group_alive(proc.pid):
                 return self._give_up(mine, folder, "预览程序提前退出了，改好的版本没打开。")
-            if proc.poll() is None and _reachable(url):
+            status = _response_status(url) if proc.poll() is None else None
+            if status in (404, 410):
+                return self._give_up(mine, folder, "预览地址打不开（找不到这个页面），可以点“打开文件夹”自己看。")
+            if status is not None:
                 with self._lock:
                     if self._gen != mine:
                         return dict(folder, ok=False, reason="这次预览已经取消了。")

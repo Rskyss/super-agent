@@ -180,11 +180,19 @@ class _Stopped(Exception):
     """用户点了停止：这一轮后面到的内容都不要了。"""
 
 
+def _valid_tokens(value) -> bool:
+    """只认大于零的整数用量（布尔、小数、字符串、零和负数都不算）。"""
+    return type(value) is int and value > 0
+
+
 class _Conversation:
     def __init__(self, project: str, cid: str):
         self.project, self.id = project, cid
         self.events, self.messages, self.partial = [], [], []
         self.cond = threading.Condition()
+        self.usage = None              # 这段对话累计用了多少 token；一次都没拿到用量时是 None，不显示
+        self.usage_lock = threading.Lock()
+        self.tail_dirty = False        # 上次写坏了半行、连换行都没补上：下一次写先补一个换行
         self.busy = False
         self.turn = 0
         self.deleted = False   # 删掉后，还在路上的回答和标题都不再写
@@ -254,10 +262,17 @@ class ClerkDesk:
     def _last_item(path: Path) -> str:
         try:
             raws = [r for r in path.read_bytes().splitlines() if r.strip()]
-            last = json.loads(raws[-1]) if raws else {}
-        except (OSError, ValueError):
+        except OSError:
             return ""
-        return str(last.get("item") or "") if isinstance(last, dict) and last.get("role") == "assistant" else ""
+        for raw in reversed(raws):   # 从后往前找，末尾的用量行和写坏的半行都不算“最后一条”
+            try:
+                last = json.loads(raw)
+            except ValueError:
+                continue
+            if not isinstance(last, dict) or last.get("role") == "usage":
+                continue   # 不是一条记录（null、数字）或是用量行：跳过
+            return str(last.get("item") or "") if isinstance(last, dict) and last.get("role") == "assistant" else ""
+        return ""
 
     @staticmethod
     def _read_lines(path: Path) -> list:
@@ -281,6 +296,10 @@ class ClerkDesk:
                 continue
             if role == "action" and isinstance(saved.get("label"), str) and isinstance(saved.get("text"), str):
                 lines.append(("action", {"label": saved["label"], "text": saved["text"]}))
+                continue
+            if role == "usage":
+                if _valid_tokens(saved.get("total")):
+                    lines.append(("usage", saved["total"]))
                 continue
             text = saved.get("text")
             if role in ("user", "assistant", "notice") and isinstance(text, str):
@@ -307,20 +326,58 @@ class ClerkDesk:
         if item:
             entry["item"] = item
         line = json.dumps(entry, ensure_ascii=False)
-        with self._write_lock, (folder / f"{conv.id}.jsonl").open("a", encoding="utf-8") as handle:
-            handle.write(line + "\n")
+        with self._write_lock:
+            with (folder / f"{conv.id}.jsonl").open("a", encoding="utf-8") as handle:
+                handle.write(("\n" if conv.tail_dirty else "") + line + "\n")   # 尾巴是写坏的半行就先另起一行
+            conv.tail_dirty = False   # 文件关好（真写进去）以后才清标记（确认复查：关文件时才失败的话标记得留着）
         if role != "notice":  # 提醒只给用户看，不进模型的对话
             conv.messages.append({"role": role, "content": text})
         self._save_index(conv.project, conv.id, updated=time.time())
 
     def _record_line(self, conv: _Conversation, line: dict) -> None:
-        """手册、动作这类只留给自己和用户看的行：不进模型的对话，不改“最近更新”。"""
-        if conv.deleted:
-            return
+        """手册、动作这类只留给自己和用户看的行：不进模型的对话，不改“最近更新”。
+        “删了没”在写锁里查：删对话也拿这把锁，删完后台迟到的一行（比如起标题的用量）不会把文件写回来。"""
         folder = self._folder(conv.project)
-        folder.mkdir(parents=True, exist_ok=True)
-        with self._write_lock, (folder / f"{conv.id}.jsonl").open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(dict(line, time=time.time()), ensure_ascii=False) + "\n")
+        with self._write_lock:
+            if conv.deleted:
+                return
+            folder.mkdir(parents=True, exist_ok=True)
+            path = folder / f"{conv.id}.jsonl"
+            try:
+                with path.open("a", encoding="utf-8") as handle:
+                    handle.write(("\n" if conv.tail_dirty else "") + json.dumps(dict(line, time=time.time()),
+                                                                                ensure_ascii=False) + "\n")
+                conv.tail_dirty = False
+            except OSError:
+                # 写了半行就出错：趁还拿着锁立刻补一个换行，别让下一条记录粘到半行上（半行读的时候会被跳过）；
+                # 连换行也补不上（磁盘一直写不进），就记下来，下一次写先补
+                try:
+                    with path.open("a", encoding="utf-8") as handle:
+                        handle.write("\n")
+                    conv.tail_dirty = False
+                except OSError:
+                    conv.tail_dirty = True
+                raise
+
+    def _add_usage(self, conv: _Conversation, tokens) -> None:
+        """模型这一次用了多少 token 加到这段对话上：先加、再记一行累计数、再告诉页面。
+        每行记的是累计数，某一行没写成，下一行照样把总数补齐。写失败只重试一次，不提醒、不改别的记录
+        （提醒插进一段回答中间会让页面把回答显示两遍；已知不足：磁盘一直写不进时，重开后可能少算最后几次）。"""
+        if not _valid_tokens(tokens):
+            return
+        with conv.usage_lock:
+            if conv.deleted:
+                return
+            conv.usage = (conv.usage or 0) + tokens
+            total = conv.usage
+            for _ in range(2):   # 写失败重试一次（写坏的半行由写一行那里当场补换行）
+                try:
+                    self._record_line(conv, {"role": "usage", "total": total})
+                    break
+                except OSError:
+                    pass
+            if not conv.deleted:
+                conv.emit({"type": "usage", "total": total})
 
     def _open_manual(self, conv: _Conversation, name: str) -> None:
         if name in conv.manuals:
@@ -345,7 +402,11 @@ class ClerkDesk:
         conv = _Conversation(str(project), cid)
         last_item = self._last_item(path)
         loaded = self._read_lines(path)
+        last_at = max((i for i, (r, _) in enumerate(loaded) if r != "usage"), default=-1)   # 用量行不算“最后一条”
         for at, (role, payload) in enumerate(loaded):
+            if role == "usage":
+                conv.usage = payload   # 每行是累计数，最后一行为准；不进模型的对话、不当消息显示
+                continue
             if role == "proposal":
                 data = clerk_tasks.load_proposal(project, payload)
                 if data:
@@ -366,8 +427,10 @@ class ClerkDesk:
             conv.messages.append({"role": role, "content": payload})
             kind = "user" if role == "user" else "message"
             # 最后一条是行政的提醒时留着它原来的编号，重开后再来的提醒还能改写它（复查 A 第 4 条）
-            item = last_item if (last_item and at == len(loaded) - 1 and role == "assistant") else f"h{len(conv.events)}"
+            item = last_item if (last_item and at == last_at and role == "assistant") else f"h{len(conv.events)}"
             conv.emit({"type": kind, "text": payload, "item": item, "history": True})
+        if conv.usage is not None:
+            conv.emit({"type": "usage", "total": conv.usage, "history": True})
         with self._lock:
             if not create and not path.exists():  # 读的时候被删了：不能放回内存，否则之后的通知会把文件写回来
                 return None
@@ -425,12 +488,13 @@ class ClerkDesk:
             conv = self._open.get(key)
             if conv is not None and conv.busy:
                 raise RuntimeError("这段对话还在回复，等说完或先点停止再删")
-            try:
-                path.unlink()
-            except OSError as exc:
-                raise RuntimeError("没能删掉这段对话，请检查文件夹权限。") from exc
-            if conv is not None:
-                conv.deleted = True
+            with self._write_lock:   # 和写用量同一把锁：删完不会被后台起标题的那一笔用量写回来
+                try:
+                    path.unlink()
+                except OSError as exc:
+                    raise RuntimeError("没能删掉这段对话，请检查文件夹权限。") from exc
+                if conv is not None:
+                    conv.deleted = True
             self._open.pop(key, None)
             if self._focus.get(str(project)) == cid:
                 self._focus[str(project)] = None
@@ -743,6 +807,7 @@ class ClerkDesk:
                     merged = prior if not extra else f"{prior}\n{extra}"
                     raise ModelError(str(exc), partial=merged) from exc
                 raise
+            self._add_usage(conv, answer.get("tokens"))
             reply = self._no_markup(conv, answer.get("text") or "")
             if reply.strip():
                 parts.append(reply.strip())
@@ -915,23 +980,31 @@ class ClerkDesk:
             return self._rewrite_last_locked(conv, path, item, text)
 
     def _rewrite_last_locked(self, conv: _Conversation, path: Path, item: str, text: str) -> bool:
-        try:
-            lines = path.read_text(encoding="utf-8").splitlines()
+        try:   # 坏字节原样读进来、原样写回，不因为某一行坏了就改不了提醒
+            # 只按 \n 切：消息正文里的 U+2028 之类不是换行，按 splitlines 切会把一条消息拆坏（原有毛病，复查第 3 轮）
+            lines = path.read_text(encoding="utf-8", errors="surrogateescape").split("\n")
         except OSError:
             return False
         while lines and not lines[-1].strip():
             lines.pop()
-        if not lines:
+        at = len(lines) - 1
+        while at >= 0:   # 末尾的用量行、空行、写坏的半行都跳过，找最后一条真正的记录
+            try:
+                bad = any("\udc80" <= ch <= "\udcff" for ch in lines[at])   # 带坏字节：和读历史时一样算坏行
+                row = None if bad else (json.loads(lines[at]) if lines[at].strip() else {"role": "usage"})
+            except ValueError:
+                row = None
+            if isinstance(row, dict) and row.get("role") != "usage":
+                break
+            at -= 1
+        if at < 0:
             return False
-        try:
-            last = json.loads(lines[-1])
-        except ValueError:
-            return False
-        if last.get("item") != item:
+        last = row
+        if not isinstance(last, dict) or last.get("item") != item:
             return False
         last["text"] = text
-        lines[-1] = json.dumps(last, ensure_ascii=False)
-        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        lines[at] = json.dumps(last, ensure_ascii=False)
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8", errors="surrogateescape")
         for m in reversed(conv.messages):
             if m.get("role") == "assistant":
                 m["content"] = text
@@ -978,9 +1051,11 @@ class ClerkDesk:
         """起名失败不要紧，标题先用用户的第一句话。"""
         words = NAMING.format(user=conv.messages[0]["content"][:300], reply=reply[:300])
         try:
-            title = client.chat([{"role": "user", "content": words}])["text"].strip().strip("《》\"'“”")
+            answer = client.chat([{"role": "user", "content": words}])
         except ModelError:
             return
+        self._add_usage(conv, answer.get("tokens"))
+        title = str(answer.get("text") or "").strip().strip("《》\"'“”")
         if title:
             if not conv.deleted:
                 self._save_index(conv.project, conv.id, title=self._short(title))

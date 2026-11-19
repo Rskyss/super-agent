@@ -11,6 +11,7 @@ from collab.dispatch import MAX_REVIEW_RETURNS, run_card
 from collab.flow import read_flow
 from collab.judge import PASS, Verdict
 from collab.state import Card
+from review_fmt import listed_ask  # C1.5：老测试的随手复查意见补上固定清单（tests/review_fmt.py）
 
 
 class ReviewReturn(unittest.TestCase):
@@ -41,7 +42,7 @@ class ReviewReturn(unittest.TestCase):
             return AgentResult(ok=True, output="改了", attempts=1, final="汇报：改了")
 
         card = Card("CARD-001", state="待派发")
-        card, _ = run_card(card, self.collab, self.worktree, "true", "cursor", "codex", ask_fn=ask_fn,
+        card, _ = run_card(card, self.collab, self.worktree, "true", "cursor", "codex", ask_fn=listed_ask(ask_fn),
                            judge_fn=lambda *a, **k: Verdict(PASS, 0, "ok"), reviewer_adapter="codex")
         return card, calls
 
@@ -52,14 +53,16 @@ class ReviewReturn(unittest.TestCase):
         card, calls = self._run(["结论：不通过\n1. 按钮还是红的", "结论：通过"])
         self.assertEqual(card.state, "待验收")
         self.assertEqual(len(calls["dev"]), 2)
-        self.assertIn("1. 按钮还是红的", calls["dev"][1])
+        # C1.5 起退回交代每条带清单的级别、来源标签（【中等】【这次改的】），仍要求第 1 条就是这个问题
+        self.assertRegex(calls["dev"][1], r"(?m)^1\. 【中等】【这次改的】按钮还是红的")
         self.assertEqual(card.rework, 0, "复查退回不算返工")
         kinds = [e.get("kind") for e in read_flow(self.cdir)]
         self.assertIn("退回", kinds, "流转里要看得见“自动退回”")
         self.assertNotIn("转人工", kinds)
 
     def test_three_rejects_stop_with_remaining_issues(self):
-        card, calls = self._run(["结论：不通过\n1. 甲"] * 2 + ["结论：不通过\n1. 还是有问题乙\n2. 丙"])
+        # C1.6 起只有严重的（或测试写错的）用完退回才停下，不严重的会自动进待验收：这里测“停下”，问题改成严重的
+        card, calls = self._run(["结论：不通过\n1. 【严重】甲"] * 2 + ["结论：不通过\n1. 【严重】还是有问题乙\n2. 丙"])
         self.assertEqual(card.state, "需Claude介入")
         self.assertEqual(len(calls["dev"]), 3, "第 1 次开发 + 退回 2 次")
         self.assertEqual(calls["review"], 3)
@@ -69,7 +72,7 @@ class ReviewReturn(unittest.TestCase):
 
     def test_revise_starts_count_again(self):
         from collab.flow import record
-        self._run(["结论：不通过\n1. 甲"] * 3)
+        self._run(["结论：不通过\n1. 【严重】甲"] * 3)   # C1.6：测“停下后追加要求重新数”，用严重问题才会停下
         record(self.cdir, "追加要求", src="你", dst="调度员", summary="再改改", text="再改改")
         card = Card("CARD-001", state="需Claude介入")
         card.transition("开发中")
@@ -77,10 +80,10 @@ class ReviewReturn(unittest.TestCase):
 
         def ask_fn(adapter, prompt, cwd, **kw):
             if "只读复查" in prompt:
-                return AgentResult(ok=True, output="", attempts=1, final="结论：不通过\n1. 丁")
+                return AgentResult(ok=True, output="", attempts=1, final="结论：不通过\n1. 【严重】丁")
             calls["dev"] += 1
             return AgentResult(ok=True, output="", attempts=1, final="汇报：改了")
-        card, _ = run_card(card, self.collab, self.worktree, "true", "cursor", "codex", ask_fn=ask_fn,
+        card, _ = run_card(card, self.collab, self.worktree, "true", "cursor", "codex", ask_fn=listed_ask(ask_fn),
                            judge_fn=lambda *a, **k: Verdict(PASS, 0, "ok"), reviewer_adapter="codex")
         self.assertEqual(card.state, "需Claude介入")
         self.assertGreaterEqual(calls["dev"], 3, "追加要求之后重新数，仍能自动退回 2 次")

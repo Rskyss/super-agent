@@ -13,6 +13,7 @@ from collab.config import load_role_models, models_for, run_models, save_role_mo
 from collab.dispatch import run_card
 from collab.judge import PASS, Verdict
 from collab.state import Card
+from review_fmt import listed_ask  # C1.5：老测试的随手复查意见补上固定清单（tests/review_fmt.py）
 
 TEAM = {"tester": "codex", "developer": "cursor", "reviewer": "codex"}
 
@@ -89,7 +90,7 @@ class Dispatch(Base):
         role_models = {"测试员": {"codex": "gpt-6.1-sol", "codex_effort": "high", "cursor": "auto", "agy": "x"},
                        "复查员": {"codex": "gpt-6.1-sol", "codex_effort": "xhigh", "cursor": "auto", "agy": "x"}}
         run_card(Card("CARD-001", state="待派发"), self.project / ".collab", wt, "true", "cursor", "codex",
-                 ask_fn=ask_fn, judge_fn=lambda *a, **k: Verdict(PASS, 0, "ok"), reviewer_adapter="codex",
+                 ask_fn=listed_ask(ask_fn), judge_fn=lambda *a, **k: Verdict(PASS, 0, "ok"), reviewer_adapter="codex",
                  models={"codex": "m", "codex_effort": "low", "cursor": "auto", "agy": "x"}, role_models=role_models)
         self.assertEqual(seen["测试员"], "high")
         self.assertEqual(seen["复查员"], "xhigh")

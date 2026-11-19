@@ -19,8 +19,8 @@ from pathlib import Path
 from collab.agents import ask, watched_runner
 from collab.config import load_models, load_role_models, load_team
 
-COMMANDS = {"codex": "codex", "cursor": "agent", "agy": "agy", "qwen": "codex"}   # Cursor 的命令行叫 agent；千问用 Codex 的壳
-TOOL_NAMES = {"codex": "Codex", "cursor": "Cursor", "agy": "agy", "qwen": "千问", "none": "不复查"}
+COMMANDS = {"codex": "codex", "cursor": "agent", "agy": "agy", "qwen": "codex", "tencent": "codex"}   # Cursor 的命令行叫 agent；千问用 Codex 的壳
+TOOL_NAMES = {"codex": "Codex", "cursor": "Cursor", "agy": "agy", "qwen": "千问", "tencent": "腾讯云", "none": "不复查"}
 ROLE_ORDER = ("tester", "developer", "reviewer")
 ROLE_NAMES = {"tester": "写测试", "developer": "写代码", "reviewer": "复查"}
 PROBE_FILE = "连通检测.txt"
@@ -79,6 +79,11 @@ def check_tool(tool: str, models: dict, timeout: float = DEFAULT_TIMEOUT) -> dic
             return {"ok": False, "status": "missing", "reason": "千问还没配密钥",
                     "how": f"把千问 Token Plan 的密钥放进本机文件 {QWEN_KEY_FILE}（只有自己能读），或让 Claude 帮你放",
                     "seconds": 0}
+    if tool == "tencent":  # 用行政那把腾讯云密钥
+        from collab.config import tencent_key
+        if not tencent_key():
+            return {"ok": False, "status": "missing", "reason": "腾讯云还没有密钥",
+                    "how": "腾讯云用的是行政那把密钥：先在行政设置里选腾讯云、填好密钥并保存", "seconds": 0}
     if shutil.which(cmd) is None:
         return {"ok": False, "status": "missing", "reason": f"没装：电脑上找不到 {cmd} 这个命令",
                 "how": f"先安装 {_name_of(tool)}，并在终端里运行一次 {cmd} 登录", "seconds": 0}

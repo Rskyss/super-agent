@@ -20,6 +20,7 @@ from collab.flow import read_flow
 from collab.judge import FAIL, PASS, Verdict
 from collab.state import Card
 from test_flowfix4_converge import Base
+from review_fmt import listed_ask  # C1.5：老测试的随手复查意见补上固定清单（tests/review_fmt.py）
 
 ROOT = Path(__file__).resolve().parents[1]
 OLD_ONLY = "结论：不通过\n1. 【中等】【原来就有的】切换对话时卡在正在取回。"
@@ -56,7 +57,7 @@ class Flow(Base):
 
         role = {"复查员": dict(models or {"codex": "gpt-6.1-sol", "codex_effort": "xhigh"})}
         card, _ = run_card(Card("CARD-001", state="待派发"), self.collab, self.worktree, "true", "qwen", "codex",
-                           ask_fn=ask_fn, judge_fn=judge or (lambda *a, **k: Verdict(PASS, 0, "ok")),
+                           ask_fn=listed_ask(ask_fn), judge_fn=judge or (lambda *a, **k: Verdict(PASS, 0, "ok")),
                            reviewer_adapter="codex", role_models=role)
         return card, calls
 

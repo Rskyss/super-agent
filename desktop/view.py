@@ -17,13 +17,13 @@ from collab.flow import card_title, read_flow, summarize, text_of, working_now
 from collab.phase import card_phase, process_is_alive
 from collab.judge import PASS
 from collab.state import Card
-from collab.token_usage import sum_tokens, usage_from_log
+from collab.token_usage import sum_tokens, usage_for
 
 QUIET_WARN_SECONDS = 10 * 60  # 超过 10 分钟没有任何动静，提示可能卡住
 TERMINAL_STATES = {"待验收", "已合并", "需Claude介入", "已放弃"}
 
-TOOL_NAMES = {"claude": "Claude", "codex": "Codex", "cursor": "Cursor", "agy": "agy", "qwen": "千问"}
-TOOL_FACES = {"claude": "Cl", "codex": "Cx", "cursor": "Cu", "agy": "ag", "qwen": "千"}
+TOOL_NAMES = {"claude": "Claude", "codex": "Codex", "cursor": "Cursor", "agy": "agy", "qwen": "千问", "tencent": "腾讯云"}
+TOOL_FACES = {"claude": "Cl", "codex": "Cx", "cursor": "Cu", "agy": "ag", "qwen": "千", "tencent": "腾"}
 DEFAULT_TOOLS = {"测试员": "codex", "开发员": "cursor", "复查员": "agy"}
 ROLE_KEYS = {"测试员": "test", "开发员": "dev", "复查员": "rev"}
 _VERBS = {"写测试": "正在写测试", "改测试": "正在改测试", "开发": "正在写代码", "复查": "正在复查"}
@@ -41,10 +41,22 @@ def _face(tool) -> str:
 
 
 def _when(event):
+    """记录的时刻，只用来相减算用了多久。新记录只有秒数 ts（跟时区无关）；老记录才有钟点 time。"""
+    ts = event.get("ts")
+    if isinstance(ts, (int, float)) and not isinstance(ts, bool):
+        return datetime.fromtimestamp(ts)
     try:
         return datetime.fromisoformat(event["time"])
     except (KeyError, ValueError, TypeError):
         return None
+
+
+def _since_start(seconds: float) -> str:
+    """开工后第几分钟：+12:34，超过一小时 +3:05:09。"""
+    total = max(0, int(seconds))
+    h, rest = divmod(total, 3600)
+    m, s = divmod(rest, 60)
+    return f"+{h}:{m:02d}:{s:02d}" if h else f"+{m}:{s:02d}"
 
 
 _title = card_title
@@ -244,11 +256,11 @@ def live_hint(path: Path, limit: int = 60, tool: str = "", test_command: str = "
     except OSError:
         return ""
     lines = [_ANSI.sub("", ln).strip() for ln in tail.splitlines()]
-    if tool not in ("codex", "qwen"):  # 千问用 Codex 的壳，输出和 Codex 一样
+    if tool not in ("codex", "qwen", "tencent"):  # 千问、腾讯云用 Codex 的壳，输出和 Codex 一样
         said = _stream_summary(lines, test_command)
         if said:
             return _cut(said, limit)
-    for i in range(len(lines) - 1 if tool in ("", "codex", "qwen") else -1, -1, -1):
+    for i in range(len(lines) - 1 if tool in ("", "codex", "qwen", "tencent") else -1, -1, -1):
         if lines[i] == "codex":
             for ln in lines[i + 1:]:
                 if ln:
@@ -316,11 +328,15 @@ def _tone(event) -> str:
 
 def _handoffs(events: list) -> list:
     out = []
+    # 从第一次开跑算起（开工前的对齐、等批准不算）；还没开跑过就从第一条算
+    opened = next((e for e in events if e.get("kind") == "开跑" and _when(e) is not None), None)
+    start = _when(opened) if opened else next((w for w in (_when(e) for e in events) if w is not None), None)
     for e in events:
         when = _when(e)
         tool = e.get("tool")
         out.append({
-            "seq": e.get("seq"), "kind": e.get("kind"), "time": when.strftime("%H:%M:%S") if when else "",
+            "seq": e.get("seq"), "kind": e.get("kind"),
+            "time": _since_start((when - start).total_seconds()) if when and start and when >= start else "",
             "from": _label(e.get("src", ""), tool if e.get("kind") == "回复" else None),
             "to": _label(e.get("dst", ""), tool if e.get("kind") == "派活" else None),
             "summary": e.get("summary", ""), "tone": _tone(e), "has_text": bool(e.get("text")),
@@ -399,11 +415,123 @@ def _token_num(value) -> int:
         return 0
 
 
-def _add_tokens(stations, events, cdir: Path) -> dict:
-    """把各站位的用量加起来，另算交接资料、其他回复和辅助会话；只加 tokens 字段，不改原有字段。"""
+def _dispatches_by_seq(events) -> dict:
+    return {e.get("seq"): e for e in events if e.get("kind") == "派活" and e.get("seq") is not None}
+
+
+def _reply_who(reply: dict, sent) -> str:
+    tool = reply.get("tool") or (sent.get("tool") if isinstance(sent, dict) else "") or ""
+    tool_label = _name(tool)
+    model = (sent.get("model") if isinstance(sent, dict) else "") or reply.get("model") or ""
+    if tool_label and model:
+        return f"{tool_label} · {model}"
+    return tool_label or str(model or "")
+
+
+_UNSET = object()
+_STOPPED_AFTER_KINDS = ("停下", "开跑", "转人工", "结束", "判定", "页面检查")
+
+
+def _normalize_saved_tokens(saved):
+    """把已记录的用量统一成标准结果；已经结束的轮次不再保留等待状态。"""
+    if not isinstance(saved, dict):
+        return None
+    if saved.get("ok"):
+        return saved
+    if "ok" not in saved and isinstance(saved.get("total"), (int, float)) and not isinstance(saved.get("total"), bool):
+        return dict(saved, ok=True)
+    if saved.get("pending"):
+        return {"ok": False, "reason": "这一轮已经结束，但没有读到结果用量"}
+    reason = str(saved.get("reason") or "").strip() or "这一步没有用量记录"
+    return {"ok": False, "reason": reason}
+
+
+def _saved_step_tokens(event: dict):
+    """取「方案」「交接资料」这类不走派活/回复配对的事件用量：缺字段时除明确不支持工具外都计为读不到。"""
+    saved = _normalize_saved_tokens(event.get("tokens"))
+    if saved is not None:
+        return saved
+    tool = event.get("tool")
+    if tool and usage_for(tool, output="") is None:
+        return None
+    return {"ok": False, "reason": "这一步没有用量记录"}
+
+
+def _active_dispatch_index(events, state=None, interrupted_run: bool = False):
+    """当前仍在运行且尚未回复的那一条派活的下标；已停下、中断或后继重开时返回 None。"""
+    if state is not None and (state not in ("开发中", "待测试", "测试中") or interrupted_run):
+        return None
     answered = {e.get("reply_to") for e in events if e.get("kind") == "回复"}
+    for idx in range(len(events) - 1, -1, -1):
+        ev = events[idx]
+        if ev.get("kind") != "派活":
+            continue
+        if ev.get("seq") in answered:
+            return None
+        for later in events[idx + 1:]:
+            kind = later.get("kind")
+            if kind in _STOPPED_AFTER_KINDS:
+                return None
+            if ev.get("dst") not in _STATION_ROLE.values() and kind == "起草" and later.get("phase") in ("好了", "没成"):
+                return None
+        return idx
+    return None
+
+
+def _live_dispatch_tokens(event: dict, cdir: Path, is_active: bool):
+    """读取未回复派活的实时用量；已经停下的旧派活不再保留等待状态。"""
+    try:
+        tokens = usage_for(event.get("tool"), live=Path(cdir) / str(event["live"]))
+    except Exception as exc:  # noqa: BLE001 — 读实时用量失败不挡流程
+        return {"ok": False, "reason": f"读实时用量时出问题（{exc}）"}
+    if tokens is None:
+        return None
+    if isinstance(tokens, dict) and tokens.get("pending") and not is_active:
+        return {"ok": False, "reason": "这一轮已经结束，实时输出里没有结果用量"}
+    return tokens
+
+
+def _resolve_reply_tokens(reply: dict, dispatches: dict, cdir: Path):
+    """取一条已回复轮次的用量：优先已记录字段，缺失时按 reply_to 找对应派活实时输出补算。"""
+    saved = _normalize_saved_tokens(reply.get("tokens"))
+    if saved is not None:
+        return saved
+    sent = dispatches.get(reply.get("reply_to"))
+    tool = reply.get("tool") or (sent.get("tool") if isinstance(sent, dict) else "") or ""
+    live = sent.get("live") if isinstance(sent, dict) else None
+    if live:
+        try:
+            got = usage_for(tool, live=Path(cdir) / str(live))
+        except Exception as exc:  # noqa: BLE001 — 补算失败不挡面板显示
+            return {"ok": False, "reason": f"读实时用量时出问题（{exc}）"}
+        if got is None:
+            return None
+        if got.get("pending"):
+            return {"ok": False, "reason": "这一轮已经结束，实时输出里没有结果用量"}
+        return got
+    probe = usage_for(tool, output="")
+    if probe is None:
+        return None
+    return {"ok": False, "reason": "这一步没有用量记录，也找不到实时输出"}
+
+
+def _add_tokens(stations, events, cdir: Path, resolved_replies=None, active_dispatch_idx=_UNSET) -> dict:
+    """把各站位的用量加起来，另算交接资料、其他回复和辅助会话；只加 tokens 字段，不改原有字段。"""
+    dispatches = _dispatches_by_seq(events)
+    answered = {e.get("reply_to") for e in events if e.get("kind") == "回复"}
+    active_idx = _active_dispatch_index(events) if active_dispatch_idx is _UNSET else active_dispatch_idx
     station_total = 0
     children = 0
+    card_missing = 0
+
+    def reply_tokens(e):
+        seq = e.get("seq")
+        if resolved_replies is not None and seq in resolved_replies:
+            return resolved_replies[seq]
+        tok = _resolve_reply_tokens(e, dispatches, cdir)
+        if resolved_replies is not None and seq is not None:
+            resolved_replies[seq] = tok
+        return tok
 
     def take_children(items):
         nonlocal children
@@ -412,21 +540,33 @@ def _add_tokens(stations, events, cdir: Path) -> dict:
                 children += _token_num(item.get("children"))
 
     def put(key, items):
-        nonlocal station_total
+        nonlocal station_total, card_missing
         if not items:
             return
-        merged = sum_tokens(items)
+        pending_item = next((x for x in items if isinstance(x, dict) and x.get("pending")), None)
+        non_pending = [x for x in items if not (isinstance(x, dict) and x.get("pending"))]
+        merged = sum_tokens(non_pending) if non_pending else None
+        if merged is not None:
+            if merged.get("ok"):
+                station_total += _token_num(merged.get("total"))
+            card_missing += _token_num(merged.get("missing"))
+            take_children(non_pending)
+        station = next((s for s in stations if s.get("key") == key), None)
+        if pending_item is not None:
+            out_tok = {"ok": False, "pending": True,
+                       "reason": str(pending_item.get("reason") or "这一轮结束后出数")}
+            if merged and _token_num(merged.get("missing")) > 0:
+                out_tok["missing"] = _token_num(merged.get("missing"))
+            if station is not None:
+                station["tokens"] = out_tok
+            return
         if merged is None:
             return
-        station = next((s for s in stations if s.get("key") == key), None)
         if station is not None:
             station["tokens"] = merged
-        if merged.get("ok"):
-            station_total += _token_num(merged.get("total"))
-        take_children(items)
 
-    plan_items = [e.get("tokens") for e in events
-                  if e.get("kind") == "方案" and isinstance(e.get("tokens"), dict)]
+    plan_items = [tok for e in events if e.get("kind") == "方案"
+                  for tok in (_saved_step_tokens(e),) if tok is not None]
     put("disp", plan_items)
 
     for key, role in _STATION_ROLE.items():
@@ -434,38 +574,41 @@ def _add_tokens(stations, events, cdir: Path) -> dict:
         for e in events:
             if e.get("kind") != "回复" or e.get("src") != role:
                 continue
-            if e.get("tool") not in ("codex", "qwen"):
-                continue  # agy、Cursor 不做用量
-            tokens = e.get("tokens")
-            items.append(tokens if isinstance(tokens, dict)
-                         else {"ok": False, "reason": "这一步没有用量记录"})
-        for e in events:
-            if e.get("kind") != "派活" or e.get("dst") != role or e.get("tool") not in ("codex", "qwen"):
+            tok = reply_tokens(e)
+            if tok is not None:
+                items.append(tok)
+        for idx, e in enumerate(events):
+            if e.get("kind") != "派活" or e.get("dst") != role:
                 continue
             if not e.get("live") or e.get("seq") in answered:
                 continue  # 已经交活的看回复记录，不再读日志重复累计
-            try:
-                tokens = usage_from_log(Path(cdir) / str(e["live"]))
-            except Exception as exc:  # noqa: BLE001 — 读实时用量失败不挡流程
-                tokens = {"ok": False, "reason": f"读实时用量时出问题（{exc}）"}
-            items.append(tokens if isinstance(tokens, dict)
-                         else {"ok": False, "reason": "实时用量读不到"})
+            tokens = _live_dispatch_tokens(e, cdir, is_active=(idx == active_idx))
+            if tokens is not None:
+                items.append(tokens)
         put(key, items)
 
     other = 0
-    for e in events:
-        tokens = e.get("tokens")
-        if not isinstance(tokens, dict) or not tokens.get("ok"):
-            continue
+    for idx, e in enumerate(events):
         kind = e.get("kind")
-        counted = kind == "交接资料"
-        if kind == "回复" and e.get("src") not in _STATION_ROLE.values() and e.get("tool") in ("codex", "qwen"):
-            counted = True
-        if counted:
-            other += _token_num(tokens.get("total")) + _token_num(tokens.get("children"))
+        tok = None
+        if kind == "交接资料":
+            tok = _saved_step_tokens(e)
+        elif kind == "回复" and e.get("src") not in _STATION_ROLE.values():
+            tok = reply_tokens(e)
+        elif kind == "派活" and e.get("dst") not in _STATION_ROLE.values() and e.get("live") and e.get("seq") not in answered:
+            tok = _live_dispatch_tokens(e, cdir, is_active=(idx == active_idx))
+        if not isinstance(tok, dict):
+            continue
+        if tok.get("ok"):
+            other += _token_num(tok.get("total")) + _token_num(tok.get("children"))
+        elif not tok.get("pending"):
+            card_missing += 1
 
     other += children
-    return {"total": station_total + other, "other": other}
+    result = {"total": station_total + other, "other": other}
+    if card_missing > 0:
+        result["missing"] = card_missing
+    return result
 
 
 def _card_test_command(cdir: Path) -> str:
@@ -490,10 +633,10 @@ def _review_conclusion(events, reply):
     reply_seq = int(reply.get("seq") or 0)
     found = None
     for e in events:
-        if e.get("kind") != "复查结论" or int(e.get("reply") or 0) != reply_seq:
+        if e.get("kind") != "复查结论" or int(e.get("seq") or 0) <= reply_seq:
             continue
-        if int(e.get("seq") or 0) <= reply_seq:
-            continue
+        if e.get("reply") and int(e.get("reply") or 0) != reply_seq:
+            continue   # 有 reply 时，明确指向上一条回复的迟到结论不能盖这一轮
         found = e
     return found
 
@@ -625,7 +768,19 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
             tools[e["dst"]] = e["tool"]
     stations = _stations(tools, reviewer_on, dispatcher)
     _add_models(stations, events, project)
-    tokens = _add_tokens(stations, events, cdir)
+    runs = [e for e in events if e.get("kind") == "开跑"]
+    last_run = runs[-1] if runs else None
+    last_run_pid = last_run.get("pid") if last_run else None
+    last_run_started = last_run.get("started") if last_run else None
+    interrupted_run = bool(
+        state in ("开发中", "待测试", "测试中")
+        and last_run_pid is not None
+        and not process_is_alive(last_run_pid, last_run_started)
+    )
+    active_idx = _active_dispatch_index(events, state=state, interrupted_run=interrupted_run)
+    dispatches = _dispatches_by_seq(events)
+    resolved_replies = {}
+    tokens = _add_tokens(stations, events, cdir, resolved_replies=resolved_replies, active_dispatch_idx=active_idx)
     card_test_cmd = _card_test_command(cdir)
     phase = card_phase(str(project), card_id)
     view = dict(base, card={"id": card_id, "title": _title(cdir, card_id), "state": state,
@@ -651,15 +806,6 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
     escalations = [e for e in events if e.get("kind") == "转人工"]
     requirement = next((e for e in events if e.get("kind") == "需求"), None)
 
-    runs = [e for e in events if e.get("kind") == "开跑"]
-    last_run = runs[-1] if runs else None
-    last_run_pid = last_run.get("pid") if last_run else None
-    last_run_started = last_run.get("started") if last_run else None
-    interrupted_run = bool(
-        state in ("开发中", "待测试", "测试中")
-        and last_run_pid is not None
-        and not process_is_alive(last_run_pid, last_run_started)
-    )
     disp_busy_after = bool(chat and (chat["busy"] or chat["asking"]) and state == "待验收")
     # 卡已过了开发，最后那次派活还没交活（被停下、Claude 接手）：当它作废，各步照最后一次做完的结果显示，
     # 顶部一句话跟卡片状态走，不再“正在返工”、不再转圈计时（试跑记录 70）
@@ -673,7 +819,10 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
     plan_ev = plan_writes[-1] if plan_writes else None
 
     disp = {"待对齐": ("active", "在和你对齐需求、写方案"), "待派发": ("active", "方案已批准，准备开工"),
-            "需Claude介入": ("fail", escalations[-1]["summary"] if escalations else "需要调度员介入"),
+            # 开工后才停下的：停下原因顶部已经说了，不挂在“写方案”这步，免得看着像写方案失败了（11-18 用户定）；
+            # 还没开工（写方案阶段就停下）才算写方案这步没成
+            "需Claude介入": (("done", "方案已定，后面有人卡住会叫你") if any(e.get("kind") == "开跑" for e in events)
+                           else ("fail", escalations[-1]["summary"] if escalations else "需要调度员介入")),
             "待验收": ("done", "已向你汇报"), "已合并": ("done", "已放进项目")}
     if chat and (chat["busy"] or chat["asking"]) and state in ("待对齐", "待派发", "待验收"):
         _set(stations, "disp", "wait" if chat["asking"] else "active", chat["step_text"],
@@ -693,11 +842,21 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
         idle_text = {"test": "等开工", "dev": "等测试写完", "rev": "等测试通过" if reviewer_on else "这次不复查"}[key]
         history = []
         for reply in reply_list[role]:
-            tokens = reply.get("tokens")
-            history.append({
+            seq = reply.get("seq")
+            resolved = (resolved_replies[seq] if seq in resolved_replies
+                        else _resolve_reply_tokens(reply, dispatches, cdir))
+            sent = dispatches.get(reply.get("reply_to"))
+            who = _reply_who(reply, sent)
+            item = {
                 "seconds": reply.get("seconds"),
-                "tokens": tokens.get("total") if isinstance(tokens, dict) and tokens.get("ok") else None,
-            })
+                "tokens": _token_num(resolved.get("total")) if isinstance(resolved, dict) and resolved.get("ok") else None,
+            }
+            if who:
+                item["who"] = who
+            if isinstance(resolved, dict) and not resolved.get("ok"):
+                item["missing"] = True
+                item["reason"] = str(resolved.get("reason") or "这一步没有读到用量")
+            history.append(item)
         times = [h["seconds"] for h in history if h["seconds"] is not None]
         spent = sum(times) if times else None
         if open_ev and open_ev.get("dst") == role:
@@ -718,8 +877,21 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
             failed = not r.get("ok", True) or r.get("summary", "").startswith("结论：不通过")
             detail = r.get("summary", "")
             conclusion = _review_conclusion(events, r) if role == "复查员" else None
-            if conclusion is not None and conclusion.get("result") == "通过":
-                failed, detail = False, conclusion.get("summary") or "复查通过"
+            if conclusion is not None:
+                result = conclusion.get("result")
+                failed = result != "通过"
+                detail = conclusion.get("summary") or ("复查通过" if result == "通过" else "复查退回")
+            elif role == "复查员":
+                r_seq = int(r.get("seq") or 0)
+                stopped_after = next((e for e in reversed(events)
+                                      if e.get("kind") == "转人工" and int(e.get("seq") or 0) > r_seq), None)
+                if stopped_after is not None and not any(
+                        (e.get("kind") in ("判定", "页面检查")
+                         or (e.get("kind") == "全量" and e.get("phase") == "结果"))
+                        and r_seq < int(e.get("seq") or 0) < int(stopped_after.get("seq") or 0)
+                        for e in events):
+                    failed = True
+                    detail = stopped_after.get("summary") or "复查未放行"
             _set(stations, key, "fail" if failed else "done", detail,
                  history=history, spent=spent, rounds=len(history))
         else:
@@ -748,7 +920,12 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
     full_last = fulls[-1] if fulls else None
     full_running = bool(full_last and full_last.get("phase") == "开始" and state not in TERMINAL_STATES
                         and not interrupted_run)
-    if full_running:
+    if phase.get("code") == "accepting":
+        accepting_detail = "正在跑全部测试"
+        if phase.get("detail"):
+            accepting_detail += f"，{phase['detail']}"
+        _set(stations, "check", "active", accepting_detail)
+    elif full_running:
         _set(stations, "check", "active", "复查的同时在跑全部测试，看有没有改坏老功能（约十几分钟）")
     elif full_last and full_last.get("phase") in ("结果", "跳过") and (
             not last_verdict or full_last.get("seq", 0) > last_verdict.get("seq", 0)):
@@ -863,7 +1040,7 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
     code = phase.get("code")
     chat_live = bool(chat and (chat.get("busy") or chat.get("asking")))
     tone_map = {"wait": "wait", "run": "run", "bad": "bad", "ok": "ok", "done": "idle"}
-    if code in ("dropped", "interrupted", "merging", "merge_failed", "copy_missing"):
+    if code in ("dropped", "interrupted", "merging", "merge_failed", "copy_missing", "accepting"):
         now_text = phase.get("label") or now_text
         tone = tone_map.get(phase.get("tone"), tone)
     elif (code in ("plan_failed", "plan_waiting", "planning", "start_failed")

@@ -15,6 +15,7 @@ from pathlib import Path
 
 from collab.agents import AgentResult, agy_command, ask, readable, watched_runner
 from desktop.view import live_hint
+from review_fmt import listed_ask  # C1.5：老测试的随手复查意见补上固定清单（tests/review_fmt.py）
 
 HERE = Path(__file__).resolve().parent
 SAMPLE = (HERE / "agy_stream_sample.jsonl").read_text(encoding="utf-8")
@@ -194,7 +195,7 @@ class ReviewRound1(unittest.TestCase):
             return AgentResult(ok=True, output="", attempts=1)
 
         card, _ = run_card(Card("CARD-001", state="待派发"), collab_dir=collab, worktree=tmp,
-                           test_command=["fake"], dev_adapter="cursor", test_adapter="codex", ask_fn=fake_ask,
+                           test_command=["fake"], dev_adapter="cursor", test_adapter="codex", ask_fn=listed_ask(fake_ask),
                            judge_fn=lambda c, cwd, timeout: Verdict(PASS, 0, "ok"), reviewer_adapter="agy")
         self.assertEqual(card.state, "需Claude介入")
         events = [json.loads(ln) for ln in (cdir / "流转.jsonl").read_text(encoding="utf-8").splitlines() if ln]

@@ -12,6 +12,7 @@ from collab.cli import main
 from collab.config import ConfigError, load_team, run_tools, save_team
 from collab.judge import PASS, Verdict
 from collab.workspace import init_collab
+from review_fmt import listed_ask  # C1.5：老测试的随手复查意见补上固定清单（tests/review_fmt.py）
 
 
 class TeamConfigTest(unittest.TestCase):
@@ -106,7 +107,7 @@ class RunUsesTeamTest(unittest.TestCase):
                 return AgentResult(ok=True, output="结论：通过", attempts=1)
 
             code = cli("run", str(project), "CARD-001", "--test-command", "true",
-                       ask_fn=fake_ask, judge_fn=lambda c, cwd, timeout: Verdict(PASS, 0, "ok"))
+                       ask_fn=listed_ask(fake_ask), judge_fn=lambda c, cwd, timeout: Verdict(PASS, 0, "ok"))
             self.assertEqual(code, 0, buf.getvalue())
             self.assertEqual(calls, ["agy", "codex", "cursor"])  # 写测试、写代码、复查
 

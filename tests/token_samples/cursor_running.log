@@ -1,0 +1,3 @@
+{"type": "system", "subtype": "init", "session_id": "0e9144e1-0000-4000-8000-000000000002", "model": "auto"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "先看测试"}]}, "session_id": "0e9144e1-0000-4000-8000-000000000002"}
+{"type": "tool_call", "subtype": "started", "call_id": "c1", "tool_call": {"readToolCall": {"args": {"path": "a.py"}}}, "session_id": "0e9144e1-0000-4000-8000-000000000002"}

@@ -8,6 +8,7 @@ from collab.dispatch import run_card
 from collab.judge import PASS, Verdict
 from collab.state import Card
 from collab.workspace import init_collab
+from review_fmt import listed_ask  # C1.5：老测试的随手复查意见补上固定清单（tests/review_fmt.py）
 
 
 class ReviewTest(unittest.TestCase):
@@ -32,7 +33,7 @@ class ReviewTest(unittest.TestCase):
         card = Card("CARD-001", state="待派发")
         card, _ = run_card(card, collab_dir=self.collab, worktree=self.tmp.name,
                            test_command=["fake"], dev_adapter="cursor", test_adapter="codex",
-                           ask_fn=ask, judge_fn=lambda c, cwd, timeout: Verdict(PASS, 0, "ok"),
+                           ask_fn=listed_ask(ask), judge_fn=lambda c, cwd, timeout: Verdict(PASS, 0, "ok"),
                            reviewer_adapter=reviewer)
         return card, calls
 
@@ -43,7 +44,7 @@ class ReviewTest(unittest.TestCase):
         self.assertIn("结论：通过", (self.card_dir / "复查结果.md").read_text(encoding="utf-8"))
 
     def test_reviewer_reject_escalates_to_claude(self):
-        card, _ = self._run("结论：不通过\n改了不该改的逻辑")
+        card, _ = self._run("结论：不通过\n【严重】改了不该改的逻辑")  # C1.6：不严重的退满会自动进待验收，这里测停下，问题改成严重的
         self.assertEqual(card.state, "需Claude介入")
         self.assertIn("不通过", (self.card_dir / "复查结果.md").read_text(encoding="utf-8"))
 
@@ -68,7 +69,7 @@ class RulesInPromptsTest(unittest.TestCase):
             return AgentResult(ok=True, output="结论：通过", attempts=1)
 
         run_card(Card("CARD-001", state="待派发"), collab_dir=collab, worktree=tmp.name,
-                 test_command=["t"], dev_adapter="cursor", test_adapter="codex", ask_fn=ask,
+                 test_command=["t"], dev_adapter="cursor", test_adapter="codex", ask_fn=listed_ask(ask),
                  judge_fn=lambda c, cwd, timeout: Verdict(PASS, 0, "ok"), reviewer_adapter="agy")
         for adapter in ("cursor", "codex", "agy"):
             self.assertIn("规则.md", prompts[adapter], adapter)
@@ -94,7 +95,7 @@ class ReportFromReplyTest(unittest.TestCase):
             return AgentResult(ok=True, output=out, attempts=1)
 
         run_card(Card("CARD-001", state="待派发"), collab_dir=collab, worktree=tmp.name,
-                 test_command=["t"], dev_adapter="cursor", test_adapter="codex", ask_fn=ask,
+                 test_command=["t"], dev_adapter="cursor", test_adapter="codex", ask_fn=listed_ask(ask),
                  judge_fn=lambda c, cwd, timeout: Verdict(PASS, 0, "ok"))
         self.assertNotIn(str(card_dir / "汇报.md"), prompts["cursor"])
         self.assertIn("汇报：", prompts["cursor"])
@@ -119,7 +120,7 @@ class ReadableOutputTest(unittest.TestCase):
             return AgentResult(ok=True, output=agy_json if adapter == "agy" else "", attempts=1)
 
         card, _ = run_card(Card("CARD-001", state="待派发"), collab_dir=collab, worktree=tmp.name,
-                           test_command=["t"], dev_adapter="cursor", test_adapter="codex", ask_fn=ask,
+                           test_command=["t"], dev_adapter="cursor", test_adapter="codex", ask_fn=listed_ask(ask),
                            judge_fn=lambda c, cwd, timeout: Verdict(PASS, 0, "ok"), reviewer_adapter="agy")
         record = (card_dir / "复查结果.md").read_text(encoding="utf-8")
         self.assertIn("结论：通过", record)

@@ -13,10 +13,11 @@ from collab.dispatch import HANDOVER, run_card
 from collab.flow import read_flow, record
 from collab.judge import PASS, Verdict
 from collab.state import Card
+from review_fmt import listed_ask  # C1.5：老测试的随手复查意见补上固定清单（tests/review_fmt.py）
 
-REJ = ["结论：不通过\n1. 【中等】断网时页面一直重问。",
-       "结论：不通过\n1. 【中等】【这次改的】取文件断网说文件没了。",
-       "结论：不通过\n1. 【中等】【这次改的】切换对话卡在正在取回。"]
+REJ = ["结论：不通过\n1. 【严重】断网时页面一直重问。",
+       "结论：不通过\n1. 【严重】【这次改的】取文件断网说文件没了。",
+       "结论：不通过\n1. 【严重】【这次改的】切换对话卡在正在取回。"]  # C1.6：不严重的退满会自动进待验收 / 第 2 轮起新冒出的不严重问题不退回；这里测原来那件事，问题改成严重的
 DRAFT = "每轮都是“找回结果”这一块的新问题，因为三处各管各的。\n---\n把三处合成一处：只有 404 算没了……"
 
 
@@ -53,7 +54,7 @@ class Base(unittest.TestCase):
             return AgentResult(ok=True, output="", attempts=1, final="汇报：改了")
 
         card, _ = run_card(Card("CARD-001", state="待派发"), self.collab, self.worktree, "true", "qwen", "codex",
-                           ask_fn=ask_fn, judge_fn=lambda *a, **k: Verdict(PASS, 0, "ok"),
+                           ask_fn=listed_ask(ask_fn), judge_fn=lambda *a, **k: Verdict(PASS, 0, "ok"),
                            reviewer_adapter="codex", draft=draft)
         return card, seen
 

@@ -108,11 +108,11 @@ if (typeof document !== "undefined") (function () {
   var ALL_ROLES = ["tester", "developer", "reviewer"];
   var rows = {}, info = null, results = {}, installed = true;
   var pending = {}, runSeq = 0;   // pending：岗位 -> 正在等第几次检测的结果；改了这一行就不再等
-  var currentModels = { codex: "gpt-6.1-sol", codex_effort: "xhigh", cursor: "auto", agy: "gemini-4-argon-high", qwen: "deepseek-v4.1-flash" };  // 每家工具的整体设置（岗位没单独选时用它）
+  var currentModels = { codex: "gpt-6.1-sol", codex_effort: "xhigh", cursor: "auto", agy: "gemini-4-argon-high", qwen: "deepseek-v4.1-flash", tencent: "hy4" };  // 每家工具的整体设置（岗位没单独选时用它）
   var picks = {};          // 岗位 -> {tool, model, effort}：每个岗位各选各的（流程修理 ①）
   var savedSnapshot = "";  // 打开页面时存着的团队和岗位模型：用来判断有没有没保存的改动
   var checkTimeout = 120;
-  var modelOptions = { codex: [], codex_effort: [], cursor: [], agy: [], qwen: [] };
+  var modelOptions = { codex: [], codex_effort: [], cursor: [], agy: [], qwen: [], tencent: [] };
   var providers = [];
   var clerkBaseline = "";
   var clerkWaiting = false;
@@ -237,7 +237,7 @@ if (typeof document !== "undefined") (function () {
     var box = rows[role].querySelector(".model-box");
     if (!box) return;
     var tool = toolSelect(role).value;
-    if (tool !== "codex" && tool !== "cursor" && tool !== "agy" && tool !== "qwen") {
+    if (tool !== "codex" && tool !== "cursor" && tool !== "agy" && tool !== "qwen" && tool !== "tencent") {
       box.hidden = true;
       box.innerHTML = "";
       return;
@@ -446,7 +446,7 @@ if (typeof document !== "undefined") (function () {
     var t = team(), out = {};
     ALL_ROLES.forEach(function (r) {
       var tool = t[r];
-      if (tool === "codex" || tool === "cursor" || tool === "agy" || tool === "qwen") out[r] = pickOf(r, tool);
+      if (tool === "codex" || tool === "cursor" || tool === "agy" || tool === "qwen" || tool === "tencent") out[r] = pickOf(r, tool);
     });
     return out;
   }

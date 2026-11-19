@@ -12,6 +12,7 @@ from collab.dispatch import HANDOVER, _stop_reason, run_card
 from collab.flow import read_flow, record
 from collab.judge import FAIL, PASS, Verdict
 from collab.state import Card
+from review_fmt import listed_ask  # C1.5：老测试的随手复查意见补上固定清单（tests/review_fmt.py）
 
 
 class Base(unittest.TestCase):
@@ -55,7 +56,7 @@ class Base(unittest.TestCase):
             return verdicts.pop(0) if verdicts else Verdict(PASS, 0, "ok")
 
         card, _ = run_card(Card("CARD-001", state="待派发"), self.collab, self.worktree, "true", "agy", "codex",
-                           ask_fn=ask_fn, judge_fn=judge, reviewer_adapter="codex")
+                           ask_fn=listed_ask(ask_fn), judge_fn=judge, reviewer_adapter="codex")
         return card, calls
 
 
@@ -113,7 +114,7 @@ class CursorSandbox(Base):
             return AgentResult(ok=True, output="", attempts=1, final="汇报：好了")
 
         run_card(Card("CARD-001", state="待派发"), self.collab, self.worktree, "true", "cursor", "codex",
-                 ask_fn=ask_fn, judge_fn=lambda *a, **k: Verdict(PASS, 0, "ok"))
+                 ask_fn=listed_ask(ask_fn), judge_fn=lambda *a, **k: Verdict(PASS, 0, "ok"))
         dev = [p for a, p in seen if a == "cursor"][0]
         tester = [p for a, p in seen if a == "codex"][0]
         self.assertIn("Operation not permitted", dev)
@@ -192,7 +193,7 @@ class RelatedOldTests(Base):
             return AgentResult(ok=True, output="", attempts=1, final="汇报：改了")
 
         card, _ = run_card(Card("CARD-001", state="待派发"), self.collab, self.worktree,
-                           ["/bin/bash", "-c", "true"], "agy", "codex", ask_fn=ask_fn,
+                           ["/bin/bash", "-c", "true"], "agy", "codex", ask_fn=listed_ask(ask_fn),
                            judge_fn=judge, reviewer_adapter="codex")
         return card, state["n"]
 
@@ -238,7 +239,7 @@ class ReviewRound1(RelatedOldTests):
             return AgentResult(ok=True, output="", attempts=1, final="汇报：改了")
 
         card, _ = run_card(Card("CARD-001", state="待派发"), self.collab, wt, ["/bin/bash", "-c", "true"],
-                           "agy", "codex", ask_fn=ask_fn, judge_fn=judge, reviewer_adapter="codex")
+                           "agy", "codex", ask_fn=listed_ask(ask_fn), judge_fn=judge, reviewer_adapter="codex")
         self.assertNotEqual(card.state, "待验收", "老测试超时不能放过去")
 
     def test_failing_before_change_is_not_blamed(self):
@@ -272,7 +273,7 @@ class ReviewRound1Plain(Base):
             return AgentResult(ok=False, output="超时", attempts=1)
 
         card, _ = run_card(Card("CARD-001", state="待派发"), self.collab, self.worktree, "true", "agy", "codex",
-                           ask_fn=ask_fn, judge_fn=lambda *a, **k: Verdict(PASS, 0, "ok"), reviewer_adapter=None)
+                           ask_fn=listed_ask(ask_fn), judge_fn=lambda *a, **k: Verdict(PASS, 0, "ok"), reviewer_adapter=None)
         self.assertEqual(card.state, "需Claude介入", "没有复查员兜底时不能把被停下的半成品当做完")
 
     def test_reason_after_blank_line_reaches_worker(self):

@@ -188,11 +188,16 @@ class Recording(Home):
             self.assertEqual(tokens["children"], 20428, adapter)
 
     def test_reply_has_no_tokens_for_agy_and_cursor(self):
+        # token 第二版改口径（2026-11-18 用户批准）：agy、Cursor 也记用量；这里的假输出不是它们的格式，
+        # 所以记一条“读不到”并写原因，而不是不记（原断言“不带 tokens 字段”按新口径必变，Claude 改，登记见 docs/token用量第二版/老测试改写登记.md）
         from collab.dispatch import _dispatch
         put(self.home, "normal.jsonl")
         for adapter in ("agy", "cursor"):
             _dispatch(self.fake(), self.cdir, "复查员", adapter, "复查", "看看", self.work, {}, 1)
-            self.assertNotIn("tokens", self.last("回复"), adapter)
+            tokens = self.last("回复").get("tokens")
+            self.assertIsInstance(tokens, dict, adapter)
+            self.assertFalse(tokens.get("ok"), adapter)
+            self.assertTrue(str(tokens.get("reason") or "").strip(), adapter)
 
     def test_unreadable_usage_does_not_stop_the_step(self):
         from collab.dispatch import _dispatch
@@ -288,12 +293,15 @@ class PanelData(ProjectCase):
     def test_old_codex_step_without_tokens_shows_unreadable_and_agy_shows_nothing(self):
         from desktop.view import card_view
         self.ask_and_reply("测试员", "codex")          # 老卡：Codex 交了活，但记录里没有用量
-        self.ask_and_reply("开发员", "agy")            # agy：本版不支持，不显示
+        self.ask_and_reply("开发员", "agy")            # agy：第二版起也算用量；没记录、日志也没有 → 读不到（原断言“不显示”按新口径必变，见登记）
         view = card_view(self.project, "CARD-001")
         test = self.station(view, "test")["tokens"]
         self.assertFalse(test["ok"])
         self.assertTrue(test["reason"].strip())
-        self.assertIsNone(self.station(view, "dev").get("tokens"))
+        dev = self.station(view, "dev").get("tokens")
+        self.assertIsInstance(dev, dict)
+        self.assertFalse(dev.get("ok"))
+        self.assertTrue(str(dev.get("reason") or "").strip())
 
     def test_no_price_anywhere(self):
         from desktop.view import card_view

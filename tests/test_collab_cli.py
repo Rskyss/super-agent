@@ -11,6 +11,7 @@ from pathlib import Path
 from collab.agents import AgentResult
 from collab.cli import main
 from collab.judge import PASS, Verdict
+from review_fmt import listed_ask  # C1.5：老测试的随手复查意见补上固定清单（tests/review_fmt.py）
 
 
 _SAVED_SANDBOX = None
@@ -259,7 +260,7 @@ class CliTest(unittest.TestCase):
             return Verdict(PASS, 0, "全部通过")
 
         code, out = _run(["run", str(self.project), "CARD-001", "--test-command", "true"],
-                         ask_fn=fake_ask, judge_fn=fake_judge)
+                         ask_fn=listed_ask(fake_ask), judge_fn=fake_judge)
         self.assertEqual(code, 0, out)
 
         worktree = self.root / "demo-worktrees" / "CARD-001"

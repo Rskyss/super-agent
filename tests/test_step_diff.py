@@ -218,6 +218,9 @@ class StepDiffRacyTest(StepDiffTest):
         os.utime(big, (old, old))
         git(self.wt, "add", "-A")
         git(self.wt, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "big")
+        # 改权限会动文件的“状态改变时间”，git 默认把它当“可能改过”，并行跑时偶发重读而失败（11-18 全量卡一起处理）。
+        # 这里要测的是“内容和修改时间都没变就不重读”，所以让 git 不看状态改变时间
+        git(self.wt, "config", "core.trustctime", "false")
         big.chmod(0)
         try:
             if os.access(big, os.R_OK):

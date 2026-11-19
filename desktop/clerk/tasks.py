@@ -1475,9 +1475,16 @@ def launch(project: str, kind: str, card_id: str, args: list) -> int:
         fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)
         if running(project, kind) is not None:
             raise TaskBusy("已有同类任务在跑")
+        # 每一轮用自己的一份清单：上一轮的收尾只认自己那份，不能顺手把刚重试的这一轮也停掉
+        groups_file = _collab(project) / "后台" / f"{kind}-{card_id}-groups-{uuid.uuid4().hex}.txt"
+        cdir = _collab(project) / "cards" / card_id
         try:
             env = os.environ.copy()
             env.pop("SUPERAGENT_CHAT_TOKEN", None)
+            if kind == "accept":
+                # 接受进程把拉起的测试进程组登记在这里；它被强杀后桌面照这份清单收尾（复查 54 第 4 条）
+                groups_file.parent.mkdir(parents=True, exist_ok=True)
+                env["SUPERAGENT_GROUPS_FILE"] = str(groups_file)
             log = open(log_path, "a", encoding="utf-8", buffering=1)
             proc = subprocess.Popen(
                 [sys.executable, "-B", str(COLLAB_PACKAGE), *args],
@@ -1497,7 +1504,6 @@ def launch(project: str, kind: str, card_id: str, args: list) -> int:
             tmp_path.write_text(payload + "\n", encoding="utf-8")
             os.replace(str(tmp_path), str(path))
             try:
-                cdir = _collab(project) / "cards" / card_id
                 if kind == "plan":
                     flow_record(cdir, "写方案", src="程序", dst="Codex",
                                 summary="开始写方案", pid=proc.pid, started=started,
@@ -1508,11 +1514,77 @@ def launch(project: str, kind: str, card_id: str, args: list) -> int:
                 elif kind == "merge":
                     flow_record(cdir, "合并开始", src="程序", dst="程序",
                                 summary="开始放进项目", pid=proc.pid, started=started)
+                elif kind == "accept":
+                    flow_record(cdir, "接受开始", src="程序", dst="程序",
+                                summary="开始跑全部测试，全过就进待确认", pid=proc.pid, started=started)
             except OSError:
                 pass
 
             def _wait():
+                # 整个后台任务期间占住这把锁：进程一死就松掉，页面据此判断“还在收尾”，
+                # 不会因为进程刚被回收就把按钮放开、把还在跑的测试晾在后台（复查 54 第 2 条）
+                cleanup_lock = None
+                try:
+                    cleanup_lock = open(path.with_suffix(".cleanup.lock"), "a+", encoding="utf-8")
+                    fcntl.flock(cleanup_lock.fileno(), fcntl.LOCK_EX)
+                except OSError:
+                    cleanup_lock = None
+                try:
+                    _reap()
+                finally:
+                    if cleanup_lock is not None:
+                        try:
+                            fcntl.flock(cleanup_lock.fileno(), fcntl.LOCK_UN)
+                        except OSError:
+                            pass
+                        cleanup_lock.close()
+
+            def _reap():
                 proc.wait()
+                if kind == "accept":
+                    wait_for = {proc.pid}
+                    try:
+                        for line in groups_file.read_text(encoding="utf-8").split():
+                            if line.isdigit():
+                                wait_for.add(int(line))
+                    except (OSError, ValueError):
+                        pass
+                    for pgid in wait_for:
+                        try:
+                            os.killpg(pgid, signal.SIGKILL)
+                        except OSError:
+                            pass
+                    deadline = time.time() + 3   # 等它们真的退出再清后台记录，按钮恢复时后台不能还剩测试在跑
+                    while wait_for and time.time() < deadline:
+                        alive = set()
+                        for pgid in wait_for:
+                            try:
+                                os.killpg(pgid, 0)
+                                alive.add(pgid)
+                            except OSError:
+                                pass
+                        if not alive:
+                            break
+                        wait_for = alive
+                        time.sleep(0.05)
+                    try:
+                        groups_file.unlink()
+                    except OSError:
+                        pass
+                    if proc.returncode is not None and proc.returncode < 0:
+                        # 被强杀时接受进程来不及自己记：这里补一条，交接里能看见为什么没跑完
+                        try:
+                            name = signal.Signals(-proc.returncode).name
+                        except (ValueError, AttributeError):
+                            name = f"信号 {-proc.returncode}"
+                        try:
+                            flow_record(cdir, "接受失败", src="程序", dst="你",
+                                        summary=f"接受任务被外部强杀（{name}），卡片留在卡住了",
+                                        text=f"接受进程收到 {name} 被终止，没来得及自己收尾；"
+                                             "已经尝试停掉登记过的测试进程，测试自己另开的后台程序可能还在，"
+                                             "可以重新点接受。")
+                        except OSError:
+                            pass
                 try:
                     if path.is_file():
                         cur = json.loads(path.read_text(encoding="utf-8"))

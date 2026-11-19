@@ -18,6 +18,7 @@ from collab.dispatch import HANDOVER, _triage, run_card
 from collab.flow import read_flow
 from collab.judge import PASS, Verdict
 from collab.state import Card
+from review_fmt import listed_ask  # C1.5：老测试的随手复查意见补上固定清单（tests/review_fmt.py）
 
 R1 = "结论：不通过\n1. 【中等】断网时页面一直重问。位置：[chat.js:600](/x/chat.js:600)"
 
@@ -53,7 +54,7 @@ class Base(unittest.TestCase):
             return AgentResult(ok=True, output="", attempts=1, final="汇报：改了")
 
         card, _ = run_card(Card("CARD-001", state="待派发"), self.collab, self.worktree, "true", "qwen", "codex",
-                           ask_fn=ask_fn, judge_fn=lambda *a, **k: Verdict(PASS, 0, "ok"),
+                           ask_fn=listed_ask(ask_fn), judge_fn=lambda *a, **k: Verdict(PASS, 0, "ok"),
                            reviewer_adapter="codex")
         return card, calls
 
@@ -93,7 +94,7 @@ class Converge(Base):
         self.assertIn("复查退回 1 次", end["summary"], "收口的那次不算退回")
 
     def test_mixed_returns_only_current(self):
-        r2 = ("结论：不通过\n1. 【中等】【这次改的】改完后按钮没反应。\n"
+        r2 = ("结论：不通过\n1. 【严重】【这次改的】改完后按钮没反应。\n"  # C1.6：不严重的退满会自动进待验收 / 第 2 轮起新冒出的不严重问题不退回；这里测原来那件事，问题改成严重的
               "2. 【中等】【原来就有的】结果文件被删时显示破图。")
         card, calls = self.go([R1, r2, "结论：通过"])
         back = calls["dev"][2]
@@ -107,7 +108,7 @@ class Converge(Base):
         self.assertIn("全丢", calls["dev"][2])
 
     def test_same_place_new_issue_asks_for_root_cause(self):
-        r2 = "结论：不通过\n1. 【中等】【这次改的】取结果文件断网就说文件没了。位置：[chat.js:610](/x/chat.js:610)"
+        r2 = "结论：不通过\n1. 【严重】【这次改的】取结果文件断网就说文件没了。位置：[chat.js:610](/x/chat.js:610)"  # C1.6：不严重的退满会自动进待验收 / 第 2 轮起新冒出的不严重问题不退回；这里测原来那件事，问题改成严重的
         card, calls = self.go([R1, r2, "结论：通过"])
         self.assertIn("共同原因", calls["dev"][2])
         self.assertNotIn("共同原因", calls["dev"][1], "第一次退回照旧")
@@ -174,7 +175,7 @@ class ReviewRound1(Base):
 
     def test_same_line_again_is_not_root_cause(self):
         r1 = "结论：不通过\n1. 【中等】断网重问。位置：[chat.js:600](/x/chat.js:600)"
-        r2 = "结论：不通过\n1. 【中等】【这次改的】切走再回来立刻重查。位置：[chat.js:600](/x/chat.js:600)"
+        r2 = "结论：不通过\n1. 【严重】【这次改的】切走再回来立刻重查。位置：[chat.js:600](/x/chat.js:600)"  # C1.6：第 2 轮新冒出的不严重问题不退回，测“同一行不算共同原因”要让它退回，改严重
         _, calls = self.go([r1, r2, "结论：通过"])
         self.assertNotIn("共同原因", calls["dev"][2])
 

@@ -12,14 +12,18 @@ from collab.dispatch import plain_issues, run_card
 from collab.flow import read_flow
 from collab.judge import PASS, Verdict
 from collab.state import Card
+from review_fmt import listed_ask  # C1.5：老测试的随手复查意见补上固定清单（tests/review_fmt.py）
 
 # 69 复查第 2 轮的真实写法
+# C1.6：不严重的退满会自动进待验收，要测“停下”的用 REVIEW_69_STOP（第 1 条标严重）
 REVIEW_69 = """结论：不通过
 
 1. **[P1] 把服务商名当成积木块编号，绕过了“积木块不存在”的校验。** [tasks.py:587](/Users/rs/x/desktop/clerk/tasks.py:587) 会按 `provider` 查找并改写编号。
 2. **[P2] 关联能力较多时，必需的结尾提醒会被截掉。** [blocks_tools.py:489](/Users/rs/x/blocks_tools.py:489) 只限制模型名单长度。
 
 指定测试命令已完整运行：466 项全部通过。"""
+REVIEW_69_STOP = REVIEW_69.replace("1. **[P1]", "1. 【严重】**[P1]")
+
 
 
 class PlainIssues(unittest.TestCase):
@@ -74,7 +78,7 @@ class Base(unittest.TestCase):
             return AgentResult(ok=True, output="改了", attempts=1, final="汇报：改了")
 
         card = Card("CARD-001", state="待派发")
-        card, _ = run_card(card, self.collab, self.worktree, "true", "agy", "codex", ask_fn=ask_fn,
+        card, _ = run_card(card, self.collab, self.worktree, "true", "agy", "codex", ask_fn=listed_ask(ask_fn),
                            judge_fn=lambda *a, **k: Verdict(PASS, 0, "ok"), reviewer_adapter="codex",
                            changed_fn=lambda w: [], allowed=None)
         return card, calls
@@ -112,11 +116,12 @@ class ReviewSaysWhat(Base):
         self.assertIn("【测试的问题】", calls["review"][0])
 
     def test_stop_summary_is_plain(self):
-        self.run_with([REVIEW_69] * 3)
+        self.run_with([REVIEW_69_STOP] * 3)
         stop = self.events("转人工")[-1]
         self.assertIn("复查还剩 2 件事", stop["say"])
         self.assertNotIn("tasks.py", stop["say"])
-        self.assertEqual(stop.get("issues"), ["把服务商名当成积木块编号，绕过了“积木块不存在”的校验",
+        # C1.5 补修起严重的在句尾标“（严重）”
+        self.assertEqual(stop.get("issues"), ["把服务商名当成积木块编号，绕过了“积木块不存在”的校验（严重）",
                                              "关联能力较多时，必需的结尾提醒会被截掉"])
 
 
@@ -125,7 +130,7 @@ class StopShownPlain(Base):
 
     def test_phase_uses_plain_words(self):
         from collab.phase import card_phase
-        self.run_with([REVIEW_69] * 3)
+        self.run_with([REVIEW_69_STOP] * 3)
         phase = card_phase(str(self.collab.parent), "CARD-001")
         self.assertIn("复查还剩 2 件事", phase["detail"])
         self.assertIn("1. 把服务商名当成积木块编号", phase["issues"])
@@ -195,7 +200,7 @@ class TestIsWrong(Base):
             return AgentResult(ok=True, output="", attempts=1, final="汇报：改了")
 
         run_card(Card("CARD-001", state="待派发"), self.collab, self.worktree, "true", "agy", "codex",
-                 ask_fn=ask_fn, judge_fn=lambda *a, **k: Verdict(PASS, 0, "ok"), reviewer_adapter="codex")
+                 ask_fn=listed_ask(ask_fn), judge_fn=lambda *a, **k: Verdict(PASS, 0, "ok"), reviewer_adapter="codex")
         self.assertEqual((self.worktree / "app.py").read_text(encoding="utf-8"), "原来的\n")
 
 
@@ -203,17 +208,21 @@ class StopReason(Base):
     """㊱：自动退回用完停下时，说清是哪种情况、建议怎么办。"""
 
     def test_same_issue_again_and_again(self):
-        self.run_with([REVIEW_69] * 3)
+        self.run_with([REVIEW_69_STOP] * 3)
         stop = self.events("转人工")[-1]["say"]
         self.assertIn("同一个问题反复出现", stop)
         self.assertIn("换", stop)
 
     def test_new_issues_every_round(self):
-        self.run_with(["结论：不通过\n1. 甲的按钮是红的。", "结论：不通过\n1. 乙页面打不开。",
-                       "结论：不通过\n1. 丙的数字算错了。"])
+        # C1.6：新冒出的不严重问题记以后再修、不退回；每轮都冒出新的严重问题才会退满停下，
+        # 这时按 C1.5 补修口径先说“还有严重问题没解决”（严重的不能被别的说法盖过）
+        self.run_with(["结论：不通过\n1. 【严重】甲的按钮是红的。", "结论：不通过\n1. 【严重】乙页面打不开。",
+                       "结论：不通过\n1. 【严重】丙的数字算错了。"])
         stop = self.events("转人工")[-1]["say"]
-        self.assertIn("每轮都冒出新问题", stop)
+        self.assertIn("还有严重问题没解决", stop)
         self.assertIn("继续改", stop)
+        self.assertNotIn("同一个问题反复出现", stop, "三轮是不同的问题，不能说成反复出现")
+        self.assertEqual(len(self.events("退回")), 2, "退两次、第三轮才停")
 
     def test_return_counts_for_whole_card(self):
         self.run_with(["结论：不通过\n1. 甲。", "结论：通过"])
@@ -249,7 +258,7 @@ class Handover(Base):
             return AgentResult(ok=True, output="", attempts=1, final="汇报：改了")
 
         card = Card("CARD-001", state="待派发")
-        run_card(card, self.collab, self.worktree, "true", "agy", "codex", ask_fn=ask_fn,
+        run_card(card, self.collab, self.worktree, "true", "agy", "codex", ask_fn=listed_ask(ask_fn),
                  judge_fn=lambda *a, **k: Verdict(PASS, 0, "ok"), reviewer_adapter="codex",
                  handover=("codex", {"codex": "gpt-6.1-sol", "codex_effort": "low"}))
         return order
@@ -320,7 +329,7 @@ class ReviewRound1B(Base):
             return Verdict(PASS, 0, "ok")
 
         run_card(Card("CARD-001", state="待派发"), self.collab, self.worktree, "true", "agy", "codex",
-                 ask_fn=ask_fn, judge_fn=judge, reviewer_adapter="codex")
+                 ask_fn=listed_ask(ask_fn), judge_fn=judge, reviewer_adapter="codex")
         return seen
 
     def setUp(self):
@@ -360,10 +369,16 @@ class ReviewRound1B(Base):
 
 class SmallAndPlain(Base):
     def test_only_small_issues_left(self):
-        self.run_with(["结论：不通过\n1. [P3] 提示里少一个标点。",
-                       "结论：不通过\n1. [P3] 说明里有个错别字。",
-                       "结论：不通过\n1. [P3] 按钮文字多一个空格。"])
-        self.assertIn("剩下的都是小问题", self.events("转人工")[-1]["say"])
+        # C1.6：只剩小问题不再停下问用户——第 2 轮起新冒出的小问题记以后再修，卡直接进待验收
+        card, calls = self.run_with(["结论：不通过\n1. [P3] 提示里少一个标点。",
+                                     "结论：不通过\n1. [P3] 说明里有个错别字。",
+                                     "结论：不通过\n1. [P3] 按钮文字多一个空格。"])
+        self.assertEqual(card.state, "待验收")
+        self.assertFalse(self.events("转人工"), "只剩小问题：不停下")
+        self.assertEqual(len(calls["review"]), 2, "第 2 轮上轮的改好了、新的只是小问题：这一轮就收口")
+        self.assertEqual(len(calls["dev"]), 2, "不再多退一次")
+        self.assertEqual(self.events("复查结论")[-1].get("result"), "通过")
+        self.assertIn("说明里有个错别字", (self.cdir / "以后再修.md").read_text(encoding="utf-8"))
 
     def test_item_with_code_names_is_not_plain(self):
         """第 2 轮 B4：第一句里带文件名、函数名的不算大白话（硬删会剩半句），只计数，原话去“交接”里看"""

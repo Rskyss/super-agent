@@ -9,6 +9,7 @@
 """
 from __future__ import annotations
 
+import fnmatch
 import os
 import re
 import shutil
@@ -18,9 +19,10 @@ import tempfile
 import time
 from pathlib import Path
 
-from collab.judge import ENV_ERROR, FAIL, PASS, TIMEOUT, Verdict, _stop_group
+from collab.judge import ENV_ERROR, FAIL, PASS, STALE, TIMEOUT, Verdict, _stop_group
 
 FULL_TIMEOUT = 1800
+FILE_TIMEOUT = 300
 STOPPED = "停了"
 _EXCLUDES = (".git", "node_modules", ".collab", "__pycache__", "*.app", ".venv", "venv")
 
@@ -41,6 +43,19 @@ def applicable(worktree) -> bool:
 
 
 _GROUPS: set = set()   # 本进程拉起的独立进程组（复制、跑测试）；停工时一把收掉
+
+
+def _note_group(env, pgid: int) -> None:
+    """把独立进程组的号登记到外部给的清单里：接受进程被强杀、来不及自己收尾时，
+    桌面能照这份清单把已经跑起来的测试一并收掉（复查 54 第 4 条）。"""
+    path = (env if env is not None else os.environ).get("SUPERAGENT_GROUPS_FILE")
+    if not path:
+        return
+    try:
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write(f"{pgid}\n")
+    except OSError:
+        pass
 
 
 _EXITING = {"on": False}
@@ -80,13 +95,67 @@ def _descendants(pid: int) -> list:
     return found
 
 
+_APP_PYTHON_CACHE: str | None = None
+
+
+def app_python() -> str:
+    """统一选开发助手自己的 Python：COLLAB_PYTHON -> 登录环境查一次 -> sys.executable。"""
+    global _APP_PYTHON_CACHE
+    env_py = (os.environ.get("COLLAB_PYTHON") or "").strip()
+    if env_py and os.path.isfile(env_py) and os.access(env_py, os.X_OK):
+        env_py = os.path.expanduser(env_py)
+        # 相对路径接上当前目录、但不消掉“..”：目录是链接时 abspath 会指到别处（复查 54 第 4 轮中等 1）
+        return env_py if os.path.isabs(env_py) else os.path.join(os.getcwd(), env_py)
+    if _APP_PYTHON_CACHE is not None:
+        return _APP_PYTHON_CACHE
+    found = ""
+    try:
+        res = subprocess.run(
+            ["/bin/zsh", "-lc", "command -v python3"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if res.returncode == 0:
+            lines = [ln.strip() for ln in (res.stdout or "").splitlines() if ln.strip()]
+            cand = lines[-1] if lines else ""
+            if cand and os.path.isfile(cand) and os.access(cand, os.X_OK):
+                found = cand
+    except (OSError, subprocess.SubprocessError, ValueError):
+        pass
+    _APP_PYTHON_CACHE = os.path.abspath(os.path.expanduser(found or sys.executable))
+    return _APP_PYTHON_CACHE
+
+
 def _safe_bin(folder: Path) -> str:
     folder.mkdir(parents=True, exist_ok=True)
     for name in ("python3", "node"):
-        real = sys.executable if name == "python3" else shutil.which(name)   # python3 用跑超级助手的这一个，不靠 pyenv 垫片
+        real = app_python() if name == "python3" else shutil.which(name)
+        if real and name != "python3":
+            real = os.path.abspath(real)   # PATH 里是相对目录时，临时目录里的链接才指得对
         if real and not (folder / name).exists():
             os.symlink(real, folder / name)
     return f"{folder}:/usr/bin:/bin:/usr/sbin:/sbin"
+
+
+def _is_excluded(name: str) -> bool:
+    return any(fnmatch.fnmatch(name, pat) for pat in (*_EXCLUDES, "*.pyc"))
+
+
+def _snapshot(root) -> dict:
+    """拍工作区文件指纹（相对路径 -> (大小, 纳秒修改时间)），跳过依赖/运行缓存等排除项。"""
+    base = Path(root)
+    snap = {}
+    for dirpath, dirnames, filenames in os.walk(base, topdown=True, followlinks=False):
+        dirnames[:] = [d for d in dirnames if not _is_excluded(d)]
+        for fname in filenames:
+            if _is_excluded(fname):
+                continue
+            full = Path(dirpath) / fname
+            try:
+                st = full.lstat()
+            except OSError:
+                continue
+            snap[full.relative_to(base).as_posix()] = (st.st_size, st.st_mtime_ns)
+    return snap
 
 
 def safe_env(folder: Path) -> dict:
@@ -134,6 +203,7 @@ def _quick(cmd, cwd=None, check=False, stop=None, capture=False):
     proc = subprocess.Popen(cmd, cwd=cwd, stdout=out if capture else subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                             stdin=subprocess.DEVNULL, start_new_session=True)
     _GROUPS.add(proc.pid)
+    _note_group(None, proc.pid)
     try:
         deadline = time.time() + COPY_TIMEOUT
         while proc.poll() is None:
@@ -196,6 +266,7 @@ def run_command(cmd, cwd, env, timeout, stop=None, log=None) -> Verdict:
         except FileNotFoundError as exc:
             return Verdict(ENV_ERROR, None, f"找不到命令：{exc}")
         _GROUPS.add(proc.pid)
+        _note_group(env, proc.pid)
         if _EXITING["on"]:   # 登记前后正好在清场：登记后再看一眼，自己收掉（清场先亮信号再收登记的，1-9 复查第 2 轮）
             return Verdict(STOPPED, None, "")
         deadline = time.time() + timeout
@@ -247,9 +318,12 @@ def _test_file(test: str, where: str, root) -> str:
     parts = (test if loader else where).split(".")
     if root is not None:
         for n in range(len(parts), 0, -1):
-            rel = "tests/" + "/".join(parts[:n]) + ".py"
-            if (Path(root) / rel).is_file():
-                return rel
+            base = "tests/" + "/".join(parts[:n])
+            if (Path(root) / (base + ".py")).is_file():
+                return base + ".py"
+            # 包在导入时就出错时，项名是包名（tests/shop），实际文件是 tests/shop/__init__.py
+            if (Path(root) / base / "__init__.py").is_file():
+                return base + "/__init__.py"
     if not loader:
         if len(parts) > 1 and parts[-1] == test:   # 新写法末尾是方法名
             parts = parts[:-1]
@@ -278,6 +352,17 @@ def _test_files(root) -> list:
         if parent == tests:
             out.append(path.relative_to(root).as_posix())
     return out
+
+
+def _test_command(rel: str, copy, siblings=()) -> tuple:
+    """一个测试文件单独跑：用标准的 discover 按文件名找（包里的 load_tests、包导入出错都按 unittest 自己的规矩算）。
+    同名文件在不同子文件夹里会一起跑到、共用一份时限——这是标准跑法的样子，不另造一套加载（CARD-010 Claude 接手：
+    复查 54 第 4 轮的 3 条严重全出在自制加载上，整层砍掉）。tests/ 之外的文件照旧从所在目录发现。"""
+    path = Path(rel)
+    if path.parts[:1] == ("tests",):
+        return (["python3", "-m", "unittest", "discover", "-s", "tests", "-p", path.name], Path(copy))
+    return (["python3", "-m", "unittest", "discover", "-s", path.parent.as_posix(), "-p", path.name],
+            Path(copy))
 
 
 _SUMMARY = re.compile(r"^Ran (\d+) tests? in [^\n]*\n\n(OK|FAILED|NO TESTS RAN)(?: \(([^)]*)\))?", re.M)
@@ -317,7 +402,7 @@ def _merge(results: list, took: float) -> Verdict:
             errors += sum(int(n) for n in re.findall(r"errors=(\d+)", extra))
             skipped += sum(int(n) for n in re.findall(r"skipped=(\d+)", extra))
             unexpected += sum(int(n) for n in re.findall(r"unexpected successes=(\d+)", extra))
-    order = [STOPPED, TIMEOUT, ENV_ERROR, FAIL, PASS]
+    order = [STOPPED, STALE, TIMEOUT, ENV_ERROR, FAIL, PASS]
     worst = min((v.result for _, v in results), key=lambda r: order.index(r) if r in order else 0, default=PASS)
     if unfinished:
         parts.append("这些测试文件没跑完就退出了（没有汇总）：" + "、".join(unfinished))
@@ -334,72 +419,115 @@ class FullRunner:
     alone(worktree, files, stop) 在现在的样子上单独跑这些文件（只在一起跑时坏的，不算改坏，第一期 1-9）。
     全量按文件分开、几个同时跑：每个文件单独一个进程，互不干扰，也快（1-9：一个个跑要 13 分钟）。"""
 
-    def __init__(self, timeout: int = FULL_TIMEOUT, workers=None):
+    def __init__(self, timeout: int = FULL_TIMEOUT, workers=None, file_timeout: int = FILE_TIMEOUT):
         self.timeout = timeout
         self.workers = workers or max(1, min(6, (os.cpu_count() or 2) // 2))
+        self.file_timeout = file_timeout
 
     @staticmethod
     def _patterns(files) -> list:
-        """按文件名去重：同名文件在不同子文件夹里，discover -p 一次就都跑到，分开跑会重复算（复查第 1 轮）。"""
-        return sorted({Path(f).name for f in files})
+        """按文件名去重：同名文件在不同子文件夹里，discover -p 一次就都跑到，分开跑会重复算（复查第 1 轮）。
+        每个名字取路径最靠前的那一份当代表。"""
+        first = {}
+        for f in sorted(Path(x).as_posix() for x in files):
+            first.setdefault(Path(f).name, f)
+        return sorted(first.values())
 
     def _run_files(self, copy, files, env, stop) -> Verdict:
         from concurrent.futures import ThreadPoolExecutor
         import threading
-        t0, deadline = time.time(), time.time() + self.timeout
-        inner = threading.Event()   # 外面叫停、或者有一个超时，就把其余的一起收掉
-        halt = _Either(stop, inner)
+        t0 = time.time()
+        deadline = t0 + self.timeout
+        halt = _Either(stop, threading.Event())
 
-        def one(name):
+        targets = self._patterns(files)
+
+        def one(rel):
             if halt.is_set():
-                return name, Verdict(STOPPED, None, "")
+                return rel, Verdict(STOPPED, None, "")
             left = deadline - time.time()
             if left <= 0:
-                return name, Verdict(TIMEOUT, None, "")
-            v = run_command(["python3", "-m", "unittest", "discover", "-s", "tests", "-p", name],
-                            copy, env, left, halt)
-            if v.result in (TIMEOUT, STOPPED):
-                inner.set()
-            return name, v
+                return rel, Verdict(TIMEOUT, None, "")
+            limit = min(self.file_timeout, left)
+            cmd, cwd = _test_command(rel, copy, targets)
+            v = run_command(cmd, cwd, env, limit, halt)
+            return rel, v
 
         with ThreadPoolExecutor(max_workers=self.workers) as pool:
-            results = list(pool.map(one, self._patterns(files)))
-        if halt.is_set() and not any(v.result == TIMEOUT for _, v in results):
+            results = list(pool.map(one, targets))
+        if halt.is_set() or any(v.result == STOPPED for _, v in results):
             return Verdict(STOPPED, None, "")
         if any(v.result == TIMEOUT for _, v in results):
-            done = "\n".join(f"{name}：{v.result}" for name, v in results)
-            return Verdict(TIMEOUT, None, done)
+            # 结果表在前，每个文件实际打印的进度和报错都跟在后面：
+            # 超时的、没过的、跑不起来的都要留，不能只剩一行“文件名：超时”（复查 54 第 3 条）。
+            lines = [f"{Path(rel).name}：{v.result}" for rel, v in results]
+            head = "\n".join(lines)
+            outputs = []
+            for rel, v in results:
+                if not v.output:
+                    continue
+                if v.result == TIMEOUT:
+                    # 超时文件被截下的是最后一段：里面有它已经打印的进度和报错
+                    outputs.append((rel, v.output))
+                elif v.result in (FAIL, ENV_ERROR):
+                    # 同一轮里已经跑完但报错的文件：从第一条报错带起，别把正常输出灌满交接
+                    cut = re.search(r"^(?:FAIL|ERROR): ", v.output, re.M)
+                    outputs.append((rel, v.output[cut.start():] if cut else v.output))
+            room = max(0, 7600 - len(head))   # 整段留在交接最后 8000 字以内
+            share = max(1, room // len(outputs)) if outputs else 0   # 每个文件都留一段，不能只有最后一份
+            sections = []
+            for rel, text in outputs:
+                if len(text) > share:
+                    keep = max(0, share - 12)
+                    text = ("……（前面省略）……\n" + text[-keep:]) if keep else ""
+                sections.append(f"===== {rel} =====\n{text}")
+            body = "\n".join(sections)
+            return Verdict(TIMEOUT, None, head + ("\n" + body if body else ""))
         return _merge(results, time.time() - t0)
 
     def run(self, worktree, stop=None) -> Verdict:
         tmp = Path(tempfile.mkdtemp(prefix="collab-full-"))   # 先建好再准备，准备出错也收得掉（复查第 1 轮）
         try:
+            before = _snapshot(worktree)
             copy = tmp / "copy"
             copy_tree(worktree, copy, stop)
             if (stop is not None and stop.is_set()) or _EXITING["on"]:
                 return Verdict(STOPPED, None, "")
-            return self._run_files(copy, _test_files(copy), safe_env(tmp / "bin"), stop)
+            verdict = self._run_files(copy, _test_files(copy), safe_env(tmp / "bin"), stop)
+            if verdict.result == STOPPED or (stop is not None and stop.is_set()) or _EXITING["on"]:
+                return Verdict(STOPPED, None, "")
+            if _snapshot(worktree) != before:
+                return Verdict(STALE, None, "跑的时候代码变了，这次结果作废，要重新跑一遍全部测试")
+            return verdict
         except subprocess.CalledProcessError as exc:
-            if stop is not None and stop.is_set():
+            if (stop is not None and stop.is_set()) or _EXITING["on"]:
                 return Verdict(STOPPED, None, "")
             return Verdict(ENV_ERROR, None, f"复制副本没成：{exc}")
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
     def alone(self, worktree, files, stop=None) -> dict:
-        """在现在的样子上单独跑这些文件；同名的几个文件结果一样（discover -p 一次都跑到）。"""
+        """在现在的样子上按文件单独跑这些文件：每个文件自己一个进程、一份时限。"""
         tmp = Path(tempfile.mkdtemp(prefix="collab-full-alone-"))
         results = {}
         try:
             copy = tmp / "copy"
             copy_tree(worktree, copy, stop)
             env = safe_env(tmp / "bin")
-            by_name = {}
-            for name in self._patterns(files):
+            by_file = {}
+            deadline = time.time() + self.timeout
+            targets = self._patterns(files)
+            for rel in targets:
                 if (stop is not None and stop.is_set()) or _EXITING["on"]:
                     break
-                by_name[name] = _finished(run_command(["python3", "-m", "unittest", "discover", "-s", "tests",
-                                                       "-p", name], copy, env, self.timeout, stop))
+                left = deadline - time.time()
+                if left <= 0:
+                    by_file[rel] = Verdict(TIMEOUT, None, "")
+                    continue
+                limit = min(self.file_timeout, left)
+                cmd, cwd = _test_command(rel, copy, targets)
+                by_file[rel] = _finished(run_command(cmd, cwd, env, limit, stop))
+            by_name = {Path(rel).name: v for rel, v in by_file.items()}
             return {f: by_name[Path(f).name] for f in files if Path(f).name in by_name}
         except subprocess.CalledProcessError:
             return results
@@ -418,16 +546,23 @@ class FullRunner:
             copy = tmp / "copy"
             copy_tree(head, copy, stop)
             env = safe_env(tmp / "bin")
-            for rel in files:
+            deadline = time.time() + self.timeout
+            targets = self._patterns(files)
+            for rel in targets:
                 p = Path(rel)
-                if stop is not None and stop.is_set():
+                if (stop is not None and stop.is_set()) or _EXITING["on"]:
                     break
                 if not (copy / p).is_file():
                     results[rel] = Verdict(ENV_ERROR, None, "改之前没有这个测试文件")
                     continue
-                # 和全量同一个起点（-s tests），子文件夹里的测试名字才对得上（复查：sub.test_x 和 test_x）
-                results[rel] = run_command(["python3", "-m", "unittest", "discover", "-s", "tests",
-                                            "-p", p.name], copy, env, self.timeout, stop)
+                left = deadline - time.time()
+                if left <= 0:
+                    results[rel] = Verdict(TIMEOUT, None, "")
+                    continue
+                limit = min(self.file_timeout, left)
+                # 和全量一样按文件单独跑，同名文件才不会挤到同一个进程、共用一份时限
+                cmd, cwd = _test_command(rel, copy, targets)
+                results[rel] = run_command(cmd, cwd, env, limit, stop)
             return results
         except subprocess.CalledProcessError:
             return results
@@ -447,6 +582,12 @@ def summary_count(output: str):
     if not found:
         return None
     return sum(int(n) for n in re.findall(r"(?:failures|errors|unexpected successes)=(\d+)", found[-1]))
+
+
+def zero_tests(output: str) -> bool:
+    """末尾总汇总显示实际只跑了 0 项（例如只有一个空测试文件），不能当通过放行。"""
+    counts = re.findall(r"^\s*Ran (\d+) tests?\b", output or "", re.M)
+    return bool(counts) and int(counts[-1]) == 0
 
 
 class _Either:

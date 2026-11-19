@@ -18,8 +18,14 @@ _LOG_HEAD = 16 * 1024              # 实时输出只看开头 16 KB
 _SESSION_RE = re.compile(r"^session id:\s*(\S+)\s*$")
 _USAGE_KEYS = ("total_tokens", "input_tokens", "cached_input_tokens",
                "output_tokens", "reasoning_output_tokens")
+_AGY_KEYS = ("input_tokens", "output_tokens", "cache_read_tokens", "thinking_tokens", "total_tokens")
+_CURSOR_KEYS = ("inputTokens", "outputTokens", "cacheReadTokens", "cacheWriteTokens", "reasoningTokens")
+_CURSOR_TYPES = ("system", "assistant", "tool_call", "user", "thinking", "result")
 _SUM_KEYS = ("total", "input", "cached", "output", "reasoning", "children")
+_MAX_CACHE = 512
 _path_cache: dict = {}
+_live_cache: dict = {}
+_log_head_cache: dict = {}
 
 
 def _fail(reason: str) -> dict:
@@ -27,6 +33,8 @@ def _fail(reason: str) -> dict:
 
 
 def _num(value) -> int:
+    if isinstance(value, bool):
+        return 0
     try:
         return int(value or 0)
     except (TypeError, ValueError, OverflowError):  # 无穷大、非数字一律当 0
@@ -211,6 +219,12 @@ def usage_from_text(text):
         return _fail(f"算用量时出问题（{exc}）")
 
 
+def _cache_put(cache: dict, key, value) -> None:
+    if len(cache) >= _MAX_CACHE:
+        cache.clear()
+    cache[key] = value
+
+
 def usage_from_log(path):
     """实时输出只看开头 16 KB（会话编号在头部），再按普通输出读。"""
     try:
@@ -219,11 +233,184 @@ def usage_from_log(path):
         target = Path(path)
         if not target.is_file():
             return _fail("实时输出文件还没生成")
-        with target.open("rb") as fh:
-            raw = fh.read(_LOG_HEAD)
-        return usage_from_text(raw.decode("utf-8", errors="replace"))
+        st = target.stat()
+        key = (os.path.abspath(str(target)), st.st_size, st.st_mtime_ns)
+        head = _log_head_cache.get(key)
+        if head is None:
+            with target.open("rb") as fh:
+                raw = fh.read(_LOG_HEAD)
+            head = raw.decode("utf-8", errors="replace")
+            _cache_put(_log_head_cache, key, head)
+        return usage_from_text(head)
     except Exception as exc:  # noqa: BLE001
         return _fail(f"读实时输出时出问题（{exc}）")
+
+
+def _iter_json_dicts(lines):
+    for raw in lines:
+        line = (raw or "").strip()
+        if not (line.startswith("{") and line.endswith("}")):
+            continue
+        try:
+            data = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(data, dict):
+            yield data
+
+
+def _has_usage_fields(usage: dict, keys: tuple) -> bool:
+    return any(k in usage and not isinstance(usage[k], bool) and isinstance(usage[k], (int, float))
+               for k in keys)
+
+
+def _format_agy_usage(raw_input: int, cached: int, output: int, reasoning: int) -> dict:
+    inp = raw_input + cached
+    return {
+        "ok": True,
+        "total": inp + output,
+        "input": inp,
+        "cached": cached,
+        "output": output,
+        "reasoning": reasoning,
+        "children": 0,
+    }
+
+
+def _format_cursor_usage(usage: dict) -> dict:
+    raw_input = _num(usage.get("inputTokens"))
+    cached = _num(usage.get("cacheReadTokens"))
+    cache_write = _num(usage.get("cacheWriteTokens"))
+    inp = raw_input + cached + cache_write
+    output = _num(usage.get("outputTokens"))
+    reasoning = _num(usage.get("reasoningTokens"))
+    return {
+        "ok": True,
+        "total": inp + output,
+        "input": inp,
+        "cached": cached,
+        "output": output,
+        "reasoning": reasoning,
+        "children": 0,
+    }
+
+
+def _agy_from_lines(lines, result_only: bool = False):
+    result_usage = None
+    raw_input = cached = output = reasoning = 0
+    step_count = 0
+    for data in _iter_json_dicts(lines):
+        ev = data.get("event")
+        if ev == "result":
+            res = data.get("result")
+            if isinstance(res, dict) and isinstance(res.get("usage"), dict) and _has_usage_fields(res["usage"], _AGY_KEYS):
+                result_usage = res["usage"]
+        elif not result_only and ev == "step_update":
+            step = data.get("step_update")
+            if isinstance(step, dict) and isinstance(step.get("usage"), dict) and _has_usage_fields(step["usage"], _AGY_KEYS):
+                u = step["usage"]
+                raw_input += _num(u.get("input_tokens"))
+                cached += _num(u.get("cache_read_tokens"))
+                output += _num(u.get("output_tokens"))
+                reasoning += _num(u.get("thinking_tokens"))
+                step_count += 1
+    if result_usage is not None:
+        return _format_agy_usage(
+            _num(result_usage.get("input_tokens")),
+            _num(result_usage.get("cache_read_tokens")),
+            _num(result_usage.get("output_tokens")),
+            _num(result_usage.get("thinking_tokens")),
+        )
+    if result_only:
+        return None
+    if step_count > 0:
+        return _format_agy_usage(raw_input, cached, output, reasoning)
+    return _fail("输出里没有读到 agy 的用量")
+
+
+def _cursor_from_lines(lines, result_only: bool = False):
+    result_usage = None
+    recognized = False
+    for data in _iter_json_dicts(lines):
+        tp = data.get("type")
+        if tp in _CURSOR_TYPES:
+            recognized = True
+        if tp == "result" and isinstance(data.get("usage"), dict) and _has_usage_fields(data["usage"], _CURSOR_KEYS):
+            result_usage = data["usage"]
+    if result_usage is not None:
+        return _format_cursor_usage(result_usage)
+    if result_only:
+        return None
+    if recognized:
+        return {"ok": False, "pending": True, "reason": "这一轮结束后出数"}
+    return _fail("输出格式认不出，没有 Cursor 的用量")
+
+
+def _stream_usage_from_lines(tool: str, lines, result_only: bool = False):
+    if tool == "agy":
+        return _agy_from_lines(lines, result_only=result_only)
+    return _cursor_from_lines(lines, result_only=result_only)
+
+
+def _read_stream_live(tool: str, path) -> dict:
+    if path is None:
+        return _fail("没有实时输出文件")
+    target = Path(path)
+    if not target.is_file():
+        return _fail("实时输出文件还没生成")
+    st = target.stat()
+    key = (tool, os.path.abspath(str(target)), st.st_size, st.st_mtime_ns)
+    cached = _live_cache.get(key)
+    if cached is not None:
+        return dict(cached)
+    if st.st_size <= 0:
+        return _fail("实时输出还是空的")
+    if st.st_size > _TAIL_START:
+        with target.open("rb") as fh:
+            fh.seek(st.st_size - _TAIL_START)
+            tail = fh.read(_TAIL_START)
+        tail_lines = tail.decode("utf-8", errors="replace").splitlines()[1:]
+        fast = _stream_usage_from_lines(tool, tail_lines, result_only=True)
+        if fast is not None:
+            _cache_put(_live_cache, key, fast)
+            return dict(fast)
+    with target.open("rb") as fh:
+        raw = fh.read()
+    lines = raw.decode("utf-8", errors="replace").splitlines()
+    res = _stream_usage_from_lines(tool, lines, result_only=False)
+    _cache_put(_live_cache, key, res)
+    return dict(res)
+
+
+def usage_for(tool, output="", live=None):
+    """四种工具统一取用量：Codex/千问按会话记录，agy/Cursor 按流式输出，其他工具返回 None。"""
+    t = str(tool or "").strip().lower()
+    if t not in ("codex", "qwen", "tencent", "agy", "cursor"):
+        return None
+    try:
+        if t in ("codex", "qwen", "tencent"):
+            if output is not None and not isinstance(output, str) and live is None:
+                return _fail("输出格式不对，读不到用量")
+            got = usage_from_text(output if isinstance(output, str) else "")
+            if got.get("ok") or live is None:
+                return got
+            retry = usage_from_log(live)
+            return retry if retry.get("ok") else got
+        if isinstance(output, str) and output.strip():
+            got = _stream_usage_from_lines(t, output.splitlines(), result_only=False)
+            if got.get("ok") or live is None:
+                return got
+            retry = _read_stream_live(t, live)
+            if retry.get("ok") or (not got.get("pending") and retry.get("pending")):
+                return retry
+            return got
+        if live is not None:
+            return _read_stream_live(t, live)
+        if output is not None and not isinstance(output, str):
+            return _fail("输出格式不对，读不到用量")
+        return _fail("没有输出内容或实时输出文件")
+    except Exception as exc:  # noqa: BLE001 — 任何异常都只当读不到，绝不往外抛
+        return _fail(f"算用量时出问题（{exc}）")
 
 
 def new_tokens(t) -> int:

@@ -82,7 +82,8 @@ def wait_idle(desk, project, conversation, timeout=8):
 
 def write_script(path, body):
     path = Path(path)
-    path.write_text("#!/bin/sh\n" + body, encoding="utf-8")
+    from review_fmt import listed_script   # C1.5：假复查员只说“结论：通过”时补上同义清单（tests/review_fmt.py）
+    path.write_text("#!/bin/sh\n" + listed_script(body), encoding="utf-8")
     path.chmod(path.stat().st_mode | stat.S_IEXEC)
 
 
@@ -143,6 +144,7 @@ class ProjectCase(unittest.TestCase):
         os.environ["SUPERAGENT_NO_FULL"] = "1"
         os.environ["SUPERAGENT_NO_PROGRESS"] = "1"
         os.environ["SUPERAGENT_NO_DRAFT"] = "1"
+        os.environ["SUPERAGENT_NO_RED_CHECK"] = "1"   # 测试先红卡：假 AI 写的测试一跑就过，集成测试不查
         os.environ.pop("CODEX_SANDBOX", None)
 
     def git(self, *args):

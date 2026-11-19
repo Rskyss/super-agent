@@ -1,0 +1,59 @@
+diff --git a/tests/test_acceptance_20_merge.py b/tests/test_acceptance_20_merge.py
+index 98cbdf3..241acd7 100644
+--- a/tests/test_acceptance_20_merge.py
++++ b/tests/test_acceptance_20_merge.py
+@@ -83,6 +83,8 @@ class HappyPath(MergeCase):
+         (cdir / "测试文件.json").write_text(json.dumps(["tests/test_new.py"]), encoding="utf-8")
+         self.assertTrue(self.merge()["ok"])
+         names = self.out("show", "--name-only", "--format=", "HEAD").splitlines()
++        # C2：卡片记录和代码进同一次提交，记录文件夹不算“范围外”
++        names = [n for n in names if not n.startswith("docs/改按钮/")]
+         self.assertEqual(sorted(names), ["src/app.py", "tests/test_new.py"])
+ 
+     def test_project_without_git_identity_can_still_merge(self):
+diff --git a/tests/test_acceptance_44_uncommitted.py b/tests/test_acceptance_44_uncommitted.py
+index d29ad1b..998399f 100644
+--- a/tests/test_acceptance_44_uncommitted.py
++++ b/tests/test_acceptance_44_uncommitted.py
+@@ -21,11 +21,12 @@ class Count(ServerCase):
+     def test_service(self):
+         Path(self.project, "新文件.py").write_text("y\n", encoding="utf-8")
+         status, answer = self.get("/api/clerk/uncommitted", project=self.project, token="口令")
+-        self.assertEqual((status, answer), (200, {"count": 1}))
++        self.assertEqual((status, answer), (200, {"count": 1, "files": ["新文件.py"]}))
+         self.assertEqual(self.get("/api/clerk/uncommitted", project=self.project)[0], 403)
+ 
+     def test_panel_asks_before_starting(self):
+         js = (STATIC / "panel.js").read_text(encoding="utf-8")
+         self.assertIn("/api/clerk/uncommitted", js)
+-        self.assertIn("这次施工看不到它们", js)
+-        self.assertLess(js.index('act === "approve"'), js.index("这次施工看不到它们"))
++        # C2：浏览器自带弹窗换成三按钮小框，说法在 PanelCore.startDialogText 里
++        self.assertIn("施工会看不到它们", js)
++        self.assertIn('act === "approve"', js)
+diff --git a/tests/test_acceptance_68b_naming.py b/tests/test_acceptance_68b_naming.py
+index a3b4133..ec29a09 100644
+--- a/tests/test_acceptance_68b_naming.py
++++ b/tests/test_acceptance_68b_naming.py
+@@ -131,7 +131,7 @@ class InternalNamesKept(unittest.TestCase):
+                     "collab/phase.py", "collab/planner.py", "desktop/clerk/tools.py", "desktop/clerk/desk.py",
+                     "desktop/server.py"):
+             self.assertIn("需求卡.md", read(rel), f"{rel} 读写的文件名不能改")
+-        self.assertIn('"需求卡.md": "需求共识.md"', read("collab/archive.py"))
++        self.assertIn('"需求卡.md": "卡片原文.md"', read("collab/archive.py"))
+         html = read("desktop/static/blocks.html")
+         self.assertIn('id="healthCard"', html)
+         self.assertIn('id="detailCard"', html)
+diff --git a/tests/test_collab_archive.py b/tests/test_collab_archive.py
+index c1098ed..ad6c0d3 100644
+--- a/tests/test_collab_archive.py
++++ b/tests/test_collab_archive.py
+@@ -32,7 +32,7 @@ class ArchiveTest(unittest.TestCase):
+     def test_records_land_in_feature_folder_with_familiar_names(self):
+         target = archive_card(self.project, "CARD-001", "早上好问候")
+         self.assertEqual(target, self.project / "docs" / "早上好问候")
+-        self.assertEqual((target / "需求共识.md").read_text(encoding="utf-8"), "# 需求：加问候")
++        self.assertEqual((target / "卡片原文.md").read_text(encoding="utf-8"), "# 需求：加问候")
+         self.assertTrue((target / "方案.md").exists())
+         self.assertTrue((target / "验收记录.md").exists())
+         self.assertTrue((target / "过程记录" / "执行记录.md").exists())

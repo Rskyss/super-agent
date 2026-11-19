@@ -123,7 +123,7 @@ class NewRound(ReviseCase):
 
     def test_blocked_card_can_be_revised(self):
         self.logged_tools()
-        write_script(self.bin / "agy", 'echo 结论：不通过\n')
+        write_script(self.bin / "agy", 'echo 结论：不通过\necho 【严重】保存后数据全丢\n')  # C1.6：不严重的退满会自动进待验收，这里测停下，问题改成严重的
         self.start()
         wait_until(lambda: self.state() == "需Claude介入", 25)
         # 流程修理（11-12）：复查不通过先自动退回写代码的 2 次才卡住，所以卡住前写代码的已经干了 3 次

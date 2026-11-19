@@ -37,7 +37,7 @@ class ClerkDeskTest(unittest.TestCase):
         self.tmp.cleanup()
 
     def kinds(self, events):
-        return [e["type"] for e in events]
+        return [e["type"] for e in events if e["type"] != "usage"]  # token 第二版 B：对话多了“用量”事件，这里只比聊天本身（Claude 按新口径改，登记见 docs/token用量第二版/老测试改写登记.md）
 
     def test_talking_gives_a_streamed_reply_in_order(self):
         cid = self.desk.send(self.project, "", "你好")
@@ -54,7 +54,7 @@ class ClerkDeskTest(unittest.TestCase):
         wait_idle(self.desk, self.project, cid)
         again = ClerkDesk(lambda: self.client)
         events = again.events(self.project, cid, 0, wait=0)["events"]
-        self.assertEqual([e["type"] for e in events], ["user", "message"])
+        self.assertEqual(self.kinds(events), ["user", "message"])
         self.assertTrue(all(e["history"] for e in events))
         self.assertEqual(events[1]["text"], "好的，收到：第一句")
 
@@ -202,7 +202,7 @@ class ClerkDeskTest(unittest.TestCase):
         with path.open("ab") as handle:
             handle.write(b"\xff\xfe bad\n{not json\n")
         again = ClerkDesk(lambda: self.client).events(self.project, cid, 0, wait=0)["events"]
-        self.assertEqual(len(again), 2)
+        self.assertEqual(len(self.kinds(again)), 2)
 
 
 if __name__ == "__main__":

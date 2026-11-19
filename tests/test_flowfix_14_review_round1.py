@@ -13,6 +13,7 @@ from collab.phase import card_phase
 from collab.state import Card
 from collab.tasks import revise_card
 from collab.vcs import revert_paths
+from review_fmt import listed_ask  # C1.5：老测试的随手复查意见补上固定清单（tests/review_fmt.py）
 
 CMD = ["/bin/bash", "-o", "pipefail", "-c", "python3 -m unittest tests.test_x"]
 
@@ -52,7 +53,7 @@ class GitBase(unittest.TestCase):
                 dev(Path(cwd))
             return AgentResult(ok=True, output="", attempts=1, final="汇报：好了")
         return run_card(card or Card("CARD-001", state="待派发"), self.collab, self.p, CMD, "codex", "codex",
-                        ask_fn=ask_fn, judge_fn=lambda *a, **k: Verdict(PASS, 0, "ok"), reviewer_adapter="codex",
+                        ask_fn=listed_ask(ask_fn), judge_fn=lambda *a, **k: Verdict(PASS, 0, "ok"), reviewer_adapter="codex",
                         require_tests=True, allowed=["src/app.py"])[0]
 
 
@@ -139,7 +140,7 @@ class AcceptOnlyForRealReviewStop(GitBase):
 
     def test_real_review_stop_offers_accept_with_full_issues(self):
         """6、8：真的是复查不通过停下才给按钮；给用户看的问题不截断"""
-        long_issue = "1. " + "很长的问题描述" * 20 + "\n2. 第二条问题"
+        long_issue = "1. 【严重】" + "很长的问题描述" * 20 + "\n2. 第二条问题"  # C1.6：不严重的退满会自动进待验收，这里测停下，问题改成严重的
         calls = {"n": 0}
 
         def ask_fn(adapter, prompt, cwd, **kw):
@@ -148,7 +149,7 @@ class AcceptOnlyForRealReviewStop(GitBase):
             if "编写自动化测试" in prompt:
                 (Path(cwd) / "tests" / "test_x.py").write_text("# t\n", encoding="utf-8")
             return AgentResult(ok=True, output="", attempts=1, final="好了")
-        run_card(Card("CARD-001", state="待派发"), self.collab, self.p, CMD, "codex", "codex", ask_fn=ask_fn,
+        run_card(Card("CARD-001", state="待派发"), self.collab, self.p, CMD, "codex", "codex", ask_fn=listed_ask(ask_fn),
                  judge_fn=lambda *a, **k: Verdict(PASS, 0, "ok"), reviewer_adapter="codex")
         phase = card_phase(self.p, "CARD-001")
         self.assertIn("accept_issues", phase["actions"])

@@ -9,6 +9,7 @@ from collab.dispatch import review_verdict, run_card
 from collab.judge import PASS, Verdict
 from collab.state import Card
 from collab.workspace import init_collab
+from review_fmt import listed_ask  # C1.5：老测试的随手复查意见补上固定清单（tests/review_fmt.py）
 
 
 class ReviewVerdictTest(unittest.TestCase):
@@ -39,7 +40,7 @@ class ReviewFlowTest(unittest.TestCase):
             return AgentResult(ok=True, output="", attempts=1)
 
         card, _ = run_card(Card("CARD-001", state="待派发"), collab_dir=self.collab, worktree=self.tmp,
-                           test_command=["fake"], dev_adapter="cursor", test_adapter="codex", ask_fn=ask,
+                           test_command=["fake"], dev_adapter="cursor", test_adapter="codex", ask_fn=listed_ask(ask),
                            judge_fn=lambda c, cwd, timeout: Verdict(PASS, 0, "ok"), reviewer_adapter="agy")
         return card
 

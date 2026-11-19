@@ -55,8 +55,8 @@ class DraftGate(unittest.TestCase):
         t = T()
         t.setUp()
         try:
-            rej = ["结论：不通过\n1. 【中等】程序把正常测试误报成测试本身写错了。"] + \
-                  ["结论：不通过\n1. 【中等】【这次改的】程序把正常测试误报成测试本身写错了，第 %d 次。" % i for i in (2, 3)]
+            rej = ["结论：不通过\n1. 【严重】程序把正常测试误报成测试本身写错了。"] + \
+                  ["结论：不通过\n1. 【严重】【这次改的】程序把正常测试误报成测试本身写错了，第 %d 次。" % i for i in (2, 3)]  # C1.6：不严重的退满会自动进待验收 / 第 2 轮起新冒出的不严重问题不退回；这里测原来那件事，问题改成严重的
             _, seen = t.go(rej)
             self.assertEqual(len(seen["draft"]), 1)
         finally:
@@ -94,6 +94,11 @@ class Cleanup(unittest.TestCase):
     def test_new_session_grandchild_cleaned(self):
         import sys
         from collab.fullrun import run_command
+        import subprocess as _sp
+        try:   # 复查员的受限环境不许查看后台进程，清理功能无法检验（用户 11-18 批准这条跳过，方案-C1.7 第 1 条）
+            _sp.run(["ps", "-A", "-o", "pid="], capture_output=True, timeout=5, check=True)
+        except (OSError, _sp.SubprocessError):
+            self.skipTest("此环境不许查看后台进程（复查员的受限环境），无法检验清理；程序自己跑测试时照常检查")
         with tempfile.TemporaryDirectory() as d:
             mark = Path(d) / "pid"
             code = ("import subprocess, sys\n"

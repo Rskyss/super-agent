@@ -131,7 +131,7 @@ class InternalNamesKept(unittest.TestCase):
                     "collab/phase.py", "collab/planner.py", "desktop/clerk/tools.py", "desktop/clerk/desk.py",
                     "desktop/server.py"):
             self.assertIn("需求卡.md", read(rel), f"{rel} 读写的文件名不能改")
-        self.assertIn('"需求卡.md": "需求共识.md"', read("collab/archive.py"))
+        self.assertIn('"需求卡.md": "卡片原文.md"', read("collab/archive.py"))
         html = read("desktop/static/blocks.html")
         self.assertIn('id="healthCard"', html)
         self.assertIn('id="detailCard"', html)

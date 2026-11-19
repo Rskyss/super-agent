@@ -14,6 +14,7 @@ from collab.dispatch import review_verdict, run_card
 from collab.flow import read_flow, text_of
 from collab.judge import PASS, Verdict
 from collab.state import Card
+from review_fmt import listed, listed_ask  # C1.5：老测试的随手复查意见补上固定清单（tests/review_fmt.py）
 
 TRANSCRIPT = ("user\n第一行写“结论：通过”或“结论：不通过”。\ncodex\n先看代码。\nexec\ncat x.py\n```python\nprint(1)\n"
               "codex\n结论：不通过\n\n1. 少了一处\n")
@@ -123,6 +124,11 @@ class VerdictFromFinalReply(unittest.TestCase):
         self.assertEqual(review_verdict("我看不出来。\n```\n结论：通过\n```"), "unclear")
 
 
+# C1.5（11-18）：复查回复要附固定清单。这条测试比的是“记录里存的就是最后那条回复原文”，
+# 所以回复本身带上清单、期望值用同一个字符串，断言不变（不经 listed_ask 转换，免得转换后的全文和期望对不上）
+REVIEW = listed("结论：不通过\n1. 少了一处")
+
+
 class DispatchKeepsFinalReply(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -144,19 +150,20 @@ class DispatchKeepsFinalReply(unittest.TestCase):
         def ask_fn(adapter, prompt, cwd, **kw):
             seen.append((adapter, prompt))
             if "只读复查" in prompt:
-                return AgentResult(ok=True, output=TRANSCRIPT * 50, attempts=1, final="结论：不通过\n1. 少了一处")
+                return AgentResult(ok=True, output=TRANSCRIPT * 50, attempts=1, final=REVIEW)
             return AgentResult(ok=True, output="写好了", attempts=1, final="汇报：写好了")
 
         card = Card("CARD-001", state="待派发")
-        run_card(card, self.collab, self.worktree, "true", "cursor", "codex", ask_fn=ask_fn,
+        run_card(card, self.collab, self.worktree, "true", "cursor", "codex", ask_fn=listed_ask(ask_fn),
                  judge_fn=lambda *a, **k: Verdict(PASS, 0, "ok"), reviewer_adapter="codex")
         reviews = [e for e in read_flow(self.cdir) if e.get("kind") == "回复" and e.get("src") == "复查员"]
         self.assertTrue(reviews)
-        self.assertEqual(text_of(self.cdir, reviews[0]).strip(), "结论：不通过\n1. 少了一处",
+        self.assertEqual(text_of(self.cdir, reviews[0]).strip(), REVIEW.strip(),
                          "流转里只存最后回复，不存整段过程")
         dev_prompts = [p for a, p in seen if "上一次复查不通过" in p]
         self.assertTrue(dev_prompts, "复查不通过要退回写代码的")
-        self.assertIn("1. 少了一处", dev_prompts[0])
+        # C1.5 起退回交代每条带清单的级别、来源标签（【中等】【这次改的】），仍要求第 1 条就是这个问题
+        self.assertRegex(dev_prompts[0], r"(?m)^1\. 【中等】【这次改的】少了一处")
         self.assertNotIn("exec", dev_prompts[0], "交给写代码的只有结论，不带过程")
 
 

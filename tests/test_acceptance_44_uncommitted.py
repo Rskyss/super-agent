@@ -21,11 +21,12 @@ class Count(ServerCase):
     def test_service(self):
         Path(self.project, "新文件.py").write_text("y\n", encoding="utf-8")
         status, answer = self.get("/api/clerk/uncommitted", project=self.project, token="口令")
-        self.assertEqual((status, answer), (200, {"count": 1}))
+        self.assertEqual((status, answer), (200, {"count": 1, "files": ["新文件.py"]}))
         self.assertEqual(self.get("/api/clerk/uncommitted", project=self.project)[0], 403)
 
     def test_panel_asks_before_starting(self):
         js = (STATIC / "panel.js").read_text(encoding="utf-8")
         self.assertIn("/api/clerk/uncommitted", js)
-        self.assertIn("这次施工看不到它们", js)
-        self.assertLess(js.index('act === "approve"'), js.index("这次施工看不到它们"))
+        # C2：浏览器自带弹窗换成三按钮小框，说法在 PanelCore.startDialogText 里
+        self.assertIn("施工会看不到它们", js)
+        self.assertIn('act === "approve"', js)

@@ -5,10 +5,12 @@
 """
 from __future__ import annotations
 
+import inspect
 import json
 import os
 import re
 import signal
+import shutil
 import subprocess
 import tempfile
 import time
@@ -131,29 +133,48 @@ def _no_plugin_flags(names: list) -> list:
 
 
 def _is_codex_shell(adapter: str) -> bool:
-    """用 Codex 的壳干活的：Codex 本身，和接千问 Token Plan 的“千问”。输出格式、最后回复都按 Codex 认。"""
-    return adapter in ("codex", "qwen")
+    """用 Codex 的壳干活的：Codex 本身，接千问 Token Plan 的“千问”，接腾讯云 TokenHub 的“腾讯云”。输出格式、最后回复都按 Codex 认。"""
+    return adapter in ("codex", "qwen", "tencent")
+
+
+def _routed_command(prompt: str, model: str, effort: str, last_path, sandbox: str,
+                    pid: str, name: str, base_url: str, key_env: str) -> list:
+    """Codex 的壳，模型来源换成别家（responses 接法；chat 接法 Codex 已不支持，11-13 实测）。
+    密钥放进环境变量交给 Codex，命令行里不出现。"""
+    # 密钥不放进本程序的环境（否则之后起的每个工具、每次测试都会继承，复查发现可能被印进测试结果和交接），
+    # 只在起这一个进程时单独交给它（ask → runner 的 env）；Codex 默认不把名字带 KEY 的变量传给它跑的命令，这里再明说一次
+    cmd = codex_command(prompt, model=model, effort=effort, last_path=last_path, sandbox=sandbox)
+    provider = ["-c", f'model_providers.{pid}.name="{name}"',
+                "-c", f'model_providers.{pid}.base_url="{base_url}"',
+                "-c", f'model_providers.{pid}.env_key="{key_env}"',
+                "-c", f'model_providers.{pid}.wire_api="responses"',
+                # 过一次请求后服务一个字不回时，让 Codex 自己等满 2 分钟就重发，最多 3 次（11-19 观察记录第 41 条）
+                "-c", f"model_providers.{pid}.stream_idle_timeout_ms=120000",
+                "-c", f"model_providers.{pid}.stream_max_retries=3",
+                "-c", f"model_providers.{pid}.request_max_retries=8",   # 被临时限流（429）多等几次再试，额度其实还在（11-19）
+                "-c", f'model_provider="{pid}"',
+                "-c", f'shell_environment_policy.exclude=["{key_env}"]']
+    # Codex 给自家模型的附加功能（多智能体、ChatGPT 应用连接、操作电脑、插件、内置浏览器）会打包成别家部分模型
+    # 不认的工具格式，Qwen4 Max Preview 因此整条请求被拒（11-13 抓包逐项比出来）；干活也用不到，接别家时一律关掉
+    for feature in ("multi_agent", "apps", "computer_use", "plugins", "browser_use", "in_app_browser"):
+        provider += ["-c", f"features.{feature}=false"]
+    return cmd[:-1] + provider + cmd[-1:]
 
 
 def qwen_command(prompt: str, model: str, effort: str = DEFAULT_MODELS["codex_effort"], last_path=None,
                  sandbox: str = "workspace-write") -> list:
-    """千问：Codex 的壳，模型来源换成千问 Token Plan（responses 接法；chat 接法 Codex 已不支持，11-13 实测）。
-    密钥放进环境变量交给 Codex，命令行里不出现。"""
+    """千问：Codex 的壳接千问 Token Plan。"""
     from collab.config import QWEN_BASE_URL, QWEN_KEY_ENV
-    # 密钥不放进本程序的环境（否则之后起的每个工具、每次测试都会继承，复查发现可能被印进测试结果和交接），
-    # 只在起千问这一个进程时单独交给它（ask → runner 的 env）；Codex 默认不把名字带 KEY 的变量传给它跑的命令，这里再明说一次
-    cmd = codex_command(prompt, model=model, effort=effort, last_path=last_path, sandbox=sandbox)
-    provider = ["-c", 'model_providers.qwtp.name="千问 Token Plan"',
-                "-c", f'model_providers.qwtp.base_url="{QWEN_BASE_URL}"',
-                "-c", f'model_providers.qwtp.env_key="{QWEN_KEY_ENV}"',
-                "-c", 'model_providers.qwtp.wire_api="responses"',
-                "-c", 'model_provider="qwtp"',
-                "-c", f'shell_environment_policy.exclude=["{QWEN_KEY_ENV}"]']
-    # Codex 给自家模型的附加功能（多智能体、ChatGPT 应用连接、操作电脑、插件、内置浏览器）会打包成千问部分模型
-    # 不认的工具格式，Qwen4 Max Preview 因此整条请求被拒（11-13 抓包逐项比出来）；干活也用不到，接千问时一律关掉
-    for feature in ("multi_agent", "apps", "computer_use", "plugins", "browser_use", "in_app_browser"):
-        provider += ["-c", f"features.{feature}=false"]
-    return cmd[:-1] + provider + cmd[-1:]
+    return _routed_command(prompt, model, effort, last_path, sandbox,
+                           "qwtp", "千问 Token Plan", QWEN_BASE_URL, QWEN_KEY_ENV)
+
+
+def tencent_command(prompt: str, model: str, effort: str = DEFAULT_MODELS["codex_effort"], last_path=None,
+                    sandbox: str = "workspace-write") -> list:
+    """腾讯云：Codex 的壳接腾讯云 TokenHub（用户 11-19，密钥用行政那把）。"""
+    from collab.config import TENCENT_BASE_URL, TENCENT_KEY_ENV
+    return _routed_command(prompt, model, effort, last_path, sandbox,
+                           "tchub", "腾讯云 TokenHub", TENCENT_BASE_URL, TENCENT_KEY_ENV)
 
 
 def _build(adapter: str, prompt: str, models: dict, last_path=None):
@@ -171,6 +192,10 @@ def _build(adapter: str, prompt: str, models: dict, last_path=None):
         return qwen_command(prompt, model=models.get("qwen") or DEFAULT_MODELS["qwen"],
                             effort=models.get("codex_effort") or DEFAULT_MODELS["codex_effort"], last_path=last_path,
                             sandbox=models.get("codex_sandbox") or "workspace-write")   # 起草只读（第四轮复查第 2 轮）
+    if adapter == "tencent":
+        return tencent_command(prompt, model=models.get("tencent") or DEFAULT_MODELS["tencent"],
+                               effort=models.get("codex_effort") or DEFAULT_MODELS["codex_effort"], last_path=last_path,
+                               sandbox=models.get("codex_sandbox") or "workspace-write")
     raise KeyError(adapter)  # 未知适配器直接报错
 
 
@@ -257,9 +282,14 @@ EMPTY_REPLY = "没有回复任何内容"
 class QuietTimeout(Exception):
     """看门人：干活的 AI 长时间没有改动任何文件，判定为卡住。"""
 
-    def __init__(self, quiet_seconds: int):
+    def __init__(self, quiet_seconds: int, waiting: bool = False):
         self.quiet_seconds = quiet_seconds
-        super().__init__(f"超过 {max(1, quiet_seconds // 60)} 分钟没有任何文件变化")
+        self.waiting = waiting
+        minutes = max(1, quiet_seconds // 60)
+        if waiting:  # 没在跑命令：多半是模型服务一个字没回（11-19 观察记录第 41 条）
+            super().__init__(f"超过 {minutes} 分钟模型没回话（工具在等模型，没在跑命令、没改文件）")
+        else:
+            super().__init__(f"超过 {minutes} 分钟没有任何文件变化")
 
 
 def _newest_mtime(root) -> float:
@@ -467,6 +497,60 @@ def _last_command(tail: str) -> str:
     return last
 
 
+def _tool_working(tool_pid: int) -> bool:
+    """工具底下有没有真在跑的命令。插件、帮手（连同它们拉起的子进程）不算；读不到进程表时按“在干活”算，
+    宁可不劝换模型（11-19 观察记录第 41 条）。"""
+    table = _process_table()
+    if not table:
+        return True
+    if tool_pid not in table:
+        return True  # 刚看完就退出了：看不清就当在干活
+    parent = {pid: row[0] for pid, row in table.items()}
+    mine = {tool_pid}
+    changed = True
+    while changed:
+        changed = False
+        for pid, ppid in parent.items():
+            if ppid in mine and pid not in mine:
+                mine.add(pid)
+                changed = True
+    for pid in mine - {tool_pid}:
+        _ppid, _age, line = table[pid]
+        up, cur = [], pid
+        while cur in table and cur != tool_pid and len(up) < 50:
+            up.append(cur)
+            cur = parent.get(cur)
+        if any(any(w in table[p][2].lower() for w in _HELPER_WORDS) for p in up):
+            continue  # 插件、帮手，以及它们拉起的子进程
+        if _is_command(line) or _runs_real_program(line):
+            return True
+    return False
+
+
+def _runs_real_program(line: str) -> bool:
+    """命令行的第一个词是不是真能执行的程序：/bin/sh -c 'sleep 30' 会直接变成 sleep，光认 shell 名单会漏。"""
+    words = line.split()
+    first = words[0] if words else ""
+    if not first:
+        return False
+    try:
+        if os.path.isabs(first) or os.sep in first:
+            return os.access(first, os.X_OK)
+        return bool(shutil.which(first))
+    except OSError:
+        return False
+
+
+def _tell_quiet(callback, seconds: int, waiting: bool) -> None:
+    """提醒回调：能收两个位置参数就带上“在等模型”的判断，只收一个、或签名读不到就只给秒数（老调用照旧）。"""
+    try:
+        inspect.signature(callback).bind(seconds, waiting)
+    except (TypeError, ValueError):
+        callback(seconds)
+        return
+    callback(seconds, waiting)
+
+
 def _same_command(a: str, b: str) -> bool:
     norm = lambda t: " ".join(_strip_env(t).split())
     return bool(a and b) and (norm(a) == norm(b) or norm(b) in norm(a))
@@ -524,13 +608,15 @@ def watched_runner(cmd, cwd, timeout, quiet_limit=QUIET_LIMIT, poll=POLL_SECONDS
                 if now - started > timeout:
                     raise subprocess.TimeoutExpired(cmd, timeout)
                 if now - last_activity > quiet_limit:
-                    raise QuietTimeout(int(now - last_activity))
+                    raise QuietTimeout(int(now - last_activity), waiting=not _tool_working(proc.pid))
                 for mark in remind_at or ():
                     if now - last_activity >= mark and mark not in reminded:
                         reminded.add(mark)
                         if on_quiet:
+                            seconds = int(now - last_activity)
+                            waiting = not _tool_working(proc.pid)
                             try:
-                                on_quiet(int(now - last_activity))
+                                _tell_quiet(on_quiet, seconds, waiting)
                             except Exception:  # noqa: BLE001 — 提醒出错不能停掉干活的人
                                 pass
         finally:
@@ -591,6 +677,9 @@ def ask(adapter: str, prompt: str, cwd, expect_file=None, timeout=DEFAULT_TIMEOU
     if adapter == "qwen":  # 千问的密钥只交给这一个进程（不进本程序的环境）
         from collab.config import QWEN_KEY_ENV, qwen_key
         extra["env"] = dict(os.environ, **{QWEN_KEY_ENV: qwen_key()})
+    if adapter == "tencent":  # 腾讯云同样只交给这一个进程
+        from collab.config import TENCENT_KEY_ENV, tencent_key
+        extra["env"] = dict(os.environ, **{TENCENT_KEY_ENV: tencent_key()})
     if watch_commands:  # 派活时才看它自己跑的命令（㊹）；体检、能力运行不受影响
         extra["command_limit"] = COMMAND_LIMIT
         extra["test_command"] = test_command or ""

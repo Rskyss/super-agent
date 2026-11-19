@@ -24,6 +24,15 @@
       <input id="reviseFiles" type="text" placeholder="还要改这些文件（可不填，多个用逗号隔开）" aria-label="还要改的文件">
       <button type="button" id="reviseSend">提交修改</button>
     </div>
+    <div id="startBox" hidden>
+      <p id="startText"></p>
+      <div id="startFiles"></div>
+      <div class="action-btns">
+        <button type="button" id="startSave">先存再开工</button>
+        <button type="button" id="startGo">直接开工</button>
+        <button type="button" id="startCancel">先不开工</button>
+      </div>
+    </div>
   </div>
   <section class="plan-preview" id="planSection" hidden>
     <div class="plan-block"><h2 class="plan-h">方案</h2><pre id="planText"></pre></div>

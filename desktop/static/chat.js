@@ -218,6 +218,16 @@ var ChatCore = (function () {
     return "这次对话用量 " + (total >= 10000 ? (total / 10000).toFixed(1) + " 万" : total);
   }
 
+  /** 行政对话顶部的用量：没有数就空着（不写 0），格式和右栏一致。 */
+  function headerUsage(total) {
+    if (typeof total !== "number" || !isFinite(total) || total <= 0) return "";
+    var text;
+    if (total >= 100000000) text = (total / 100000000).toFixed(1) + " 亿";
+    else if (total >= 10000) text = (total / 10000).toFixed(1) + " 万";
+    else text = String(Math.round(total)).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+    return "本段对话 " + text + " token";
+  }
+
   // 一段历史对话的记录直接变成画面（切换时先显示，不等连接）
   // 在干活但还没有文字往外出时显示“正在处理”；等用户确认时不显示
   Model.prototype.showWorking = function () {
@@ -383,7 +393,7 @@ var ChatCore = (function () {
     return { state: "ok", text: (job.saved ? "检测通过 · " + res.seconds + " 秒 · 已放进基础层" : "检测通过 · " + res.seconds + " 秒"), lines: [], canSave: !job.saved };
   }
 
-  return { esc: esc, md: md, Model: Model, actsSummary: actsSummary, actLine: actLine, usageText: usageText, modelFrom: modelFrom, needsOpen: needsOpen, cardInfoRows: cardInfoRows, cardNowLine: cardNowLine, afterThreadDeleted: afterThreadDeleted, isBlockKind: isBlockKind, keyProblem: keyProblem, blockCard: blockCard, blockDoneTitle: blockDoneTitle, jobView: jobView };
+  return { esc: esc, md: md, Model: Model, actsSummary: actsSummary, actLine: actLine, usageText: usageText, headerUsage: headerUsage, modelFrom: modelFrom, needsOpen: needsOpen, cardInfoRows: cardInfoRows, cardNowLine: cardNowLine, afterThreadDeleted: afterThreadDeleted, isBlockKind: isBlockKind, keyProblem: keyProblem, blockCard: blockCard, blockDoneTitle: blockDoneTitle, jobView: jobView };
 })();
 
 if (typeof module !== "undefined") module.exports = ChatCore;
@@ -1360,7 +1370,7 @@ if (typeof document !== "undefined") (function () {
     while (drawn.length > model.blocks.length) {
       list.removeChild(drawn.pop());
     }
-    $("usage").textContent = ChatCore.usageText(model.usage).replace(/^这次对话用量\s*/, "");
+    $("usage").textContent = ChatCore.headerUsage(model.usage);
     var st = model.status || "";
     var dot = $("connDot");
     if (dot) {
@@ -1625,6 +1635,28 @@ if (typeof document !== "undefined") (function () {
       .then(function () { if (myGen === gen && !stopped) poll(myGen); });
   }
 
+  // 卡片原文默认收起 2 行（用户 11-18：上面的框收不起来，下面的对话和确认框看不到）。放得下就不出“展开”
+  function cardFold(box, fold) {
+    var btn = document.getElementById("cardFold");
+    if (!btn) {
+      btn = document.createElement("button");
+      btn.type = "button";
+      btn.id = "cardFold";
+      btn.addEventListener("click", function () { cardFold(box, box.classList.contains("open")); });
+      box.parentNode.insertBefore(btn, box.nextSibling);
+      // 拖宽拖窄中间栏后行数会变：重新判断要不要“展开”（复查第 1 条）
+      if (window.ResizeObserver) new ResizeObserver(function () { cardFoldButton(box, btn); }).observe(box);
+    }
+    box.classList.toggle("fold", fold);
+    box.classList.toggle("open", !fold);
+    if (fold) box.scrollTop = 0;   // 收起时回到开头，不停在中间两行（复查第 2 条）
+    btn.textContent = fold ? "展开" : "收起";
+    cardFoldButton(box, btn);
+  }
+  function cardFoldButton(box, btn) {
+    btn.hidden = box.hidden || (box.classList.contains("fold") && box.scrollHeight <= box.clientHeight + 1);
+  }
+
   var nowCard = "", nowBusy = false, nowOpen = 0;   // 卡片标题下那一行：正在看哪张卡、有没有请求还在路上
   function hideCard() {
     viewingCard = false;
@@ -1633,6 +1665,8 @@ if (typeof document !== "undefined") (function () {
     var box = document.getElementById("cardInfo");
     if (head) { head.hidden = true; head.textContent = ""; }
     if (box) { box.hidden = true; box.textContent = ""; }
+    var foldBtn = document.getElementById("cardFold");
+    if (foldBtn) foldBtn.hidden = true;
     var nowLine = document.getElementById("cardNow");
     if (nowLine) { nowLine.hidden = true; nowLine.textContent = ""; }
     if (window.__cardPhaseTimer) clearInterval(window.__cardPhaseTimer);
@@ -1688,6 +1722,7 @@ if (typeof document !== "undefined") (function () {
           line.textContent = row.label + "：" + row.text;
           box.appendChild(line);
         });
+        cardFold(box, true);   // 切卡回到收起
       }
       viewingCard = true;
       if (info.conversation) clerkOpen(info.conversation);

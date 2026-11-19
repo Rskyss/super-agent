@@ -1,6 +1,7 @@
 """卡片阶段：页面、按钮和后台任务共用这一份判断。"""
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import subprocess
@@ -51,6 +52,22 @@ def _collab(project: str) -> Path:
 
 def _card_dir(project: str, card_id: str) -> Path:
     return _collab(project) / "cards" / card_id
+
+
+def _backend_cleaning_up(project: str, kind: str) -> bool:
+    """后台进程已经退出、桌面还在收尾（停掉剩下的测试、补写原因）时返回真。
+    任务期间桌面一直占着这把锁，进程一死锁就没了，所以不会误判成“还在跑”。"""
+    path = _collab(project) / "后台" / f"{kind}.json"
+    lock = path.with_suffix(".cleanup.lock")
+    if not lock.is_file():
+        return False
+    try:
+        with open(lock, "a+", encoding="utf-8") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    except OSError:
+        return True
+    return False
 
 
 def _read_backend(project: str, kind: str) -> Optional[dict]:
@@ -160,6 +177,16 @@ def _last_stop(events: list):
     return None
 
 
+def is_review_stop(stop: Optional[dict]) -> bool:
+    """判断最近一次转人工是否因复查不通过停下（含缺 cause 的旧格式兼容）。"""
+    if not stop:
+        return False
+    old_review_stop = not stop.get("cause") and str(stop.get("summary") or "").endswith(
+        "复查不通过，需要调度员看原因"
+    )  # 更新前停下的卡没有标记，按当时程序写的原话认（复查第 2 轮）
+    return stop.get("cause") == "复查不通过" or old_review_stop
+
+
 def _stop_text(project, card_id: str, event: dict) -> str:
     """转人工时存下的全文（复查员剩下的全部问题），流转摘要只有前 80 字。"""
     rel = event.get("text")
@@ -248,12 +275,56 @@ def _later_items(events: list) -> list:
     for i, e in enumerate(events):
         if e.get("kind") != "以后再修":
             continue
-        for t in [str(x) for x in (e.get("items") or [])] or [str(e.get("summary") or "")]:
-            if t in seen:
+        items = [str(x) for x in (e.get("items") or [])] or [str(e.get("summary") or "")]
+        keys = e.get("item_keys") if isinstance(e.get("item_keys"), list) else None
+        for idx, t in enumerate(items):
+            k = str(keys[idx]).strip() if keys and idx < len(keys) else t
+            if k in seen:
                 continue
-            seen.add(t)
+            seen.add(k)
             out.append(t + ("（继续改之前记的，可能已经修了）" if i < last_revise else ""))
     return out
+
+
+def _count_current_later(events: list, items_field: str, keys_field: str, *, fallback_items: bool = False) -> int:
+    """本次开工（最后一次追加要求之后）记进“以后再修”的去重件数；优先用带位置的键去重。"""
+    last_revise = max((i for i, e in enumerate(events) if e.get("kind") == "追加要求"), default=-1)
+    seen = set()
+    for i, e in enumerate(events):
+        if i <= last_revise or e.get("kind") != "以后再修":
+            continue
+        keys = e.get(keys_field)
+        if isinstance(keys, list) and keys:
+            for k in keys:
+                s = str(k).strip()
+                if s and s not in seen:
+                    seen.add(s)
+            continue
+        raw = e.get(items_field)
+        if fallback_items and raw is None and e.get("new_items") is None and e.get("old_items") is None:
+            raw = e.get("items")
+            keys = e.get("item_keys")
+            if isinstance(keys, list) and keys:
+                for k in keys:
+                    s = str(k).strip()
+                    if s and s not in seen:
+                        seen.add(s)
+                continue
+        for idx, t in enumerate(raw or []):
+            s = str(t).strip()
+            if s:
+                seen.add((idx, s))
+    return len(seen)
+
+
+def _current_new_later_count(events: list) -> int:
+    """本次开工（最后一次追加要求之后）记进“以后再修”的这次改出来的小问题件数（去重）。"""
+    return _count_current_later(events, "new_items", "new_keys")
+
+
+def _current_old_later_count(events: list) -> int:
+    """本次开工（最后一次追加要求之后）记进“以后再修”的开工前就有的问题件数（去重）。"""
+    return _count_current_later(events, "old_items", "old_keys", fallback_items=True)
 
 
 def card_phase(project: str, card_id: str) -> dict:
@@ -335,29 +406,97 @@ def card_phase(project: str, card_id: str) -> dict:
         }
 
     if state == "需Claude介入":
-        detail = _blocked_detail(events)
+        accept_rec = _read_backend(project, "accept")
+        if (
+            accept_rec is not None
+            and accept_rec.get("card") == card_id
+            and (process_is_alive(accept_rec.get("pid"), accept_rec.get("started"))
+                 or _backend_cleaning_up(project, "accept"))
+        ):
+            return {
+                "code": "accepting", "label": "正在跑全部测试", "tone": "run", "needs_you": False,
+                "detail": "全过就进待确认，约几分钟", "actions": [],
+            }
+        base_detail = _blocked_detail(events)
+        detail = base_detail
         actions = ["resume", "revise", "discard"]
-        drafts = [e for e in _after_last(events, "转人工") if e.get("kind") == "起草"]
+        after_stop = _after_last(events, "转人工")
+        drafts = [e for e in after_stop if e.get("kind") == "起草"]
         if drafts and drafts[-1].get("phase") == "开始":
             detail = (detail.rstrip("。") + "。" if detail else "") + "正在替你起草“继续改”的话，约 3–5 分钟"
         elif drafts and drafts[-1].get("phase") == "好了":
             detail = (detail.rstrip("。") + "。" if detail else "") + "“继续改”的话已起草好，点“不满意，继续改”就能看到"
+        accept_fails = [e for e in after_stop if e.get("kind") == "接受失败"]
+        if accept_fails:
+            fail_summary = str(accept_fails[-1].get("summary") or "").strip()
+            if fail_summary:
+                detail = (detail.rstrip("。") + "。" if detail else "") + fail_summary
         out = {"code": "blocked", "label": "卡住了", "tone": "bad", "needs_you": True, "detail": detail}
         stop = _last_stop(events)
-        old_review_stop = bool(stop) and not stop.get("cause") and str(stop.get("summary") or "").endswith(
-            "复查不通过，需要调度员看原因")  # 更新前停下的卡没有标记，按当时程序写的原话认（复查第 2 轮）
-        if stop and (stop.get("cause") == "复查不通过" or old_review_stop):
+        is_review_stop_flag = is_review_stop(stop)
+        has_stop_issues = bool(stop) and (
+            isinstance(stop.get("退回问题"), list)
+            or (isinstance(stop.get("清单"), dict) and isinstance(stop["清单"].get("问题"), list))
+            or isinstance(stop.get("issues"), list)
+        )
+        if is_review_stop_flag or has_stop_issues:
             # 只在复查不通过而停下时（看程序记的标记，不看文字）：用户可以带着剩下的问题进入待确认
-            actions = ["resume", "revise", "accept_issues", "discard"]
+            if is_review_stop_flag:
+                actions = ["resume", "revise", "accept_issues", "discard"]
             from collab.flow import plain_issues
-            plain = stop.get("issues") if isinstance(stop.get("issues"), list) else []
-            plain = plain or plain_issues(_stop_text(project, card_id, stop))  # 老卡没存 issues：现算
+            manifest = stop.get("清单") if isinstance(stop.get("清单"), dict) else None
+            stored_back = stop.get("退回问题") if isinstance(stop.get("退回问题"), list) else None
+            listed, list_hidden, list_severe_hidden = [], 0, False
+            if stored_back:
+                from collab.dispatch import plain_problems
+                listed, list_hidden, list_severe_hidden = plain_problems(
+                    [p for p in stored_back if isinstance(p, dict)]
+                )
+            elif manifest and isinstance(manifest.get("问题"), list):
+                from collab.dispatch import _needs_return, plain_problems
+                back = [p for p in manifest["问题"] if isinstance(p, dict) and _needs_return(p)]
+                listed, list_hidden, list_severe_hidden = plain_problems(back)   # 大白话，严重的标出来（11-18）
+            plain = listed or (stop.get("issues") if isinstance(stop.get("issues"), list) else [])
+            raw_stop = _stop_text(project, card_id, stop)
+            has_list = bool(stored_back) or bool(manifest and isinstance(manifest.get("问题"), list))
+            has_formal_list = (not stop.get("整段退回")) and has_list
+            if has_list and not listed and list_hidden:   # 有正式清单就只认清单，一条都翻不成也不回头塞原话（11-18 复查 2、6）
+                plain = [f"{list_hidden} 件都没写成大白话{'（其中有严重的）' if list_severe_hidden else ''}"]
+                list_hidden = 0
+            if is_review_stop_flag:
+                plain = plain or plain_issues(raw_stop)  # 老卡没存 issues：现算
+                if not has_formal_list and raw_stop:
+                    import re as _re
+                    from collab.dispatch import _raw_list_problems
+                    extra = []
+                    raw_problems, _ = _raw_list_problems(raw_stop)
+                    for problem in raw_problems:
+                        if problem.get("来源") != "原来就有的" or problem.get("级别") == "严重" \
+                                or problem.get("类型") == "测试写错":
+                            phen = str(problem.get("现象") or "").strip()
+                            if phen and not any(phen in p for p in plain + extra):   # 只跳过被完全包含的，长句里的严重问题不能被短句盖掉（11-18）
+                                level = problem.get("级别")
+                                extra.append(f"【{level}】{phen}" if level else phen)
+                    for ln in _re.sub(r"```.*?```", "", raw_stop, flags=_re.S).splitlines():
+                        s = ln.strip()
+                        if not s or _re.match(r"^[ \t*#]*结论", s):
+                            continue
+                        if _re.search(r"P[01]\b|严重|高危|安全|丢失|崩溃|测试的问题", s):
+                            body = _re.sub(r"^\s*(?:[-*•]\s*|\d+[.、)）]\s*)?(?:【[^】]{1,12}】\s*)*", "", s)
+                            head = _re.split(r"[。！？!?]", body, maxsplit=1)[0].strip()
+                            if head and not any(head in p for p in plain + extra):
+                                extra.append(head)
+                    if extra:
+                        plain = extra + list(plain)
             # 确认框里只放大白话，原话去“交接”里看（第二轮 ㊲）；认不出编号就不塞原文
-            hidden = int(stop.get("hidden") or 0) if plain and stop.get("issues") else 0
-            out["issues"] = ("\n".join(f"{i + 1}. {t}" for i, t in enumerate(plain)) if plain
-                             else "复查员没按格式写剩下的问题") + \
-                (f"\n另有 {hidden} 件没写成大白话" if hidden else "") + "\n（复查员原话在右边“交接”里）"
-            out["issues_raw"] = _stop_text(project, card_id, stop) or detail  # 接受时留档用原话（第 3 轮 A 第 2 条）
+            hidden = list_hidden if has_list else (int(stop.get("hidden") or 0) if plain and stop.get("issues") else 0)
+            severe_note = "，其中有严重的" if has_list and list_severe_hidden else ""
+            if plain or is_review_stop_flag:
+                out["issues"] = ("\n".join(f"{i + 1}. {t}" for i, t in enumerate(plain)) if plain
+                                 else "复查员没按格式写剩下的问题") + \
+                    (f"\n另有 {hidden} 件没写成大白话{severe_note}" if hidden else "") + "\n（复查员原话在右边“交接”里）"
+            if is_review_stop_flag:
+                out["issues_raw"] = raw_stop or base_detail  # 接受时留档用原话（第 3 轮 A 第 2 条）
         out["actions"] = actions
         return out
 
@@ -414,10 +553,17 @@ def card_phase(project: str, card_id: str) -> dict:
                 "branch": branch, "later": _later_items(events),
             }
         later = _later_items(events)
+        new_count = _current_new_later_count(events)
+        old_count = _current_old_later_count(events)
+        if new_count:
+            detail = f"还剩 {new_count} 件小问题已记进以后再修和台账，这次不改"
+        elif old_count:
+            detail = f"另有 {old_count} 件开工前就有的问题，已记进台账，这次不改"
+        else:
+            detail = ""
         return {
             "code": "review", "label": "等你确认", "tone": "ok", "needs_you": True,
-            "detail": (f"另有 {len(later)} 件开工前就有的问题，已记进台账，这次不改"
-                       if later else ""),
+            "detail": detail,
             "actions": ["accept", "revise", "discard"], "branch": branch, "later": later,
         }
 

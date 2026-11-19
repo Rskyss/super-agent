@@ -17,6 +17,7 @@ from datetime import datetime
 from pathlib import Path
 
 from collab import vcs
+from collab.accept import accept_remaining
 from collab.agents import ask as default_ask
 from collab.agents import kill_current_tool_process_group
 from collab.archive import archive_card
@@ -196,6 +197,11 @@ def cmd_run(args, ask_fn=None, judge_fn=None, **_):
         print("开工需要用户亲手允许：请申请提升权限后重新运行这条命令（用户会看到“允许吗？”）。"
               "在受保护环境里不能开工，这次什么都没做。", file=sys.stderr)
         return 3
+    test_command = str(args.test_command or "")
+    if not test_command.strip():
+        print("测试命令是空的：没有可跑的测试，不能开工。", file=sys.stderr)
+        return 1
+    page_check = args.page_check if str(args.page_check or "").strip() else None   # 命令原样用，不删空格（复查第 2 轮）
     project = Path(args.project)
     if not vcs.is_git_repo(project):
         print(f"{project} 不是 git 仓库，请先 git init", file=sys.stderr)
@@ -208,10 +214,15 @@ def cmd_run(args, ask_fn=None, judge_fn=None, **_):
     resuming = card.state in ("开发中", "待测试", "测试中")
     resume_blocked = getattr(args, "resume_blocked", False)
     if card.state == "需Claude介入" and resume_blocked:
-        card.transition("开发中")
-        card.save(state_path)
-        render_board(_collab(args.project))
-        resuming = True
+        from collab.accept import card_lock   # 和接受任务共用一把锁：旧测试结果不能盖掉这里刚存的状态（复查 54 第 2、7 条）
+        with card_lock(state_path):
+            card = Card.load(state_path)   # 等锁的时候状态可能已经被接受任务改掉，要重新看
+            if card.state == "需Claude介入":
+                card.transition("开发中")
+                card.save(state_path)
+                resuming = True
+        if resuming:
+            render_board(_collab(args.project))
     if card.state != "待派发" and not resuming:
         print(f"{args.card_id} 当前状态是「{card.state}」，方案确认后（待派发）才能开工", file=sys.stderr)
         return 1
@@ -278,7 +289,6 @@ def cmd_run(args, ask_fn=None, judge_fn=None, **_):
             signal.signal(sig, _on_signal)
         except (OSError, ValueError):
             pass
-
     role_models = run_models(args.project, {"test": tools["test"], "dev": tools["dev"], "review": reviewer})
     flow_record(_collab(args.project) / "cards" / args.card_id, "开跑", src="调度员", dst="程序",
                 summary=run_summary,
@@ -287,22 +297,23 @@ def cmd_run(args, ask_fn=None, judge_fn=None, **_):
                         for name, tool in (("测试员", tools["test"]), ("开发员", tools["dev"]), ("复查员", reviewer))
                         if tool},
                 pid=main_pid, started=started_at,
-                text=f"判定命令：{args.test_command}\n页面检查：{args.page_check or '无'}\n改好的版本在：{worktree}")
+                text=f"判定命令：{test_command}\n页面检查：{page_check or '无'}\n改好的版本在：{worktree}")
     card, verdict = run_card(
         card, collab_dir=_collab(args.project), worktree=str(worktree),
-        test_command=["/bin/bash", "-o", "pipefail", "-c", args.test_command],
+        test_command=["/bin/bash", "-o", "pipefail", "-c", test_command],
         dev_adapter=tools["dev"], test_adapter=tools["test"],
         ask_fn=ask_fn or default_ask, judge_fn=judge_fn or default_judge,
         models=load_models(args.project),
         role_models=role_models,
         allowed=allowed,
-        page_command=(["/bin/bash", "-o", "pipefail", "-c", args.page_check]
-                      if args.page_check else None),
+        page_command=(["/bin/bash", "-o", "pipefail", "-c", page_check]
+                      if page_check else None),
         reviewer_adapter=reviewer, require_tests=True,
         handover=_handover_worker(args.project) if ask_fn is None else None,  # 测试替身不备资料
         full_runner=_full_runner() if ask_fn is None else None,
         draft=ask_fn is None and os.environ.get("SUPERAGENT_NO_DRAFT") != "1",   # 停下后起草继续改（第四轮 56 甲）
         progress=ask_fn is None and os.environ.get("SUPERAGENT_NO_PROGRESS") != "1",   # 右栏进度条（第四轮 53）
+        red_check=ask_fn is None and os.environ.get("SUPERAGENT_NO_RED_CHECK") != "1",   # 写测试先红卡
     )
     if session:
         record_card_usage(_collab(args.project), args.card_id, usage_since(session, offset))
@@ -318,6 +329,40 @@ def cmd_merge(args, **_):
         return 0
     print(result.get("reason") or "没能放进项目", file=sys.stderr)
     return 2
+
+
+def cmd_accept_issues(args, **_):
+    from collab.accept import record_stopped
+
+    stopping = {"done": False}
+
+    def _on_signal(signum, frame):
+        # 接受进程被外部终止时，不能只让桌面清掉后台记录：测试进程组要收掉，交接里也要留下叫停原因
+        if stopping["done"]:
+            return
+        stopping["done"] = True
+        try:
+            from collab.fullrun import kill_all_groups
+            kill_all_groups()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            record_stopped(args.project, args.card_id, signum)
+        except Exception:  # noqa: BLE001
+            pass
+        raise SystemExit(128 + signum)
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            signal.signal(sig, _on_signal)
+        except (OSError, ValueError):
+            pass
+
+    result = accept_remaining(args.project, args.card_id)
+    if result.get("ok"):
+        return 0
+    print(result.get("reason") or "没能接受剩下的问题", file=sys.stderr)
+    return 1
 
 
 def cmd_watch(args, **_):
@@ -429,11 +474,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--test-command", required=True, help="判定用的测试命令，只看退出码")
     p.add_argument("--session-jsonl", help="Claude 会话记录路径，用于记录额度；填 auto 自动找最新的一份")
     p.add_argument("--page-check", help="真实页面检查命令（由项目定义），通过才算做完")
-    p.add_argument("--dev-tool", default=None, choices=["cursor", "codex", "agy", "qwen"],
+    p.add_argument("--dev-tool", default=None, choices=["cursor", "codex", "agy", "qwen", "tencent"],
                    help="开发员（写代码）；不写就用团队配置（默认 Cursor）")
-    p.add_argument("--test-tool", default=None, choices=["cursor", "codex", "agy", "qwen"],
+    p.add_argument("--test-tool", default=None, choices=["cursor", "codex", "agy", "qwen", "tencent"],
                    help="测试员（写测试）；不写就用团队配置（默认 Codex）")
-    p.add_argument("--review-tool", default=None, choices=["cursor", "codex", "agy", "qwen", "none"],
+    p.add_argument("--review-tool", default=None, choices=["cursor", "codex", "agy", "qwen", "tencent", "none"],
                    help="独立复查（只读）；none 表示不复查；不写就用团队配置（默认 agy）")
     p.add_argument("--resume-blocked", action="store_true",
                    help="从「需Claude介入」转入「开发中」后继续（须与断点续跑一起用）")
@@ -457,6 +502,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("project")
     p.add_argument("card_id")
     p.set_defaults(func=cmd_merge)
+
+    p = sub.add_parser("accept-issues", help="接受复查剩下的问题，跑全部测试全过后进待确认")
+    p.add_argument("project")
+    p.add_argument("card_id")
+    p.set_defaults(func=cmd_accept_issues)
 
     p = sub.add_parser("watch", help="实时查看某张卡的进度（每隔几秒刷新）")
     p.add_argument("project")

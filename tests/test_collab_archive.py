@@ -32,7 +32,7 @@ class ArchiveTest(unittest.TestCase):
     def test_records_land_in_feature_folder_with_familiar_names(self):
         target = archive_card(self.project, "CARD-001", "早上好问候")
         self.assertEqual(target, self.project / "docs" / "早上好问候")
-        self.assertEqual((target / "需求共识.md").read_text(encoding="utf-8"), "# 需求：加问候")
+        self.assertEqual((target / "卡片原文.md").read_text(encoding="utf-8"), "# 需求：加问候")
         self.assertTrue((target / "方案.md").exists())
         self.assertTrue((target / "验收记录.md").exists())
         self.assertTrue((target / "过程记录" / "执行记录.md").exists())
