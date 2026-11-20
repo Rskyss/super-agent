@@ -50,6 +50,7 @@ import WebKit
 
 let lastProjectKey = "lastProject"
 let recentProjectsKey = "recentProjects"
+let recentLimit = 20
 let panelBackground = NSColor(srgbRed: 0x13 / 255.0, green: 0x14 / 255.0, blue: 0x17 / 255.0, alpha: 1)
 let chatBackground = NSColor(srgbRed: 0x17 / 255.0, green: 0x18 / 255.0, blue: 0x1b / 255.0, alpha: 1)
 let terminalBackground = NSColor(srgbRed: 0x17 / 255.0, green: 0x18 / 255.0, blue: 0x1b / 255.0, alpha: 1)
@@ -401,6 +402,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
     var configWeb: WKWebView!            // 团队配置
     var web: WKWebView!                  // 右栏
     var selectedCard: String?            // 左栏选中的卡；nil 表示主对话，右栏跟随最新
+    var pendingPlaceCard: String?        // 切回来时记下的卡，等聊天页加载完再打开
+    var pendingPlaceProject: String?     // pendingPlaceCard 属于哪个项目，防止串到同编号的卡
+    var closeMenuMonitor: Any?           // 点左栏以外的位置时，顺手关掉项目浮层
     var rightWanted = true               // 点开卡片时右栏开不开；没选卡片时右栏根本不存在
     var navWidth: CGFloat = 264
     var rightWidth: CGFloat = 372
@@ -434,6 +438,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
         startServer()
         let withOpening = argValue("--switch-test") == nil
         selectedCard = argValue("--card")
+        if argValue("--card") == nil {
+            let saved = savedPlace(for: project)
+            if let card = saved["card"], !card.isEmpty {
+                pendingPlaceCard = card
+                pendingPlaceProject = project.path
+            }
+        }
         ClerkKey.migrateOldKey()
         clerkReady = savedClerkKey() != nil  // 先定下来：不然终端型调度员会先启动并发话
         showLeft(firstLeft(), opening: withOpening)
@@ -457,9 +468,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        flushChatPlace()
         quitting = true
         stopTerminal()
         server?.terminate()
+    }
+
+    /// 退出前把聊天页当前的位置补存一次：最后 800 毫秒里打的字也不会丢
+    func flushChatPlace() {
+        guard let project = project, chatLoadedKey != nil else { return }
+        let card = cardToRemember()
+        var done = false
+        chatWeb.evaluateJavaScript("JSON.stringify(window.SuperAgentChat && window.SuperAgentChat.place())") { result, _ in
+            MainActor.assumeIsolated {
+                if let text = result as? String, let data = text.data(using: .utf8),
+                   let place = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
+                    self.saveChatPlace(place, for: project, card: card)
+                }
+                done = true
+            }
+        }
+        let deadline = Date().addingTimeInterval(0.3)
+        while !done && Date() < deadline {
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
+        }
     }
 
     func initialProject() -> URL? {
@@ -484,6 +516,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
         panel.allowsMultipleSelection = false
         // 系统弹窗要用 runModal，手工空转等收不到鼠标和键盘，会卡死
         return panel.runModal() == .OK ? panel.url : nil
+    }
+
+    func recentProjectList() -> [String] {
+        (UserDefaults.standard.stringArray(forKey: recentProjectsKey) ?? []).filter { isFolder($0) }
+    }
+
+    func canSwitchTo(_ path: String) -> Bool {
+        guard isFolder(path) else { return false }
+        return recentProjectList().contains(path)
+    }
+
+    // 每个项目按完整路径单独记：上次打开的对话、卡片和没发的字
+    func placeKey(for url: URL) -> String { "place:" + url.path }
+
+    /// 要记下的卡：已经选中的；还没选中但正等着恢复的（切回来、聊天页还没加载完）也算，不能记成空
+    func cardToRemember() -> String? {
+        if let card = selectedCard { return card }
+        if pendingPlaceProject == project.path, let card = pendingPlaceCard, !card.isEmpty { return card }
+        return nil
+    }
+
+    func savedPlace(for url: URL) -> [String: String] {
+        UserDefaults.standard.dictionary(forKey: placeKey(for: url)) as? [String: String] ?? [:]
+    }
+
+    /// 把聊天页报回的位置写进项目记录。聊天页报的永远是主对话的那段和那份草稿（看卡时也是），照写即可
+    func saveChatPlace(_ place: [String: Any], for url: URL, card: String?) {
+        var record = UserDefaults.standard.dictionary(forKey: placeKey(for: url)) as? [String: String] ?? [:]
+        record["thread"] = place["thread"] as? String ?? ""
+        record["draft"] = String((place["draft"] as? String ?? "").prefix(2000))
+        record["card"] = card ?? ""
+        UserDefaults.standard.set(record, forKey: placeKey(for: url))
     }
 
     // MARK: 打开项目：接入 / 迁移
@@ -562,17 +626,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
             ])
             URLSession.shared.dataTask(with: req).resume()
         }
-        closeChatOnServer(clearView: true)
-        project = url
-        selectedCard = nil
-        prepareProject()
-        remember(url)
-        updateTitle()
-        applyClerkSetting { [weak self] in
-            guard let self = self else { return }
-            self.showLeft(firstLeft(), opening: true)
-            self.loadPanel()
+        let oldProject = project!
+        let oldCard = cardToRemember()
+        var moved = false
+        pendingPlaceCard = nil
+        pendingPlaceProject = nil
+
+        // 先把旧项目的卡片记下来；对话和草稿等聊天页回话后再补上
+        var saved = UserDefaults.standard.dictionary(forKey: placeKey(for: project)) as? [String: String] ?? [:]
+        saved["card"] = oldCard ?? ""
+        UserDefaults.standard.set(saved, forKey: placeKey(for: project))
+
+        var move: (@MainActor () -> Void)?
+
+        chatWeb?.evaluateJavaScript("JSON.stringify(window.SuperAgentChat && window.SuperAgentChat.place())") { result, _ in
+            MainActor.assumeIsolated {
+                if let text = result as? String, let data = text.data(using: .utf8),
+                   let place = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
+                    self.saveChatPlace(place, for: oldProject, card: oldCard)
+                }
+                move?()
+            }
         }
+        move = { [weak self] in
+            guard let self = self, !moved else { return }
+            moved = true
+            self.closeChatOnServer(clearView: true)
+            self.project = url
+            self.selectedCard = nil
+            // 一换项目就记下这个项目待恢复的卡：行政配置还在加载时又切走，也能把它原样记回去
+            let place = self.savedPlace(for: url)
+            self.pendingPlaceCard = place["card"].flatMap { $0.isEmpty ? nil : $0 }
+            self.pendingPlaceProject = self.pendingPlaceCard == nil ? nil : url.path
+            self.prepareProject()
+            self.remember(url)
+            self.updateTitle()
+            self.applyClerkSetting { [weak self] in
+                guard let self = self, self.project == url else { return }
+                self.showLeft(firstLeft(), opening: true)
+                self.loadPanel()
+            }
+        }
+        // 聊天页卡住时最多等一秒，后续动作只走一次
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { MainActor.assumeIsolated { move?() } }
     }
 
     func remember(_ url: URL) {
@@ -581,13 +677,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
         var recent = UserDefaults.standard.stringArray(forKey: recentProjectsKey) ?? []
         recent.removeAll { $0 == url.path }
         recent.insert(url.path, at: 0)
-        UserDefaults.standard.set(Array(recent.prefix(10)), forKey: recentProjectsKey)
+        UserDefaults.standard.set(Array(recent.prefix(recentLimit)), forKey: recentProjectsKey)
         rebuildRecentMenu()
     }
 
     func rebuildRecentMenu() {
         recentMenu.removeAllItems()
-        let recent = (UserDefaults.standard.stringArray(forKey: recentProjectsKey) ?? []).filter { isFolder($0) }
+        let recent = recentProjectList()
         if recent.isEmpty {
             recentMenu.addItem(withTitle: "（还没有）", action: nil, keyEquivalent: "")
         }
@@ -697,6 +793,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
         rightBox.isHidden = true
         syncRight()
         window.delegate = self   // 界面建好才开始听：恢复窗口大小时系统会立刻发通知
+        closeMenuMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
+            guard let self = self, event.window === self.window else { return event }
+            let point = self.navBox.convert(event.locationInWindow, from: nil)
+            if !self.navBox.bounds.contains(point) {
+                self.navWeb.evaluateJavaScript("window.SuperAgentNav && window.SuperAgentNav.closeProjectMenu()", completionHandler: nil)
+            }
+            return event
+        }
     }
 
     func dragStrip() -> NSView { TopBar() }
@@ -806,7 +910,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
 
     /// 左栏点了一张卡（nil 是主对话）。配了行政时，中间换成这张卡自己的对话
     func selectCard(_ id: String?) {
+        pendingPlaceCard = nil
+        pendingPlaceProject = nil
         selectedCard = id
+        var place = UserDefaults.standard.dictionary(forKey: placeKey(for: project)) as? [String: String] ?? [:]
+        place["card"] = id ?? ""
+        UserDefaults.standard.set(place, forKey: placeKey(for: project))
         if clerkReady {
             if let id = id {
                 openClerkCard(id)
@@ -822,8 +931,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
 
     /// 配了行政才走：问本机服务要这张卡的对话，再让聊天页打开
     func openClerkCard(_ id: String) {
-        postLocal("/api/clerk/card/open", ["project": project.path, "card": id]) { [weak self] answer in
-            guard let self = self, self.selectedCard == id else { return }
+        let asked = project.path
+        postLocal("/api/clerk/card/open", ["project": asked, "card": id]) { [weak self] answer in
+            // 各项目的卡号都从 001 起：回来时不光核对卡号，还要核对仍是发请求时的项目
+            guard let self = self, self.selectedCard == id, self.project.path == asked else { return }
             self.showLeft(.chat, opening: false)
             guard let data = try? JSONSerialization.data(withJSONObject: answer),
                   let text = String(data: data, encoding: .utf8) else { return }
@@ -874,6 +985,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
         pin(leftContent, in: leftBox, top: topBarHeight + 4)
         pin(buildTopBar(), in: leftBox, height: topBarHeight + 4)
         chatWeb = makeWeb(message: "正在连接…", background: "#17181b")
+        chatWeb.navigationDelegate = self   // 聊天页的 superagent://place 和加载完成回调都走这里
         configWeb = makeWeb(message: "正在打开团队配置…", background: "#17181b")
         configWeb.navigationDelegate = self
     }
@@ -1092,8 +1204,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
             return
         }
         chatLoadedKey = key
+        let place = savedPlace(for: project)
         let query = "project=\(urlEncode(project.path))&dispatcher=\(urlEncode(saved))&token=\(chatToken)"
             + "&mode=\(mode)&opening=\(opening ? 1 : 0)&clerk=\(clerkReady ? 1 : 0)"
+            + "&thread=\(urlEncode(place["thread"] ?? ""))&draft=\(urlEncode(place["draft"] ?? ""))"
         if let url = URL(string: "http://127.0.0.1:\(port)/static/chat.html?\(query)") {
             chatWeb.load(URLRequest(url: url))
         }
@@ -1114,6 +1228,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
         if let url = URL(string: "http://127.0.0.1:\(port)/static/team.html?\(query)") {
             configWeb.load(URLRequest(url: url))
         }
+    }
+
+    /// 聊天页加载完了，再把切回来时记下的卡打开；先清标记，避免重复打开
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        guard webView === chatWeb else { return }
+        guard webView.url?.path.hasSuffix("/static/chat.html") == true else { return }
+        guard pendingPlaceProject == project.path, let card = pendingPlaceCard, !card.isEmpty else {
+            pendingPlaceCard = nil
+            pendingPlaceProject = nil
+            return
+        }
+        pendingPlaceCard = nil
+        pendingPlaceProject = nil
+        selectCard(card)
     }
 
     /// 配置页保存后会跳到 superagent://saved：在这里接住，行政接通了就切到对话，没接通就留在团队页
@@ -1218,6 +1346,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
         case "clerk-forget":
             confirmForgetClerk(provider: value("provider") ?? providerFor(base: clerkBase),
                                base: value("base_url") ?? clerkBase)
+        case "project":
+            guard let path = value("path") else { return }
+            if path == project.path { return }
+            guard canSwitchTo(path) else { return }
+            switchTo(URL(fileURLWithPath: path))
+        case "project-add":
+            if let picked = askForProject() { switchTo(picked) }
+        case "place":
+            if let from = value("project"), from != project.path { return }
+            var place = UserDefaults.standard.dictionary(forKey: placeKey(for: project)) as? [String: String] ?? [:]
+            place["thread"] = value("thread") ?? ""
+            place["draft"] = String((value("draft") ?? "").prefix(2000))
+            UserDefaults.standard.set(place, forKey: placeKey(for: project))
         case "clerk-open":
             if let raw = value("url"), let target = URL(string: raw),
                target.scheme?.lowercased() == "http",
@@ -1926,7 +2067,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
         if let url = URL(string: "http://127.0.0.1:\(port)/?\(base)&card=\(card)&token=\(chatToken)&clerk=\(clerkReady ? 1 : 0)") {
             web.load(URLRequest(url: url))
         }
-        if let url = URL(string: "http://127.0.0.1:\(port)/static/nav.html?\(base)&selected=\(card)&mode=\(navMode())&token=\(chatToken)&chat=\(Dispatcher.forProject(project)?.hasChat == true || clerkReady ? 1 : 0)&clerk=\(clerkReady ? 1 : 0)") {
+        let recent = recentProjectList()
+        let projects = (try? JSONSerialization.data(withJSONObject: recent)).flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
+        if let url = URL(string: "http://127.0.0.1:\(port)/static/nav.html?\(base)&selected=\(card)&mode=\(navMode())&token=\(chatToken)&chat=\(Dispatcher.forProject(project)?.hasChat == true || clerkReady ? 1 : 0)&clerk=\(clerkReady ? 1 : 0)&projects=\(urlEncode(projects))") {
             navWeb.load(URLRequest(url: url))
         }
     }

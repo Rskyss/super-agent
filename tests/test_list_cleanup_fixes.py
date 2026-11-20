@@ -370,4 +370,5 @@ class ReviewPage(ProjectCase):
         self.assertIn("toDateString()", self.nav()[self.nav().index("function drawThreads"):self.nav().index("function drawTabs")])
 
     def test_fold_row_says_its_state(self):
-        self.assertEqual(self.nav().count("aria-expanded"), 2)
+        # 两处折叠行各报一次展开状态；CARD-019（11-20）左下角项目按钮也报浮层开关，所以是 3 处
+        self.assertEqual(self.nav().count("aria-expanded"), 3)

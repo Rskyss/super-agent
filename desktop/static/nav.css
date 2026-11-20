@@ -2,7 +2,7 @@
 html, body { background: transparent; }
 html { background: rgba(19, 20, 23, .72); }
 body { overflow: hidden; }
-.nav { height: 100%; display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; }
+.nav { position: relative; height: 100%; display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; }
 
 /* 分段切换的样子 */
 .tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 2px; margin: 0 12px 10px; padding: 2px; background: rgba(255, 255, 255, .06); border-radius: var(--r-md); }
@@ -65,8 +65,28 @@ body { overflow: hidden; }
 .dot.bad { background: var(--bad); }
 .empty { padding: 7px 10px; font-size: var(--fs-base); color: var(--dim); }
 
-.foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 8px 10px 18px; }
-.proj { font-size: var(--fs-base); color: var(--dim); min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 8px 10px 12px; }
+.proj-btn { display: flex; align-items: center; gap: 4px; flex: 1; min-width: 0; height: 30px; padding: 0 6px; color: var(--dim); background: none; border: 0; border-radius: var(--r-md); cursor: default; text-align: left; transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease); }
+.proj-btn:hover { background: var(--hair); color: var(--text); }
+.proj-btn svg { flex: none; opacity: .7; }
+.proj { font-size: var(--fs-base); color: inherit; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.proj-menu { position: absolute; left: 8px; right: 8px; bottom: 48px; z-index: 20; padding: 6px; background: var(--bg-raised); border: 1px solid var(--hair); border-radius: 12px; box-shadow: var(--shadow-2); }
+.proj-menu[hidden] { display: none; }
+.proj-search { position: relative; margin: 2px 2px 6px; }
+.proj-search svg { position: absolute; left: 9px; top: 8px; color: var(--dim); pointer-events: none; }
+.proj-search input { width: 100%; height: 28px; padding: 0 9px 0 29px; font: inherit; font-size: var(--fs-base); color: var(--text); background: var(--surface); border: 0; border-radius: var(--r-md); }
+.proj-search input::placeholder { color: var(--dim); }
+.proj-list { max-height: 252px; overflow-y: auto; }
+.proj-item { display: flex; align-items: center; gap: 8px; width: 100%; height: 36px; padding: 0 8px; font: inherit; font-size: var(--fs-base); color: var(--dim); text-align: left; background: transparent; border: 0; border-radius: var(--r-md); cursor: default; }
+.proj-item:hover { background: var(--hair); color: var(--text); }
+.proj-item.on { background: var(--hair-2); color: var(--text); }
+.proj-item svg { flex: none; opacity: .8; }
+.proj-name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.proj-check { flex: none; color: var(--accent); }
+.proj-empty { padding: 9px 8px; font-size: var(--fs-base); color: var(--dim); }
+.proj-sep { height: 1px; margin: 6px 2px; background: var(--hair); }
+.proj-add { width: 100%; height: 34px; padding: 0 8px; font: inherit; font-size: var(--fs-base); color: var(--dim); text-align: left; background: none; border: 0; border-radius: var(--r-md); cursor: default; }
+.proj-add:hover { background: var(--hair); color: var(--text); }
 .gear { margin-left: auto; height: 30px; padding: 0 10px; font-size: var(--fs-base); flex: none; color: var(--dim); background: none; border: 0; border-radius: var(--r-md); cursor: default; transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease); }
 .gear:hover { background: rgba(255, 255, 255, .07); color: var(--text); }
 .gear.on { background: rgba(255, 255, 255, .1); color: var(--text); }

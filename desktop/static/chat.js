@@ -281,6 +281,18 @@ var ChatCore = (function () {
     return { clearMain: false, open: state.current === id ? "fresh" : null };
   }
 
+  // 切回项目时接回上次停的地方：对话还在就开它；停在空白新对话且打了字，就回到空白对话并把字放回去
+  function restorePlace(threads, saved) {
+    var list = Array.isArray(threads) ? threads : [];
+    saved = saved && typeof saved === "object" ? saved : {};
+    var thread = typeof saved.thread === "string" ? saved.thread : "";
+    var draft = typeof saved.draft === "string" ? saved.draft : "";
+    if (thread && list.some(function (t) { return t && t.id === thread; })) return { open: thread, draft: draft };
+    if (!thread && draft.trim()) return { open: null, draft: draft };
+    // 没有记录、对话已删、记录全空：接最近一段；被删对话的草稿不能带到别的对话
+    return { open: list.length ? list[0].id : null, draft: "" };
+  }
+
   function isBlockKind(kind) {
     return ["install", "connect", "connect_api", "web_install", "connect_search"].indexOf(kind) !== -1;
   }
@@ -393,7 +405,7 @@ var ChatCore = (function () {
     return { state: "ok", text: (job.saved ? "检测通过 · " + res.seconds + " 秒 · 已放进基础层" : "检测通过 · " + res.seconds + " 秒"), lines: [], canSave: !job.saved };
   }
 
-  return { esc: esc, md: md, Model: Model, actsSummary: actsSummary, actLine: actLine, usageText: usageText, headerUsage: headerUsage, modelFrom: modelFrom, needsOpen: needsOpen, cardInfoRows: cardInfoRows, cardNowLine: cardNowLine, afterThreadDeleted: afterThreadDeleted, isBlockKind: isBlockKind, keyProblem: keyProblem, blockCard: blockCard, blockDoneTitle: blockDoneTitle, jobView: jobView };
+  return { esc: esc, md: md, Model: Model, actsSummary: actsSummary, actLine: actLine, usageText: usageText, headerUsage: headerUsage, modelFrom: modelFrom, needsOpen: needsOpen, cardInfoRows: cardInfoRows, cardNowLine: cardNowLine, afterThreadDeleted: afterThreadDeleted, restorePlace: restorePlace, isBlockKind: isBlockKind, keyProblem: keyProblem, blockCard: blockCard, blockDoneTitle: blockDoneTitle, jobView: jobView };
 })();
 
 if (typeof module !== "undefined") module.exports = ChatCore;
@@ -409,6 +421,7 @@ if (typeof document !== "undefined") (function () {
   var model = new ChatCore.Model(), drawn = [];
   var $ = function (id) { return document.getElementById(id); };
   var list = $("msgs");
+  function tell(address) { location.href = address; }
 
   $("who").textContent = names[dispatcher] || dispatcher;
   $("whoFace").textContent = faces[dispatcher] || "调";
@@ -1541,6 +1554,7 @@ if (typeof document !== "undefined") (function () {
     if (!text) return;
     if (pendingModel) { $("status").textContent = "正在同步，稍等一下再发送"; return; }  // 话留在输入框里
     box.value = ""; resize();
+    savePlaceNow();   // 发出去的字不再算草稿，立刻把空草稿存下去
     if (clerkMode) { clerkSend(text); return; }
     api("/api/chat/send", { text: text }).catch(function (err) { box.value = text; showError(err.message); });
   });
@@ -1548,14 +1562,41 @@ if (typeof document !== "undefined") (function () {
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); $("composer").requestSubmit(); }
   });
   function resize() { var box = $("input"); box.style.height = "auto"; box.style.height = Math.min(box.scrollHeight, 160) + "px"; }
-  $("input").addEventListener("input", resize);
+  $("input").addEventListener("input", function () {
+    resize();
+    if (!viewingCard) placeTouched = true;   // 只算主对话里打的字；看卡时打的是卡片对话的
+    if (clerkMode && !butlerMode && !viewingCard) schedulePlaceReport();
+  });
 
   var failures = 0, stopped = false, pendingModel = null, pollCtrl = null, pollTimer = null, gen = 0;
   var threadCache = {}, currentThread = null;   // 读好的历史对话：点的时候直接显示
   var connectFailed = false;                    // 当前这段没连上，再点一次要重连
   var blankChat = false;                        // 新对话还没说话：Codex 还没存档，接不回来
   var viewingCard = false, mainThread = null;   // 正在看任务对话；回去时接着这段主对话
+  var mainDraft = "";   // 看卡时，主对话里还没发的字先放这里；回到主对话再放回输入框
+  var restoringPlace = false, placeTimer = null, placeReady = false, placeTouched = false;
   var clerkPlaceholder = butlerMode ? "跟管家说…" : "跟行政说…";
+
+  function truncateDraft(text) {
+    return Array.from(String(text == null ? "" : text)).slice(0, 2000).join("");
+  }
+  // 报的永远是主对话的位置：看卡时报回去要接的主对话和放在一边的草稿，不报卡片对话里的字
+  function placeNow() {
+    return viewingCard ? { thread: mainThread || "", draft: mainDraft }
+                       : { thread: currentThread || "", draft: $("input").value };
+  }
+  function reportPlace() {
+    if (!clerkMode || butlerMode || !placeReady) return;
+    var p = placeNow();
+    tell("superagent://place?project=" + encodeURIComponent(project)
+      + "&thread=" + encodeURIComponent(p.thread)
+      + "&draft=" + encodeURIComponent(truncateDraft(p.draft)));
+  }
+  function savePlaceNow() { reportPlace(); }
+  function schedulePlaceReport() {
+    if (placeTimer) clearTimeout(placeTimer);
+    placeTimer = setTimeout(reportPlace, 800);
+  }
 
   function pause() {
     stopped = true;
@@ -1566,11 +1607,14 @@ if (typeof document !== "undefined") (function () {
   }
 
   // 行政对话：内容都在本机，切换马上显示，不用连接
-  function clerkOpen(id) {
+  // keepDraft：回到主对话时放回输入框的字（先放好再上报，不能先报一个空草稿盖掉记录）
+  function clerkOpen(id, keepDraft) {
     pause();
     stopped = false;
     failures = 0;
-    if ((id || null) !== currentThread) $("input").value = "";   // 草稿不带到别的对话
+    // 草稿不带到别的对话；但恢复旧对话时，列表回来前用户已经打的字要留着
+    if ((id || null) !== currentThread && (!restoringPlace || !placeTouched)) $("input").value = "";
+    if (typeof keepDraft === "string") { $("input").value = keepDraft; resize(); }
     currentThread = id || null;
     if (!viewingCard) mainThread = currentThread;
     pendingModel = null;
@@ -1580,6 +1624,7 @@ if (typeof document !== "undefined") (function () {
     render();
     api("/api/clerk/focus", { conversation: id || "" }).catch(function () { /* 只影响左栏选中 */ });
     if (id) { var myGen = ++gen; poll(myGen); }
+    if (!restoringPlace) reportPlace();
   }
 
   function clerkSend(text) {
@@ -1589,6 +1634,7 @@ if (typeof document !== "undefined") (function () {
       currentThread = d.conversation;
       if (!viewingCard) mainThread = currentThread;
       api("/api/clerk/focus", { conversation: currentThread }).catch(function () {});
+      reportPlace();   // 新对话的编号也立刻记下来，重开时接回这一段
       var myGen = ++gen;
       poll(myGen);
     }).catch(function (err) {
@@ -1673,6 +1719,12 @@ if (typeof document !== "undefined") (function () {
   }
 
   window.SuperAgentChat = {
+    place: function () {
+      if (placeReady) return placeNow();
+      if (!placeTouched) return null;   // 还没恢复好、用户也没动过：不报，免得空值盖掉存好的记录
+      // 还没恢复好但用户已经打了字：报记录里的那段和刚打的字
+      return { thread: params.get("thread") || "", draft: viewingCard ? mainDraft : $("input").value };
+    },
     pause: pause, resume: resume,
     isWorking: function () { return (butlerMode || !clerkMode) && !stopped && !!(model.busy || (!clerkMode && pendingModel && pendingModel.busy)); },
     startFresh: function () {
@@ -1698,7 +1750,7 @@ if (typeof document !== "undefined") (function () {
     },
     threadDeleted: function (id) {
       var next = ChatCore.afterThreadDeleted(id, { clerk: clerkMode, current: currentThread, main: mainThread, viewingCard: viewingCard });
-      if (next.clearMain) mainThread = null;
+      if (next.clearMain) { mainThread = null; mainDraft = ""; }   // 主对话删了，它没发的字也作废，不能带进空白新对话
       if (next.open === "blank") clerkOpen(null);
       else if (next.open === "fresh") switchSession("fresh", false, null);   // 空白对话：不带开场白，不自动发话
     },
@@ -1724,6 +1776,7 @@ if (typeof document !== "undefined") (function () {
         });
         cardFold(box, true);   // 切卡回到收起
       }
+      if (!viewingCard) mainDraft = $("input").value;   // 主对话没发的字先放一边，看完卡回来还在
       viewingCard = true;
       if (info.conversation) clerkOpen(info.conversation);
       var nowLine = document.getElementById("cardNow");
@@ -1770,7 +1823,9 @@ if (typeof document !== "undefined") (function () {
     closeCard: function () {
       if (!viewingCard) return;
       hideCard();
-      clerkOpen(mainThread);
+      var back = mainDraft;
+      mainDraft = "";
+      clerkOpen(mainThread, back);
     },
   };
   window.addEventListener("pagehide", pause);
@@ -1866,9 +1921,22 @@ if (typeof document !== "undefined") (function () {
     fetch("/api/clerk/list?" + new URLSearchParams({ project: project, token: token }).toString())
       .then(function (r) { return r.json(); })
       .then(function (d) {
-        var latest = d.threads && d.threads.length ? d.threads[0].id : null;
-        if (viewingCard) mainThread = latest;   // 列表回来前已经开了卡，不能把卡片换掉
-        else clerkOpen(latest);
+        var r = ChatCore.restorePlace(d.threads || [], {
+          thread: params.get("thread") || "",
+          draft: params.get("draft") || ""
+        });
+        if (viewingCard) {   // 列表回来前已经开了卡，不能把卡片换掉：只记下回去时接哪段、放回哪些字
+          mainThread = r.open;
+          if (!placeTouched) mainDraft = r.draft;   // 开卡前用户已经打的新字已放在 mainDraft，不拿旧草稿盖掉
+          placeReady = true;
+        } else {
+          restoringPlace = true;
+          clerkOpen(r.open);
+          if (!placeTouched && r.draft) { $("input").value = r.draft; resize(); }   // 没有草稿就不碰输入框（clerkOpen 已清空）
+          placeReady = true;
+          restoringPlace = false;
+          reportPlace();
+        }
       })
       .catch(function () { if (!viewingCard) clerkOpen(null); });
   } else {

@@ -56,6 +56,32 @@ var NavCore = {
     if (!q) return threads;
     return threads.filter(function (t) { return NavCore.threadTitle(t.title).toLowerCase().indexOf(q) >= 0; });
   },
+  projectName: function (path) {
+    var clean = String(path == null ? "" : path).replace(/\/+$/, "");
+    return clean.split("/").pop() || "";
+  },
+  // 最近项目列表：顺序照传入的（最近用的在前），重复路径只留第一个；当前项目不在里面就补到最上面
+  projectItems: function (paths, current, query) {
+    if (paths == null) paths = [];
+    if (!Array.isArray(paths)) paths = [];   // 传坏了当空列表，但当前项目仍要补在最上面
+    var key = function (path) {
+      var clean = String(path == null ? "" : path).replace(/\/+$/, "");
+      return clean || "/";
+    };
+    var seen = {}, items = [];
+    paths.forEach(function (path) {
+      var k = key(path);
+      if (seen[k]) return;
+      seen[k] = true;
+      items.push({ name: NavCore.projectName(path), path: path, current: false });
+    });
+    var now = key(current);
+    if (current && !seen[now]) items.unshift({ name: NavCore.projectName(current), path: current, current: true });
+    items.forEach(function (item) { item.current = key(item.path) === now; });
+    var q = String(query || "").trim().toLowerCase();
+    if (!q) return items;
+    return items.filter(function (item) { return item.name.toLowerCase().indexOf(q) >= 0; });
+  },
   // 没有历史对话时（如只能用终端的调度员），看卡片或设置也要有路回去
   needsBackRow: function (count, mode, canReturn) { return !count && mode !== "main" && !!canReturn; },
   threadTitle: function (title) { return String(title || "").replace(/（[^）]*）$/, "") || "对话"; },
@@ -126,6 +152,11 @@ if (typeof document !== "undefined") (function () {
   clerkMode = params.get("clerk") === "1";   // 行政对话都在本机，刷新不花什么
   if (clerkMode) THREADS_MS = 1500;
   var project = params.get("project") || "", dispatcher = params.get("dispatcher") || "", token = params.get("token") || "";
+  var projects = [];
+  try {
+    var parsedProjects = params.get("projects") ? JSON.parse(params.get("projects")) : [];
+    if (Array.isArray(parsedProjects)) projects = parsedProjects;
+  } catch (_) { projects = []; }
   var selected = params.get("selected") || null, mode = params.get("mode") || "main";
   var cards = [], threads = [], showAllThreads = false, showArchivedOpen = false, pendingThread = null, lastKey = "", threadKey = "";
   var listCached = false, deleted = {}, locks = {};
@@ -140,6 +171,66 @@ if (typeof document !== "undefined") (function () {
     });
   }
   function tell(address) { location.href = address; }
+  var FOLDER = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path></svg>';
+
+  function drawProjects() {
+    var list = $("projList");
+    list.innerHTML = "";
+    var items = NavCore.projectItems(projects, project, $("projQ").value);
+    if (!items.length) {
+      var empty = document.createElement("div");
+      empty.setAttribute("class", "proj-empty");
+      empty.textContent = "没有匹配的项目";
+      list.appendChild(empty);
+      return;
+    }
+    items.forEach(function (item) {
+      var row = document.createElement("button");
+      row.setAttribute("type", "button");
+      row.classList.add("proj-item");
+      if (item.current) row.classList.add("on");
+      row.setAttribute("title", item.path);
+      row.innerHTML = FOLDER;
+      var name = document.createElement("span");
+      name.setAttribute("class", "proj-name");
+      name.textContent = item.name;
+      row.appendChild(name);
+      if (item.current) {
+        var check = document.createElement("span");
+        check.setAttribute("class", "proj-check");
+        check.textContent = "✓";
+        row.appendChild(check);
+      }
+      row.addEventListener("click", function () {
+        setProjectMenu(false);
+        if (!item.current) tell("superagent://project?path=" + encodeURIComponent(item.path));
+      });
+      list.appendChild(row);
+    });
+  }
+
+  function setProjectMenu(open) {
+    $("projMenu").hidden = !open;
+    $("projBtn").setAttribute("aria-expanded", open ? "true" : "false");
+    $("projQ").value = "";
+    if (open) { drawProjects(); $("projQ").focus(); }
+  }
+
+  $("projBtn").addEventListener("click", function () { setProjectMenu($("projMenu").hidden); });
+  $("projQ").addEventListener("input", drawProjects);
+  $("projAdd").addEventListener("click", function () {
+    setProjectMenu(false);
+    tell("superagent://project-add");
+  });
+  document.addEventListener("keydown", function (ev) {
+    if (ev.key === "Escape" && !$("projMenu").hidden) setProjectMenu(false);
+  });
+  document.addEventListener("click", function (ev) {
+    if ($("projMenu").hidden) return;
+    var target = ev.target;
+    if (target && target.closest && target.closest("#projMenu, #projBtn")) return;
+    setProjectMenu(false);
+  });
   function chatApi(path, body) {
     return fetch(path, {
       method: "POST",
@@ -349,6 +440,7 @@ if (typeof document !== "undefined") (function () {
       drawList(); drawMarks();
     },
     refreshThreads: fetchThreads,
+    closeProjectMenu: function () { if (!$("projMenu").hidden) setProjectMenu(false); },
   };
 
   drawTabs(); drawMarks();
