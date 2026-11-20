@@ -334,6 +334,18 @@ def cmd_merge(args, **_):
     return 2
 
 
+def cmd_takeover(args, **_):
+    """记一条 Claude 接手修好的事实；只记进流转，不改卡片状态。"""
+    cdir = _collab(args.project) / "cards" / args.card_id
+    if not cdir.is_dir():
+        print(f"没有这张卡片：{args.card_id}", file=sys.stderr)
+        return 2
+    flow_record(cdir, "接手", src="Claude", summary=args.note or "",
+                changed=args.changed, reviews=args.reviews, later=args.later)
+    print("已记下")
+    return 0
+
+
 def cmd_accept_issues(args, **_):
     from collab.accept import record_stopped
 
@@ -506,6 +518,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("project")
     p.add_argument("card_id")
     p.set_defaults(func=cmd_merge)
+
+    p = sub.add_parser("takeover", help="记一次 Claude 接手修好的情况（只记事实，不改卡片状态）")
+    p.add_argument("project")
+    p.add_argument("card_id")
+    p.add_argument("--changed", type=int, default=0, help="改了几处")
+    p.add_argument("--reviews", type=int, default=0, help="Codex 复查了几轮")
+    p.add_argument("--later", type=int, default=0, help="几条记进以后再修")
+    p.add_argument("--note", default="", help="一句话说明接手修了什么")
+    p.set_defaults(func=cmd_takeover)
 
     p = sub.add_parser("accept-issues", help="接受复查剩下的问题，跑全部测试全过后进待确认")
     p.add_argument("project")

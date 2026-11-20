@@ -84,21 +84,12 @@ class NewKind(unittest.TestCase):
 
 class Words(unittest.TestCase):
     def test_review_prompt_explains_the_rule(self):
-        import inspect
-        src = inspect.getsource(dispatch._review_prompt) + inspect.getsource(dispatch)
-        self.assertIn("安全或丢数据", src)
-        self.assertIn("碰得上", src)
-
-    def test_rules_file(self):
-        rules = (ROOT / "collab" / "规则.md").read_text(encoding="utf-8")
-        reviewer = next(line for line in rules.splitlines() if line.startswith("- **复查员**"))
-        developer = next(line for line in rules.splitlines() if line.startswith("- **开发员**"))
-        self.assertIn("碰得上", reviewer)
-        self.assertIn("极巧合", reviewer)
-        self.assertIn("特定操作", reviewer, "规则里也要写清“少见”的意思")
-        self.assertIn("两步之间", reviewer)
-        self.assertIn("安全或丢数据", reviewer)
-        self.assertIn("只按施工单", developer)
+        # 规矩的文字 11-20 起在 agents/手册/复查分级.md（规则包体检守着），这里查复查员真的拿到了它
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            prompt = dispatch._review_prompt(Path(d), "需求卡.md", "", "", d, False)
+        self.assertIn("安全或丢数据", prompt)
+        self.assertIn("碰得上", prompt)
 
 
 if __name__ == "__main__":

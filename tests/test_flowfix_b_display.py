@@ -169,16 +169,20 @@ const flush = async () => {for(let i=0;i<16;i++) await Promise.resolve();};
 (async () => {
   await flush();
   const b = $('steps').children[0].querySelector('button');
-  assert.strictEqual(b.querySelector('.k').textContent, '8,512 token', '首次显示');
+// 右栏显示小修第 1 条（用户 11-19）：用量另起一行（.u），状态行（.k）只留轮次、用时、动静
+  assert.strictEqual(b.querySelector('.k').textContent, '', '首次显示：没有计时就空着');
+  assert.strictEqual(b.querySelector('.u').textContent, '8,512 token', '首次显示：用量单独一行');
   tick();
-  assert.strictEqual(b.querySelector('.k').textContent, '8,512 token', '刷新后不能多出“·”');
+  assert.strictEqual(b.querySelector('.k').textContent, '', '刷新后不能多出“·”');
+  assert.strictEqual(b.querySelector('.u').textContent, '8,512 token', '刷新后用量还在');
   assert.ok(!b.querySelector('.d').textContent.includes('已干'), '计时不进说明那行');
   // 第 2 轮正在跑：首次和刷新一致
   payload = {...payload, stations:[{...station, key:'dev', role:'写代码', rounds:2, elapsed:83, quiet:5}]};
   nextPoll(); await flush();
   const first = b.querySelector('.k').textContent;
   assert.ok(first.startsWith('第 2 轮 · 已干 1:2'), first);
-  assert.ok(first.endsWith('8,512 token'), first);
+  assert.ok(!first.includes('token'), first);
+  assert.strictEqual(b.querySelector('.u').textContent, '8,512 token');
   tick();
   const again = b.querySelector('.k').textContent;
   assert.strictEqual(again.split(' · ').length, first.split(' · ').length, again);

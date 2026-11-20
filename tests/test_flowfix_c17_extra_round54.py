@@ -5,7 +5,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from collab.dispatch import _READ_RULES, _raw_list_problems, read_review_list
+from collab.dispatch import _raw_list_problems, read_review_list
+from collab.rulebook import rules_for
 from collab.planner import _build_prompt
 
 
@@ -76,10 +77,11 @@ class ReviewListNormalization(unittest.TestCase):
 class PlannerReminderPlacement(unittest.TestCase):
     def setUp(self):
         with tempfile.TemporaryDirectory() as directory:
-            self.lines = _build_prompt(Path(directory), "# 改保存按钮\n", False).splitlines()
+            self.prompt = _build_prompt(Path(directory), "# 改保存按钮\n", False)
+        self.lines = self.prompt.splitlines()
 
     def test_prompt_opens_with_the_same_rules_reminder_as_other_roles(self):
-        self.assertEqual(self.lines[0], _READ_RULES)
+        self.assertTrue(self.prompt.startswith(rules_for("写方案")))  # 11-20 起开头是规则包里这个角色的规则
 
     def test_card_only_reminder_immediately_follows_test_command_description(self):
         command_line = self.lines.index("- test_command：一条测试命令字符串。")

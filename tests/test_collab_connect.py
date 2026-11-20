@@ -71,7 +71,7 @@ class ConnectTest(unittest.TestCase):
     def test_records_readme_points_to_the_real_package(self):
         init_collab(self.project)
         text = (self.project / ".collab" / "README.md").read_text(encoding="utf-8")
-        self.assertIn(str(PACKAGE_DIR / "规则.md"), text)
+        self.assertIn(str(PACKAGE_DIR.parent / "agents" / "README.md"), text)  # 11-20 起指向规则包
         self.assertIn(str(PACKAGE_DIR / "README.md"), text)
 
     def test_new_projects_get_no_profile_template_in_records(self):
@@ -190,7 +190,7 @@ class MigrateTest(unittest.TestCase):
         self.assertTrue(report["profile_moved"])
         self.assertEqual((self.project / ".collab" / "cards" / "CARD-002" / "需求卡.md").read_text(encoding="utf-8"), "旧卡片")
         self.assertIn(".collab/", (self.project / ".gitignore").read_text(encoding="utf-8").splitlines())
-        self.assertIn(str(PACKAGE_DIR / "规则.md"), (self.project / ".collab" / "README.md").read_text(encoding="utf-8"))
+        self.assertIn(str(PACKAGE_DIR.parent / "agents" / "README.md"), (self.project / ".collab" / "README.md").read_text(encoding="utf-8"))
 
     def test_existing_new_profile_is_never_overwritten(self):
         (self.project / "docs").mkdir()

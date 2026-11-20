@@ -14,8 +14,8 @@ from typing import Optional, Tuple
 
 from collab.card_attachments import attachment_prompt
 from collab.config import plan_models  # noqa: F401 — 写方案、备交接资料共用这一份（别的地方也从这里取）
-from collab.dispatch import _READ_RULES
 from collab.flow import record as flow_record
+from collab.rulebook import rules_for as _rules
 from collab.state import Card
 from collab.token_usage import usage_from_text
 from collab.workspace import PROFILE_TEMPLATE, has_blanks, profile_path, render_board
@@ -333,7 +333,6 @@ def _plan_from_order(project, rel: str):
 
 def _build_prompt(card_dir: Path, requirement_text: str, need_profile: bool, project=None) -> str:
     lines = [
-        _READ_RULES,
         "你可以用只读命令查看项目，但不要修改任何文件。",
         "根据下面的任务卡片，用大白话写一份拆解方案。这份方案是写给后面干活的人看的。",
         "「不要修改文件」只约束你写方案这一步；方案内容里不要写这一条，也不要写“本次只输出方案”。",
@@ -369,7 +368,7 @@ def _build_prompt(card_dir: Path, requirement_text: str, need_profile: bool, pro
     lines.append("")
     lines.append("任务卡片原文：")
     lines.append(requirement_text.strip())
-    return "\n".join(lines) + attachment_prompt(card_dir)
+    return _rules("写方案") + "\n".join(lines) + attachment_prompt(card_dir)  # 规则在最前面（规则包）
 
 
 def _fail(card_dir: Path, summary: str, text: Optional[str] = None) -> int:

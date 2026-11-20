@@ -87,13 +87,14 @@ class Flow(Base):
         wt = self.worktree
 
         def ask_fn(adapter, prompt, cwd, **kw):
-            if "按固定格式重写" in prompt:
+            task = prompt.split("【规则完】")[-1]  # 11-20 起每段话前面都带规则包（规则里也有“只改测试”这类字），只按后面的具体交代分角色
+            if "按固定格式重写" in task:
                 calls.append(("reformat", prompt, kw.get("models") or {}))
                 return AgentResult(ok=True, output="", attempts=1, final=reviews.pop(0))
-            if "只读复查" in prompt:
+            if "只读复查" in task:
                 calls.append(("review", prompt, kw.get("models") or {}))
                 return AgentResult(ok=True, output="", attempts=1, final=reviews.pop(0))
-            if "编写自动化测试" in prompt or "只改测试" in prompt:
+            if "编写自动化测试" in task or "只改测试" in task:
                 calls.append(("test", prompt, kw.get("models") or {}))
                 (wt / "tests" / "test_a.py").write_text("# 测试\n", encoding="utf-8")
                 if tester_hook:
@@ -286,14 +287,7 @@ class Skips(Flow):
         self.assertFalse(_SKIP_PATTERN.search("def test_skip_button_hides(self):"))
 
 
-class Rules(unittest.TestCase):
-    def test_rules_reviewer_line_matches_list(self):
-        text = (ROOT / "collab" / "规则.md").read_text(encoding="utf-8")
-        line = next(ln for ln in text.splitlines() if ln.startswith("- **复查员**"))
-        self.assertIn("结论：通过", line, "保留（test_rules_pstack 要求）")
-        self.assertIn("复查清单", line)
-        self.assertIn("证据", line)
-        self.assertNotIn("后面逐条列出问题和依据", line, "旧说法要改掉，和派活交代一致")
+# 规则文字的查验 11-20 起由规则包体检管（tests/test_rulebook_health.py，要点清单在 agents/README.md）
 
 
 if __name__ == "__main__":

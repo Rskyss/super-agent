@@ -74,12 +74,11 @@ class PlannerReadsRules(unittest.TestCase):
     """第 3 条：写方案的交代先读规则，并交代不要让施工方跑全部测试。"""
 
     def test_prompt_reads_rules(self):
-        from collab.dispatch import RULES
         from collab.planner import _build_prompt
+        from collab.rulebook import rules_for  # 11-20 起规则原样放在最前面（规则包）
         with tempfile.TemporaryDirectory() as d:
             prompt = _build_prompt(Path(d), "# 改按钮\n## 要做什么\n改颜色\n", False)
-        self.assertIn(str(RULES), prompt)
-        self.assertIn("先读规则", prompt)
+        self.assertTrue(prompt.startswith(rules_for("写方案")))
 
     def test_prompt_forbids_full_suite(self):
         from collab.planner import _build_prompt

@@ -286,7 +286,8 @@ class LineLimits(unittest.TestCase):
         panel = (ROOT / "desktop" / "static" / "panel.css").read_text(encoding="utf-8")
         chat = (ROOT / "desktop" / "static" / "chat.css").read_text(encoding="utf-8")
         self.assertRegex(panel, r"\.step \.d\s*\{[^}]*-webkit-line-clamp:\s*2\s*;")
-        self.assertRegex(chat, r"-webkit-line-clamp:\s*3")
+        # 卡片标题下那一行：用户 11-20 改成默认收起一行、可展开看全文（右栏显示小修），原来是最多 3 行
+        self.assertRegex(chat, r"#cardNow\.fold\s*\{[^}]*-webkit-line-clamp:\s*1\b")
 
 
 if __name__ == "__main__":

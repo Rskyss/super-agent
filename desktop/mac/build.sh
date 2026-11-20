@@ -46,6 +46,7 @@ iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
 
 echo "4/5 放入流转面板（数据服务和页面，只读项目记录）…"
 rsync -a --exclude '__pycache__' "$ROOT/collab" "$APP/Contents/Resources/super-agent/"
+rsync -a --delete "$ROOT/agents" "$APP/Contents/Resources/super-agent/"   # 规则包，和 collab 并排（collab/rulebook.py 按这个位置找）
 rsync -a --exclude '__pycache__' --exclude 'mac' "$ROOT/desktop" "$APP/Contents/Resources/super-agent/"
 
 echo "5/5 本机签名…"

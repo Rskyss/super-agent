@@ -33,7 +33,7 @@ class ExistingOrder(unittest.TestCase):
 
     def test_plain_card_unchanged(self):
         prompt = _build_prompt(self.project, "# 改按钮\n## 要做什么\n改颜色\n", False, project=self.project)
-        self.assertNotIn("施工单", prompt)
+        self.assertNotIn("施工单", prompt.split("【规则完】")[-1])  # 前面的规则包里本来就讲施工单，只看具体交代
 
 
 if __name__ == "__main__":

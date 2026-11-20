@@ -29,11 +29,10 @@ from collab.state import Card
 from collab.token_usage import usage_for
 from collab.vcs import revert_paths
 from collab.workspace import render_board
+# 给模型的规则在仓库最外层的 agents/ 里，按角色原样放在派活的话最前面（规则包，用户 11-20 批准；原来只叫模型自己去读 collab/规则.md）
+from collab.rulebook import rules_for as _rules
 
 _TEST_TIMEOUT = 900  # 测试 15 分钟（D5）
-# 规则书随包一起走：无论包装在哪个项目里，这个路径都存在
-RULES = Path(__file__).resolve().parent / "规则.md"
-_READ_RULES = f"开工前先读规则：{RULES}。汇报、过程说明一律用中文大白话（第四轮 54）。"
 
 
 def _card_dir(collab: Path, card: Card) -> Path:
@@ -211,7 +210,7 @@ def _plan_hint(cdir: Path, with_notes: bool = True) -> str:
 
 def _handover_prompt(needs, cdir: Path) -> str:
     plan = cdir / "方案.md"
-    return (f"{_READ_RULES}你是调度员，给写代码的准备交接资料。读任务卡 {needs}"
+    return (f"{_rules('备交接资料')}你是调度员，给写代码的准备交接资料。读任务卡 {needs}"
             f"{f'、方案 {plan}' if plan.is_file() else ''}（施工单路径写在里面的也要读），再读要改的代码。"
             f"只读，不改任何文件。把交接资料作为你最后的回复，照这个格式：\n"
             f"## 要改的文件\n每个文件一节：要改哪个函数、大概第几行；现在是怎么写的（只摘最关键的几行）；要改成什么样。\n"
@@ -841,15 +840,16 @@ def _new_skips_note(worktree) -> str:
 
 
 def _unreachable(problem: dict) -> bool:
-    """复查新规矩（方案-第二批第七节，用户 11-19 批）：碰不上的不退回。
-    只能推演、标“极巧合”的（恰好两步之间被打断，或本项目里根本没有会触发它的写法）一律不退回；
+    """复查新规矩（方案-第二批第七节，用户 11-19 批）：碰不上的不退回。口径写在 agents/手册/复查分级.md。
+    标“极巧合”的一律不退回，不管实跑还是推演（2b，用户 11-20 定：CARD-019 复查员故意拖慢加载复现的
+    加载空档问题，原来因为是实跑就照级别退回）；
     只能推演、标“少见”的（本项目会发生、要特定操作）只有不严重的才不退回——严重的照退，不丢质量（Codex 复查第 2 条）。"""
+    hit = problem.get("碰上") or "常见"
+    if hit == "极巧合":
+        return True
     proof = problem.get("证据")
     how = proof.get("方式") if isinstance(proof, dict) else "推演"
-    if how == "实跑":
-        return False
-    hit = problem.get("碰上") or "常见"
-    return hit == "极巧合" or (hit == "少见" and problem.get("级别") != "严重")
+    return how != "实跑" and hit == "少见" and problem.get("级别") != "严重"
 
 
 def _needs_return(problem: dict, first_round: bool = True) -> bool:
@@ -1712,8 +1712,10 @@ def _whole_text_issues(text: str) -> list:
     return extra_front + out
 
 
-def _stop_reason(cdir: Path) -> str:
-    """自动退回用完停下时，帮用户判断为什么不过、该怎么办（㊱）。"""
+def _stop_reason(cdir: Path, hints_only: bool = False, has_tests: bool = False) -> str:
+    """自动退回用完停下时，帮用户判断为什么不过、该怎么办（㊱）。
+    hints_only：只要“同一个问题反复出现”“要改范围外的文件”这两条具体提示（没有就返回空），
+    给先说严重问题的那条判断附在后面用（右栏显示小修 2c，Codex 复查 11-20）。"""
     import difflib
     events = _after_revise(read_flow(cdir))
     reformat_seqs = {
@@ -1752,11 +1754,12 @@ def _stop_reason(cdir: Path) -> str:
     )
     last = rounds[-1] if rounds else []
     before = [t for r in rounds[:-1] for t in r]
-    if any(TEST_PROBLEM in i for i in raw_last) or TEST_PROBLEM in clean_last or list_test_wrong:  # 先看测试的问题（第三批 ㊿）
+    if not hints_only and (any(TEST_PROBLEM in i for i in raw_last) or TEST_PROBLEM in clean_last
+                           or list_test_wrong):  # 先看测试的问题（第三批 ㊿）
         return ("判断：复查说测试本身写错了，写代码的怎么改都会被它卡住。"
                 "建议：点“不满意，继续改”，写明让写测试的把哪条测试改对")
     severe = re.compile(r"P[012]\b|严重|中等|高危|安全|丢失|崩溃")  # 有一条是重的就不算小问题（第 2 轮 B 第 3 条）
-    if (raw_last and not _unparsed_serious(clean_last, raw_last)
+    if (not hints_only and raw_last and not _unparsed_serious(clean_last, raw_last)
             and all(re.search(r"P3|轻微", i) and not severe.search(i) for i in raw_last)
             and not severe.search(clean_last)
             and not list_non_minor and not list_test_wrong and not code_severe):  # 只认复查员标的级别，且原文与残缺清单都未漏出严重问题
@@ -1770,12 +1773,23 @@ def _stop_reason(cdir: Path) -> str:
             found |= set(_extract_locations(str(problem.get("位置") or "")))
         places.append(found)
     same_place = len(places) >= 2 and bool(places[-1] & set().union(*places[:-1]))
-    if same_place or (last and before and
-                      any(difflib.SequenceMatcher(None, a, b).ratio() >= 0.6 for a in last for b in before)):
-        return ("判断：同一个问题反复出现，可能是写代码的这个模型做不动。"
-                "建议：去设置里换写代码的工具或模型再点“接着跑”；或者点“不满意，继续改”把这条讲清楚")
-    if any(e.get("kind") == "范围" and "范围外" in str(e.get("summary") or "") for e in events):
-        return "判断：写代码的要改允许范围外的文件。建议：点“不满意，继续改”，写明要多改哪个文件"
+    repeated = same_place or (last and before and
+                              any(difflib.SequenceMatcher(None, a, b).ratio() >= 0.6 for a in last for b in before))
+    repeat_said = ("判断：同一个问题反复出现，可能是写代码的这个模型做不动。"
+                   "建议：去设置里换写代码的工具或模型再点“接着跑”；或者点“不满意，继续改”把这条讲清楚")
+    out_of_scope = any(e.get("kind") == "范围" and "范围外" in str(e.get("summary") or "") for e in events)
+    scope_said = "判断：写代码的要改允许范围外的文件。建议：点“不满意，继续改”，写明要多改哪个文件"
+    if hints_only:
+        # 有测试写错时，说不清反复出现的是测试还是代码，不怪写代码的模型（和原来一样：有测试写错就不给换模型建议）；
+        # 范围外的提示总是带上（Codex 复查第 2 轮）
+        has_test_problem = (has_tests or any(TEST_PROBLEM in i for i in raw_last) or TEST_PROBLEM in clean_last
+                            or list_test_wrong)   # has_tests：实际退回清单里有测试写错（Codex 复查第 3 轮）
+        hints = ([repeat_said] if repeated and not has_test_problem else []) + ([scope_said] if out_of_scope else [])
+        return "；".join(h.replace("判断：", "", 1) for h in hints)
+    if repeated:
+        return repeat_said
+    if out_of_scope:
+        return scope_said
     if re.search(r"P[01]\b|严重|高危|安全|丢失|崩溃", clean_last) or list_severe or code_severe:
         return "判断：还有严重问题没解决，不能当成小问题。建议：点“不满意，继续改”，把上面的问题讲清楚"
     if last and before:
@@ -1822,9 +1836,29 @@ def _hidden_words(hidden: int, severe_hidden: bool) -> str:
     return f"（另有 {hidden} 件没写成大白话{'，其中有严重的' if severe_hidden else ''}，原话在右边“交接”里）"
 
 
+def _severe_advice(items: list) -> str:
+    """有严重或丢数据的问题：先说这个、说清该谁动（右栏显示小修 2c，CARD-019：先说“测试写错”盖住了严重问题，
+    用户差点照着点）。测试写错只附带一提。没有严重、也没丢数据就返回空。"""
+    loss = any(p.get("类型") == "安全或丢数据" for p in items)
+    if not loss and not any(p.get("级别") == "严重" for p in items):
+        return ""
+    what = "严重问题" + ("（含丢数据或安全问题）" if loss else "")
+    tests = sum(1 for p in items if p.get("类型") == "测试写错")
+    side = f"其中 {tests} 件是测试写错。" if tests else ""
+    return (f"判断：自动退回用完了，还有{what}没解决，不能当成小问题。{side}"
+            "建议：交给 Claude 接手（告诉 Claude 卡号）；或点“不满意，继续改”，把上面的问题讲清楚再跑一轮")
+
+
 def _stop_reason_list(data: dict, cdir: Path = None, back_problems: list = None) -> str:
     """退回用完停下时按清单判断：有严重问题绝不说成小问题，也不认正文里随手写的轻微。"""
     items = list(back_problems) if back_problems is not None else _return_problems(data)
+    severe_said = _severe_advice(items)
+    if severe_said:
+        tests_left = any(p.get("类型") == "测试写错" for p in items)
+        hint = _stop_reason(cdir, hints_only=True, has_tests=tests_left) if cdir is not None else ""
+        if hint:   # 反复出现（换模型）、范围外（写明要多改哪个文件）这两条原有提示附在后面不丢（Codex 复查 11-20）
+            severe_said += "。另外，" + hint
+        return severe_said
     if any(p.get("类型") == "测试写错" for p in items):
         return ("判断：复查说测试本身写错了，写代码的怎么改都会被它卡住。"
                 "建议：点“不满意，继续改”，写明让写测试的把哪条测试改对")
@@ -2043,7 +2077,7 @@ def _tester_fix(ask_fn, cdir: Path, adapter: str, items: list, needs, worktree, 
                 test_command, revert_fn) -> str:
     """复查说测试本身写错了（㊻）：先派写测试的只改测试，再让写代码的照新测试改。"""
     listed = "\n\n".join(f"{i + 1}. {t.replace(TEST_PROBLEM, '').strip()}" for i, t in enumerate(items))
-    prompt = (f"{_READ_RULES}复查员发现测试本身写错了（测试和任务卡 {needs}、施工单对不上），下面这几条：\n\n"
+    prompt = (f"{_rules('写测试')}复查员发现测试本身写错了（测试和任务卡 {needs}、施工单对不上），下面这几条：\n\n"
               f"{listed}\n\n只改测试，让测试和任务卡、施工单一致；不改产品代码，改了也会被撤掉。"
               f"{_run_hint(test_command) if test_command else ''}")
     ok = _tester_work(ask_fn, cdir, adapter, worktree, models, round_no, test_command, revert_fn,
@@ -2062,7 +2096,7 @@ def _guard_tests(ask_fn, cdir: Path, adapter: str, items: list, needs, worktree,
         # 接着跑：补测试已经交过，不重派；先红检查没跑就补跑，有结果就沿用
         return True, (_supplement_red_note(cdir, test_command, judge_fn, worktree) if red_check else "")
     listed = "\n\n".join(f"{i + 1}. {t}" for i, t in enumerate(items))
-    prompt = (f"{_READ_RULES}按任务卡 {needs} 的验收标准，下面这几条是复查退回、要改产品代码的问题：\n\n"
+    prompt = (f"{_rules('写测试')}按任务卡 {needs} 的验收标准，下面这几条是复查退回、要改产品代码的问题：\n\n"
               f"{listed}\n\n请针对每条问题各编写自动化测试（一条问题对应一条），写进新的测试文件；"
               f"测试要能抓住这个问题（现在应该不过）。"
               f"只改测试文件，不改产品代码，改了也会被撤掉。{_run_hint(test_command) if test_command else ''}")
@@ -2214,7 +2248,7 @@ def _red_check_after_tests(collab: Path, cdir: Path, card: Card, *, ask_fn, test
                 cause="测试先红",
             )
             return card, None
-        prompt = (f"{_READ_RULES}你写的测试在还没改代码时一跑就全过，说明抓不到问题；"
+        prompt = (f"{_rules('写测试')}你写的测试在还没改代码时一跑就全过，说明抓不到问题；"
                   f"也可能是新测试不在本卡测试命令跑的范围里（测试命令：{_command_text(test_command)}）。"
                   f"按任务卡 {needs} 的验收标准把测试改成现在会不过、等写代码的做完才会过的样子；"
                   f"现有代码确实已经做到的那条，在汇报里写明是哪条。只改测试文件，不改产品代码，"
@@ -2385,7 +2419,7 @@ def _review_prompt(cdir: Path, needs, plan_hint: str, run_hint: str, worktree, l
             f"请在复查清单里加上“上轮核对”列表（每项写 {{\"编号\": 数字, \"结果\": \"改好了\" 或 \"没改好\"}}），"
             f"按上面的编号逐条回答。"
         )
-    return (f"{_READ_RULES}只读复查：对照任务卡 {needs} 检查本次改动是否符合需求和验收标准。"
+    return (f"{_rules('复查')}只读复查：对照任务卡 {needs} 检查本次改动是否符合需求和验收标准。"
             f"{plan_hint}{run_hint}"
             f"{_tester_files_hint(cdir)}"
             f"{changed}{skips}"
@@ -2393,18 +2427,13 @@ def _review_prompt(cdir: Path, needs, plan_hint: str, run_hint: str, worktree, l
             f"第一行写“结论：通过”或“结论：不通过”。"
             f"回复末尾附“复查清单：”加一个 ```json 代码块，写清“结论”和“问题”列表；每条问题写齐七个字段："
             f"级别、来源、类型、碰上、现象、位置、证据。"
-            f"级别写【严重】【中等】【轻微】（发现改坏了原来能用的功能，一律标【严重】）；"
+            f"级别写【严重】【中等】【轻微】；"
             f"来源写【这次改的】【原来就有的】；类型写“功能问题”或"
-            f"“测试写错”（测试本身写错时，那一条开头写“{TEST_PROBLEM}”）或“安全或丢数据”（泄露密钥、删掉或写坏用户文件这类）；"
-            f"只报在这个项目里碰得上的问题：要么实跑复现，要么推演时指出本项目里哪段代码、哪个测试会走到它；"
-            f"本项目里根本没有会触发它的写法、文件或操作的，“碰上”写“极巧合”，这类不退回、只记以后再修；"
-            f"只能推演的“少见”问题，只有严重的才退回；"
-            f"“碰上”写“常见”“少见”或“极巧合”（常见＝正常使用容易遇到；少见＝本项目里会发生、要特定操作才遇到，比如停下后接着跑；"
-            f"极巧合＝比如恰好在两步之间被打断才出的，或者本项目里根本没有会触发它的写法），每条都要填。"
+            f"“测试写错”（测试本身写错时，那一条开头写“{TEST_PROBLEM}”）或“安全或丢数据”；"
+            f"“碰上”写“常见”“少见”或“极巧合”，每条都要填；级别、类型、碰上怎么判，照上面规则里的《复查分级》。"
             f"第一句用大白话写用户能看到的现象（不带文件名、代码名），后面再写原因和位置。"
             f"{_TRIAGE_NOTE}"
             f"证据写“方式”：“实跑”要写命令和输出，“推演”要写对照的文件:行号（带扩展名）。"
-            f"跑不了也要照实写，不许因为跑不了就不报。"
             f"{'这是退回修改后的复查：只看上一次复查以后改动的地方和它直接牵连的地方，其他部分上一轮已经复查过，不用重看。' if later_round else ''}"
             f"{check_back_note}"
             f"不要修改任何文件。")
@@ -2419,7 +2448,7 @@ def _reformat_prompt(cdir: Path, original: str, errors: list, needs, worktree) -
     if prev_items:
         listed = "\n".join(f"{i}. {_single_line_phen(p)}" for i, p in enumerate(prev_items, 1))
         check_note = f"\n\n上轮退回的问题（按编号，共 {len(prev_items)} 条）：\n{listed}\n"
-    return (f"{_READ_RULES}按固定格式重写：你上一次的复查回复没有合格的复查清单，不用重新复查，"
+    return (f"{_rules('复查')}按固定格式重写：你上一次的复查回复没有合格的复查清单，不用重新复查，"
             f"只把下面这份原回复补成固定格式。\n\n原回复全文：\n{original}\n\n"
             f"不合格原因：\n{why}{check_note}\n\n"
             f"请保留原来的结论、意见和上轮核对结果，在回复末尾附“复查清单：”加一个 ```json 代码块："
@@ -2760,7 +2789,7 @@ def _draft_revise(ask_fn, cdir: Path, adapter: str, models, worktree, needs, cha
            summary="正在替你起草“继续改”的话",
            say="我正在替你起草“继续改”的话（把这几轮复查合起来找共同原因），约 3–5 分钟，好了告诉你。")
     body = "\n\n".join(f"### 第 {i + 1} 次复查\n{t}" for i, t in enumerate(rounds))
-    prompt = (f"{_READ_RULES}你是调度员，替用户起草一段“继续改”的交代。写代码的人被复查退回了好几次、每次都冒出新问题，"
+    prompt = (f"{_rules('起草交代')}你是调度员，替用户起草一段“继续改”的交代。写代码的人被复查退回了好几次、每次都冒出新问题，"
               f"卡片停下了。下面是这次开工以来每一次复查的结论，任务卡在 {needs}，"
               f"改过的文件：{'、'.join(files) or '（看不出）'}。\n\n{body}\n\n"
               f"请读相关代码，找出这几轮问题的共同原因，写给写代码的人一段交代：先写清这一部分统一的规则（出错、找不到、"
@@ -3088,7 +3117,7 @@ def _review_return_prompt(notes: str, needs, revise_bit: str, plan_hint: str, sa
         head += (f"。注意：这几轮复查的问题都出在同一处（{'、'.join(same_files)}），每轮都是新的——"
                  f"先找它们的共同原因，把这一部分统一改对（比如几处各管各的处理合成一处、出错的规矩说死），"
                  f"再逐条核对下面这些都已解决")
-    return (f"{_READ_RULES}{head}。先想清楚这几条背后的同一类原因，在本卡改动的范围里找出同类写法一起改，"
+    return (f"{_rules('写代码')}{head}。先想清楚这几条背后的同一类原因，在本卡改动的范围里找出同类写法一起改，"
             f"不要只改被点名的那一处。其他部分已经测过、复查过，不要重新核对，也不要重读整张卡和交接资料；"
             f"改完跑一次本卡测试，本卡测试要全部通过，过了就交。{guard_note}\n\n{body}{ref_note}\n\n"
             f"任务卡：{needs}（只在要查需求原文时看）。{revise_bit}{_DEV_TEST_NOTE}{plan_hint}{_REPORT_ASK}")
@@ -3154,6 +3183,11 @@ def run_card(card: Card, collab_dir, worktree, test_command, dev_adapter, test_a
     from collab import agents as _agents
     cdir = _card_dir(Path(collab_dir), card)
     cdir.mkdir(parents=True, exist_ok=True)
+    from collab.rulebook import missing_files
+    lost = missing_files()
+    if lost:  # 规则包缺文件：照样开工，但派活的话里写明缺失，这里记一条让人看见，不悄悄跑空规则
+        record(cdir, "提醒", src="程序", dst="你",
+               summary=f"规则包缺文件：{'、'.join(lost)}。这次派活的话里会写明缺失；请补回文件或重新生成应用。")
     notes_job = None
     if handover and not (cdir / HANDOVER).is_file():
         order_found = False
@@ -3356,13 +3390,13 @@ def _run_card(card, collab_dir, worktree, test_command, dev_adapter, test_adapte
         old_tests = [p for p in _load_test_files(cdir) if (Path(worktree) / p).is_file()]
         if revise_note and old_tests:
             # 继续改：只为追加要求补测试，不整个重写（68b 里重写一遍 15 分钟，⑭）
-            tester_prompt = (f"{_READ_RULES}任务卡 {needs} 的测试之前已经写好：{'、'.join(old_tests)}。"
+            tester_prompt = (f"{_rules('写测试')}任务卡 {needs} 的测试之前已经写好：{'、'.join(old_tests)}。"
                              f"现在有追加要求，只为追加要求补测试（可以在原测试文件里追加，或新建测试文件）。"
                              f"已有测试里和追加要求冲突的用例（追加要求改掉了原来的行为），按追加要求改掉或删掉，"
                              f"并在汇报里列出改了哪些；其余已有的测试不要重写。追加要求不需要新测试就直接说明。"
                              f"只改测试文件，不改产品代码，改了也会被撤掉。{revise_bit}{run_hint}{_tester_conflict_note(cdir)}")
         else:
-            tester_prompt = (f"{_READ_RULES}按任务卡 {needs} 的验收标准编写自动化测试，放进项目的测试目录。"
+            tester_prompt = (f"{_rules('写测试')}按任务卡 {needs} 的验收标准编写自动化测试，放进项目的测试目录。"
                              f"只写测试，不改产品代码，改了也会被撤掉。{revise_bit}{plan_hint}{run_hint}"
                              f"{_tester_conflict_note(cdir)}")
         prep = _dispatch(ask_fn, cdir, "测试员", test_adapter, "写测试", tester_prompt, worktree, by_role.get("测试员", models), 1,
@@ -3429,14 +3463,14 @@ def _run_card(card, collab_dir, worktree, test_command, dev_adapter, test_adapte
     effective_allowed = list(allowed) + tester_files if allowed is not None else None
 
     # 第二步：开发员照着测试写代码，直到测试通过
-    dev_prompt = (f"{_READ_RULES}按任务卡实现功能：{needs}。测试已经写好，请让它们全部通过。"
+    dev_prompt = (f"{_rules('写代码')}按任务卡实现功能：{needs}。测试已经写好，请让它们全部通过。"
                   f"{revise_bit}{_DEV_TEST_NOTE}{plan_hint}{run_hint}{_REPORT_ASK}")
     last_output = None  # 上一轮测试的报错，用来发现“原地打转”
     past_fails = [e for e in past if e.get("kind") in ("判定", "页面检查") and e.get("result") == FAIL]
     if past_fails and card.rework > 0:
         last_output = text_of(cdir, past_fails[-1])
         last_output_file = _log_file(past_fails[-1].get("kind"))
-        dev_prompt = (f"{_READ_RULES}上一版测试没过，测试输出如下，请修复后重新提交。\n\n"
+        dev_prompt = (f"{_rules('写代码')}上一版测试没过，测试输出如下，请修复后重新提交。\n\n"
                       f"{_short_test_note(cdir, last_output, last_output_file)}\n\n"
                       f"任务卡：{needs}。{revise_bit}{_DEV_TEST_NOTE}{plan_hint}{run_hint}{_REPORT_ASK}")
     if force_after_review_reject:
@@ -3876,6 +3910,6 @@ def _run_card(card, collab_dir, worktree, test_command, dev_adapter, test_adapte
             record(cdir, "转人工", src="程序", dst="调度员",
                    summary=f"返工 {card.rework} 次后测试仍没过，需要你看看")
             return card, verdict
-        dev_prompt = (f"{_READ_RULES}上一版测试没过，测试输出如下，请修复后重新提交。\n\n"
+        dev_prompt = (f"{_rules('写代码')}上一版测试没过，测试输出如下，请修复后重新提交。\n\n"
                       f"{_short_test_note(cdir, verdict.output, verdict_file)}\n\n"
                       f"任务卡：{needs}。{revise_bit}{_DEV_TEST_NOTE}{plan_hint}{run_hint}{_REPORT_ASK}")

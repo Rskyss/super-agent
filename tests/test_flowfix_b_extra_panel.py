@@ -124,18 +124,21 @@ class PanelRenderingEdges(unittest.TestCase):
     def test_timer_crosses_minute_and_refresh_uses_same_formatter(self):
         self.check_dom(r'''
 const b=button();
+// 右栏显示小修第 1 条（用户 11-19）：用量另起一行（.u），状态行（.k）只留轮次、用时、动静
 assert.strictEqual(b.querySelector('.k').textContent,
-  '第 2 轮 · 已干 0:59 · 59 秒前有动静 · 1,200 token');
-const original=context.module.exports.metaText;
+  '第 2 轮 · 已干 0:59 · 59 秒前有动静');
+assert.strictEqual(b.querySelector('.u').textContent, '1,200 token');
+const original=context.module.exports.statusText;
 assert.strictEqual(typeof original,'function');
 // 给同一个入口挂探针：首次重绘和定时刷新都必须通过它。
-context.module.exports.metaText=(s,since)=>'统一入口 '+original(s,since);
+context.module.exports.statusText=(s,since)=>'统一入口 '+original(s,since);
 await update(station);
 assert.strictEqual(b.querySelector('.k').textContent,
-  '统一入口 第 2 轮 · 已干 0:59 · 59 秒前有动静 · 1,200 token');
+  '统一入口 第 2 轮 · 已干 0:59 · 59 秒前有动静');
 now+=2000; tick();
 assert.strictEqual(b.querySelector('.k').textContent,
-  '统一入口 第 2 轮 · 已干 1:01 · 1 分钟前有动静 · 1,200 token');
+  '统一入口 第 2 轮 · 已干 1:01 · 1 分钟前有动静');
+assert.strictEqual(b.querySelector('.u').textContent, '1,200 token', '刷新不动用量那行');
 assert.strictEqual(b.querySelector('.d').textContent,'正在检查刷新');
 ''')
 
@@ -146,7 +149,8 @@ await update({...station,state:'done',elapsed:null,quiet:null,spent:61,
   detail:'汇报：全部处理好了\n这里是完整说明',history:[{seconds:60,tokens:1000},{seconds:1,tokens:200}]},
   {total:1200,other:0});
 const b=button();
-assert.strictEqual(b.querySelector('.k').textContent,'共 2 轮 · 1:01 · 1,200 token');
+assert.strictEqual(b.querySelector('.k').textContent,'共 2 轮 · 1:01');
+assert.strictEqual(b.querySelector('.u').textContent,'1,200 token');
 assert.ok(b.title.includes('全部处理好了\n这里是完整说明'));
 assert.ok(b.title.includes('第 1 轮 1:00 · 1,000 token'));
 assert.ok(b.title.includes('第 2 轮 0:01 · 200 token'));
@@ -158,6 +162,7 @@ now+=60000; tick();
 assert.strictEqual(b.querySelector('.k').textContent,done,'已完成的用时不能继续涨');
 await update({...station,state:'idle'}, {total:0,other:0});
 assert.strictEqual(b.querySelector('.k').textContent,'');
+assert.strictEqual(b.querySelector('.u').textContent,'');
 assert.strictEqual(b.querySelector('.d').textContent,'');
 assert.strictEqual($('tokenTotal').hidden,true);
 assert.strictEqual($('tokenTotal').title,'');
@@ -170,9 +175,12 @@ for (const [tokens,expected] of [
   [{ok:true,total:0},'0 token'],
   [{ok:true,total:1200,missing:2},'1,200 token（有 2 轮没读到）']]) {
   await update({...station,rounds:1,elapsed:null,quiet:null,tokens});
-  assert.strictEqual(button().querySelector('.k').textContent,expected,'首次绘制');
+  // 右栏显示小修第 1 条：用量在 .u 那行，状态行（没有计时）空着
+  assert.strictEqual(button().querySelector('.u').textContent,expected,'首次绘制');
+  assert.strictEqual(button().querySelector('.k').textContent,'','首次绘制');
   now+=500; tick();
-  assert.strictEqual(button().querySelector('.k').textContent,expected,'定时刷新');
+  assert.strictEqual(button().querySelector('.u').textContent,expected,'定时刷新');
+  assert.strictEqual(button().querySelector('.k').textContent,'','定时刷新');
 }
 ''')
 

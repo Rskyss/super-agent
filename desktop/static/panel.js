@@ -57,8 +57,8 @@ var PanelCore = {
   reviseDraft: function (current, draft) {
     return String(current || "").trim() ? current : String(draft || "");
   },
-  // 第三行：轮数、计时、动静、用量，缺哪段就不写哪段；首次绘制和定时刷新都用这一份
-  metaText: function (s, since) {
+  // 状态那一段：轮数、计时、动静，缺哪段就不写哪段；首次绘制和定时刷新都用这一份
+  statusText: function (s, since) {
     if (!s || s.state === "idle") return "";
     var parts = [], gap = since || 0;
     if (s.state === "active") {
@@ -69,20 +69,32 @@ var PanelCore = {
       if (s.rounds > 1) parts.push("共 " + s.rounds + " 轮");
       if (s.spent != null) parts.push(mmss(s.spent));
     }
-    var t = s.tokens;
-    if (t != null) {
-      if (t.pending) {
-        var pendingText = t.reason || "这一轮结束后出数";
-        if (t.missing > 0) pendingText += "（有 " + t.missing + " 轮没读到）";
-        parts.push(pendingText);
-      } else {
-        var usage = t.ok ? tokenAmount(t.total) + " token"
-          : "用量 —（" + (t.reason || "读不到") + "）";
-        if (t.ok && t.missing > 0) usage += "（有 " + t.missing + " 轮没读到）";
-        parts.push(usage);
-      }
-    }
     return parts.join(" · ");
+  },
+  // 用量那一段的字样（零用量、读不到、等着出数都照原规则）
+  usagePart: function (s, amount) {
+    var t = s && s.tokens;
+    if (t == null) return "";
+    if (t.pending) {
+      var pendingText = t.reason || "这一轮结束后出数";
+      if (t.missing > 0) pendingText += "（有 " + t.missing + " 轮没读到）";
+      return pendingText;
+    }
+    var usage = t.ok ? amount(t.total) + " token"
+      : "用量 —（" + (t.reason || "读不到") + "）";
+    if (t.ok && t.missing > 0) usage += "（有 " + t.missing + " 轮没读到）";
+    return usage;
+  },
+  // 用量单独一行：字样和原来一样（万、亿），只是换到单独一行；零用量等规则不变
+  usageText: function (s) {
+    if (!s || s.state === "idle") return "";
+    return PanelCore.usagePart(s, tokenAmount);
+  },
+  // 合成一行（沿用原写法给无障碍说明）：轮数、计时、动静、用量；输出和以前一字不差，老检查不动
+  metaText: function (s, since) {
+    if (!s || s.state === "idle") return "";
+    return [PanelCore.statusText(s, since), PanelCore.usagePart(s, tokenAmount)]
+      .filter(Boolean).join(" · ");
   },
   // 鼠标提示：说明全文、每轮明细（多轮才列）、用量明细
   stepTitle: function (s) {
@@ -120,6 +132,15 @@ var PanelCore = {
   totalTitle: function (v) {
     if (!v || !(v.other > 0)) return "";
     return "其中交接资料等其他 " + tokenAmount(v.other) + " token";
+  },
+  // 本卡合计下面那行完成时间：按电脑本地时间写成“完成于 月-日 时:分”
+  doneText: function (ts) {
+    if (ts == null || ts === "" || !isFinite(Number(ts))) return "";
+    var when = new Date(Number(ts) * 1000);
+    if (isNaN(when.getTime())) return "";
+    function pad(n) { return (n < 10 ? "0" : "") + n; }
+    return "完成于 " + pad(when.getMonth() + 1) + "-" + pad(when.getDate()) + " "
+      + pad(when.getHours()) + ":" + pad(when.getMinutes());
   },
   // 点“接受剩下的问题”前给用户看的话：剩下什么、接受后还要再点什么
   acceptIssuesConfirm: function (detail) {
@@ -181,6 +202,8 @@ if (typeof document !== "undefined") (function () {
 
   function phaseHint(ph) {
     if (!ph) return "";
+    // 停下时右栏顶部只留“卡住了”，原因全文放到中间卡片标题下（用户 11-20）
+    if (ph.code === "blocked") return "卡住了";
     var parts = [ph.label || ""];
     if (ph.detail) parts.push(ph.detail);
     return parts.join(" · ");
@@ -458,18 +481,19 @@ if (typeof document !== "undefined") (function () {
       });
   });
 
-  // ---------- 流程：7 步先搭好，之后只改内容 ----------
+  // ---------- 流程：8 个位置先搭好（有接手的卡多一格），之后只改内容 ----------
   var GLYPH = {
     done: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"></path></svg>',
     fail: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"></path></svg>',
     active: '<i class="spin"></i>', wait: '<i class="pip"></i>', idle: '<i class="pip"></i>',
   };
-  var steps = [];
-  for (var i = 0; i < 7; i++) {
+  var steps = [], slots = [];
+  for (var i = 0; i < 8; i++) {
     var li = document.createElement("li");
+    li.hidden = true;   // 拿到数据前先藏着，免得空行闪一下
     li.innerHTML = '<button class="step idle" type="button"><span class="g"></span><span class="t"></span>' +
       '<span class="w"></span><span class="p" hidden><i class="bar"><i class="fill"></i></i><span class="pt"></span></span>' +
-      '<span class="d"></span><span class="k"></span></button>';
+      '<span class="d"></span><span class="k"></span><span class="u"></span></button>';
     (function (idx) {
       li.querySelector("button").addEventListener("click", function () {
         var s = view && view.stations[idx];
@@ -477,6 +501,7 @@ if (typeof document !== "undefined") (function () {
       });
     })(i);
     $("steps").appendChild(li);
+    slots.push(li);
     steps.push(li.querySelector("button"));
   }
 
@@ -484,9 +509,27 @@ if (typeof document !== "undefined") (function () {
     return PanelCore.cleanDetail(s.detail);
   }
 
+  // 没这张卡的这一格：藏起来，并把上一张卡留下的字清干净
+  function clearStep(b, slot) {
+    if (slot) slot.hidden = true;
+    b.className = "step idle";
+    b.querySelector(".g").innerHTML = GLYPH.idle;
+    b.querySelector(".t").textContent = "";
+    b.querySelector(".w").textContent = "";
+    b.querySelector(".d").textContent = "";
+    b.querySelector(".k").textContent = "";
+    b.querySelector(".u").textContent = "";
+    b.querySelector(".p").hidden = true;
+    b.title = "";
+    b.setAttribute("aria-label", "");
+  }
+
   function renderFlow(v) {
-    v.stations.forEach(function (s, idx) {
-      var b = steps[idx], kind = PanelCore.stepClass(s.state);
+    steps.forEach(function (b, idx) {
+      var s = v.stations[idx];
+      if (!s) { clearStep(b, slots[idx]); return; }
+      if (slots[idx]) slots[idx].hidden = false;
+      var kind = PanelCore.stepClass(s.state);
       var cls = "step " + kind + (s.state === "active" && v.stale ? " stale" : "");
       if (b.className !== cls) { b.className = cls; b.querySelector(".g").innerHTML = GLYPH[kind]; }
       b.querySelector(".t").textContent = s.role;
@@ -501,10 +544,12 @@ if (typeof document !== "undefined") (function () {
         pbox.querySelector(".pt").textContent = prog.text;
       }
       b.querySelector(".d").textContent = kind === "idle" ? "" : stepText(s);
-      b.querySelector(".k").textContent = kind === "idle" ? "" : PanelCore.metaText(s, since());
+      b.querySelector(".k").textContent = kind === "idle" ? "" : PanelCore.statusText(s, since());
+      b.querySelector(".u").textContent = kind === "idle" ? "" : PanelCore.usageText(s);
       var note = s.tokens != null ? "每答完一轮才更新一次" : "";
       b.title = [PanelCore.stepTitle(s), note].filter(Boolean).join("\n");
-      b.setAttribute("aria-label", s.role + " " + s.who + "，看交接");
+      var spoken = PanelCore.metaText(s, since());
+      b.setAttribute("aria-label", s.role + " " + s.who + (spoken ? "，" + spoken : "") + "，看交接");
     });
     var total = PanelCore.totalText(v.tokens);
     var totalBox = $("tokenTotal");
@@ -514,6 +559,12 @@ if (typeof document !== "undefined") (function () {
         ? [PanelCore.totalTitle(v.tokens), "每答完一轮才更新一次"].filter(Boolean).join("\n")
         : PanelCore.totalTitle(v.tokens);
       totalBox.hidden = !total;
+    }
+    var doneBox = $("doneAt");
+    if (doneBox) {
+      var done = PanelCore.doneText(v.finished_at);
+      doneBox.textContent = done;
+      doneBox.hidden = !done;
     }
   }
 
@@ -530,7 +581,7 @@ if (typeof document !== "undefined") (function () {
     view.stations.forEach(function (s, idx) {
       if (s.state === "active") {
         // 和首次绘制走同一个拼法，不能在这里另拼一套
-        steps[idx].querySelector(".k").textContent = PanelCore.metaText(s, since());
+        steps[idx].querySelector(".k").textContent = PanelCore.statusText(s, since());
       }
     });
   }

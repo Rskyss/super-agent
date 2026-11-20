@@ -351,7 +351,7 @@ class NoFalsePass(ServerCase, Base):
     def test_approved_plan_reaches_everyone(self):
         said = Path(self.tmp) / "said.log"
         for name in ("codex", "agent", "agy"):
-            write_script(self.bin / name, f'printf "{name}:%s\\n" "$*" >> "{said}"\n'
+            write_script(self.bin / name, f'printf "{name}:%s\\n" "$(printf "%s" "$*" | tr "\\n" " ")" >> "{said}"\n'
                                           + ("echo 真测试 > test_new.py\n" if name == "codex" else "")
                                           + ("echo 结论：通过\n" if name == "agy" else "echo 写好了\n"))
         self.start("true")

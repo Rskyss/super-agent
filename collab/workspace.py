@@ -18,7 +18,7 @@ IGNORE_RULE = ".collab/"
 
 RECORDS_README = (
     "# 协作区（只留在本机，不进 git）\n\n"
-    f"各工具进门先读本文件。规则书：{PACKAGE_DIR / '规则.md'}，开工前必须先读。\n"
+    f"各工具进门先读本文件。规则包：{PACKAGE_DIR.parent / 'agents' / 'README.md'}（谁读哪几份写在里面），开工前必须先读。\n"
     f"调度员的操作手册：{PACKAGE_DIR / 'README.md'}。\n"
     "卡片见 cards/，状态以任务板为准。项目说明在项目的 docs/项目说明.md。\n"
 )

@@ -119,8 +119,15 @@ class FirstRound(Flow):
         self.assertIn("恰好在两步之间被打断时提示错", ledger_text(self), "记以后再修也要写台账")
 
     def test_rare_but_severe_still_returned(self):
+        # 2b（用户 2026-11-20 定，docs/规则包/）：标“极巧合”的不退回，实跑复现、严重的也一样；原来这里退回。
+        # 真丢数据要标“安全或丢数据”，那类照退（下一条）。
         card, calls = self.run_flow([review("不通过", [rare(level="严重", what="打断后数据全丢")]), review("通过")])
-        self.assertEqual(len(self.of(calls, "dev")), 2, "严重的哪怕极巧合也退回")
+        self.assertEqual(len(self.of(calls, "dev")), 1, "极巧合的哪怕严重也只记以后再修")
+
+    def test_rare_but_data_loss_still_returned(self):
+        card, calls = self.run_flow([review("不通过", [rare(level="严重", kind="安全或丢数据", what="打断后数据全丢")]),
+                                     review("通过")])
+        self.assertEqual(len(self.of(calls, "dev")), 2, "安全或丢数据哪怕极巧合也退回")
 
     def test_rare_but_test_wrong_still_returned(self):
         tw = rare(kind="测试写错", what="测试把按钮颜色写反了", where="tests/test_a.py:5")
@@ -234,6 +241,7 @@ class AutoPassWaitsForFullRun(Flow):
         wt = self.worktree
 
         def ask_fn(adapter, prompt, cwd, **kw):
+            prompt = prompt.split("【规则完】")[-1]  # 11-20 起每段话前面都带规则包（规则里也有“只改测试”这类字），只按后面的具体交代分角色
             if "只读复查" in prompt:
                 return AgentResult(ok=True, output="", attempts=1, final=reviews.pop(0))
             if "编写自动化测试" in prompt or "只改测试" in prompt:
@@ -293,12 +301,7 @@ class AutoPassWaitsForFullRun(Flow):
         self.assertIn("全部测试", events(self.cdir, "转人工")[-1].get("summary", ""))
 
 
-class Rules(unittest.TestCase):
-    def test_rules_mention_hit_and_numbered_check(self):
-        text = (ROOT / "collab" / "规则.md").read_text(encoding="utf-8")
-        line = next(ln for ln in text.splitlines() if "**复查员**" in ln)
-        for word in ("碰上", "常见", "少见", "极巧合", "编号", "改好了", "没改好"):
-            self.assertIn(word, line)
+# 规则文字的查验 11-20 起由规则包体检管（tests/test_rulebook_health.py，要点清单在 agents/README.md）
 
 
 if __name__ == "__main__":

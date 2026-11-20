@@ -71,9 +71,10 @@ class RulesInPromptsTest(unittest.TestCase):
         run_card(Card("CARD-001", state="待派发"), collab_dir=collab, worktree=tmp.name,
                  test_command=["t"], dev_adapter="cursor", test_adapter="codex", ask_fn=listed_ask(ask),
                  judge_fn=lambda c, cwd, timeout: Verdict(PASS, 0, "ok"), reviewer_adapter="agy")
-        for adapter in ("cursor", "codex", "agy"):
-            self.assertIn("规则.md", prompts[adapter], adapter)
-            self.assertTrue(Path(prompts[adapter].split("规则：")[1].split("。")[0]).exists())
+        from collab.rulebook import rules_for  # 11-20 起规则原样放在最前面（规则包），不再只给一个路径
+        for adapter, role in (("cursor", "写代码"), ("codex", "写测试"), ("agy", "复查")):
+            self.assertTrue(prompts[adapter].startswith(rules_for(role)), adapter)
+            self.assertNotIn("规则文件缺失", prompts[adapter], adapter)
 
 
 class ReportFromReplyTest(unittest.TestCase):

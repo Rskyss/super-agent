@@ -58,6 +58,7 @@ body { background: var(--bg-side); }
 .steps li:not(:last-child)::before { content: ""; position: absolute; left: 18.5px; top: 30px; bottom: -8px; width: 1px; background: var(--hair-2); }
 .steps li:has(.done):not(:last-child)::before { background: rgba(98, 204, 147, .35); }
 .steps li:has(.active):not(:last-child)::before, .steps li:has(.wait):not(:last-child)::before { top: 100%; }
+.steps li:has(+ li[hidden])::before { display: none; }   /* 没接手过的卡第 8 格藏着：“确认”下面不画连线（CARD-020 Claude 接手） */
 .step { display: grid; grid-template-columns: 18px max-content minmax(0, 1fr); column-gap: 10px; align-items: center; width: 100%; padding: 9px 10px; text-align: left; background: none; border: 0; border-radius: var(--r-lg); cursor: default; transition: background var(--t-fast) var(--ease); position: relative; }
 .step:hover { background: rgba(255, 255, 255, .035); }
 .g { width: 18px; height: 18px; display: grid; place-items: center; }
@@ -66,6 +67,9 @@ body { background: var(--bg-side); }
 .w { font-size: var(--fs-sm); color: var(--faint); white-space: normal; text-align: right; justify-self: end; overflow-wrap: anywhere; }
 .k { grid-column: 2 / -1; font-size: var(--fs-sm); line-height: 1.55; color: var(--faint); margin-top: 2px; }
 .k:empty { display: none; }
+/* 每一步的用量单独一行（CARD-020）：和状态行一样占整行，没内容不占位 */
+.u { grid-column: 2 / -1; font-size: var(--fs-sm); line-height: 1.55; color: var(--faint); margin-top: 2px; }
+.u:empty { display: none; }
 /* 环节列表下面的本卡合计（CARD-001）：有数才显示，沿用流程的小字和淡色 */
 .token-total { margin: 14px 10px 0; padding: 10px 0 0 28px; border-top: 1px solid var(--hair); font-size: var(--fs-sm); line-height: 1.55; color: var(--faint); font-variant-numeric: tabular-nums; }
 .token-total[hidden] { display: none; }

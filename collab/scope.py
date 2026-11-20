@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import fnmatch
+import re
 
 SCOPE_HEADING = "## 允许改动的范围"
 # 系统自己的东西不算越界：协作区、依赖链接
@@ -33,6 +34,9 @@ def _is_secret(path: str) -> bool:
     return False
 
 
+_NOTE = re.compile(r"\s*[（(][^（）()]*[）)]\s*$")
+
+
 def read_allowed(requirement_text: str):
     """读出任务卡片里“允许改动的范围”下面的每一条。没有这一节返回 None。"""
     if SCOPE_HEADING not in requirement_text:
@@ -55,11 +59,20 @@ def _matches(path: str, pattern: str) -> bool:
     if not pattern:
         return False
     if any(ch in pattern for ch in "*?["):
-        return fnmatch.fnmatch(path, pattern)
-    base = pattern.rstrip("/")
-    if path == base:
-        return True
-    return path.startswith(base + "/")
+        if fnmatch.fnmatch(path, pattern):
+            return True
+    else:
+        base = pattern.rstrip("/")
+        if path == base or path.startswith(base + "/"):
+            return True
+    # 行尾括号备注（“panel.html（只新增一行）”，CARD-020 因此白跑 3 轮）：去掉备注后只认“正好是这个文件”或通配符，
+    # 不当文件夹前缀用——以括号结尾的真文件夹名（“docs/v1.0（施工单）”）只按原样匹配，不会被截短放宽（Codex 复查 11-20）
+    cut = _NOTE.sub("", pattern)
+    if cut != pattern and cut:
+        if any(ch in cut for ch in "*?["):
+            return fnmatch.fnmatch(path, cut)
+        return path == cut
+    return False
 
 
 def out_of_scope(changed, allowed) -> list:

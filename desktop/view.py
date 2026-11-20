@@ -668,6 +668,23 @@ def _set(stations, key, state, detail="", **extra):
             s.update(extra)
 
 
+def _count(value) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _insert_takeover_station(stations, event):
+    """有“接手”记录时，在复查和确认之间加一格（CARD-020；只认接手命令记下的）。"""
+    detail = (f"改了 {_count(event.get('changed'))} 处 · Codex 复查 {_count(event.get('reviews'))} 轮"
+              f" · {_count(event.get('later'))} 条记进以后再修")
+    station = {"key": "takeover", "role": "Claude 接手", "who": "Claude", "face": "Cl",
+               "state": "done", "detail": detail, "live": False, "elapsed": None, "quiet": None}
+    index = next((i for i, s in enumerate(stations) if s["key"] == "accept"), len(stations))
+    stations.insert(index, station)
+
+
 def _review_conclusion(events, reply):
     """最后一次复查员回复之后、和它对应的那条“复查结论”（第二批 A3）：老卡没有就返回 None。"""
     if not isinstance(reply, dict):
@@ -814,6 +831,9 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
             tools[e["dst"]] = e["tool"]
     stations = _stations(tools, reviewer_on, dispatcher)
     _add_models(stations, events, project)
+    takeovers = [e for e in events if e.get("kind") == "接手"]
+    if takeovers:
+        _insert_takeover_station(stations, takeovers[-1])
     runs = [e for e in events if e.get("kind") == "开跑"]
     last_run = runs[-1] if runs else None
     last_run_pid = last_run.get("pid") if last_run else None
@@ -829,9 +849,17 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
     tokens = _add_tokens(stations, events, cdir, resolved_replies=resolved_replies, active_dispatch_idx=active_idx)
     card_test_cmd = _card_test_command(cdir)
     phase = _plain_phase(card_phase(str(project), card_id))
+    finished_at = None
+    if state == "已合并":
+        merged_records = [e for e in events if e.get("kind") == "合并"]
+        # 完成时间就是卡片放进项目的那一刻：之后再补记接手，也不改这个时间（CARD-020 复查退回）
+        if merged_records:
+            when = _when(merged_records[-1])
+            finished_at = when.timestamp() if when is not None else None
     view = dict(base, card={"id": card_id, "title": _title(cdir, card_id), "state": state,
                             "rework": card.rework, "round": rnd, "phase": phase},
-                stations=stations, handoffs=_handoffs(events), tokens=tokens)
+                stations=stations, handoffs=_handoffs(events), tokens=tokens,
+                finished_at=finished_at)
 
     if not events:
         _fallback(stations, state)
@@ -1035,6 +1063,17 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
             for field in ("history", "spent", "rounds"):
                 st.pop(field, None)
 
+    # Claude 接手（CARD-020）：最新接手在最后一次复查结论之后、复查原来是红叉，才改成绿勾并写明；
+    # 接手之后又被复查退回的，照旧是红叉，接手那格留着。
+    if takeovers:
+        conclusions = [e for e in events if e.get("kind") == "复查结论"]
+        last_conclusion = int(conclusions[-1].get("seq") or 0) if conclusions else 0
+        rev_st = next((s for s in stations if s["key"] == "rev"), None)
+        if (rev_st is not None and rev_st.get("state") == "fail"
+                and int(takeovers[-1].get("seq") or 0) > last_conclusion):
+            rev_st["state"] = "done"
+            rev_st["detail"] = (rev_st.get("detail") or "") + "，已由 Claude 接手修好"
+
     if disp_busy_after:
         _set(stations, "accept", "idle", "等最终核验完")
     elif phase.get("code") in ("merge_failed", "copy_missing"):
@@ -1093,8 +1132,11 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
     elif state == "已合并":
         now_text, tone = "已放进项目", "ok"
     elif state == "需Claude介入":
-        reason = escalations[-1]["summary"] if escalations else "原因见交接记录"
-        now_text, tone = f"卡停下了，等你处理：{reason}", "bad"
+        # 卡住时中间标题下要放完整原因：用阶段里的说明全文（含剩下问题和建议），不再拿截短的摘要
+        reason = str(phase.get("detail") or "")
+        if not reason and escalations:
+            reason = str(escalations[-1].get("say") or escalations[-1].get("summary") or "")
+        now_text, tone = f"卡停下了，等你处理：{reason or '原因见交接记录'}", "bad"
     else:
         now_text, tone = "程序在安排下一步", "run"
 

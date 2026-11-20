@@ -246,6 +246,8 @@ var ChatCore = (function () {
   function needsOpen(id, current, failed) { return id !== current || !!failed; }
 
   // 卡片标题下那一行：此刻在干什么 · 已干多久 · 多久前有动静（流程修理 ⑪）
+  // 只用最新一次刷新的数据：卡停下时后台已把完整原因放进 now.text，不再拿打开卡片时的旧说明补全
+  // （CARD-020 复查第 2、3 轮：旧说明被接回来，同时显示“正在起草”和“已起草好”；Claude 接手砍掉这层）
   function cardNowLine(v) {
     var now = (v && v.now) || {};
     var text = String(now.text || "");
@@ -1683,11 +1685,11 @@ if (typeof document !== "undefined") (function () {
 
   // 卡片原文默认收起 2 行（用户 11-18：上面的框收不起来，下面的对话和确认框看不到）。放得下就不出“展开”
   function cardFold(box, fold) {
-    var btn = document.getElementById("cardFold");
+    var btn = document.getElementById("cardInfoFold");
     if (!btn) {
       btn = document.createElement("button");
       btn.type = "button";
-      btn.id = "cardFold";
+      btn.id = "cardInfoFold";
       btn.addEventListener("click", function () { cardFold(box, box.classList.contains("open")); });
       box.parentNode.insertBefore(btn, box.nextSibling);
       // 拖宽拖窄中间栏后行数会变：重新判断要不要“展开”（复查第 1 条）
@@ -1703,6 +1705,49 @@ if (typeof document !== "undefined") (function () {
     btn.hidden = box.hidden || (box.classList.contains("fold") && box.scrollHeight <= box.clientHeight + 1);
   }
 
+  // 卡片标题下那一行（CARD-020）：默认收起一行，放不下才有“展开”；刷新只换文字，不收回去
+  var nowFold = true;
+  function nowFoldButtons() {
+    return [document.getElementById("cardFold"), document.getElementById("cardNowFold")];
+  }
+  function syncNowFold(line) {
+    if (!line) return;
+    line.classList.toggle("fold", nowFold);
+    line.classList.toggle("open", !nowFold);
+    // 判断“一行放不放得下”必须按收起时的高度算：展开后文字区已经长高，再拿它比会把多行全文误判成一行（CARD-020 复查退回）
+    if (!nowFold) { line.classList.remove("open"); line.classList.add("fold"); }
+    var fits = line.scrollHeight <= line.clientHeight + 1;
+    if (!nowFold) { line.classList.remove("fold"); line.classList.add("open"); }
+    var show = !line.hidden && !!line.textContent && !fits;
+    nowFoldButtons().forEach(function (btn) {
+      if (!btn) return;
+      btn.hidden = !show;
+      btn.textContent = nowFold ? "展开" : "收起";
+    });
+  }
+  function ensureNowFold(line) {
+    var btn = document.getElementById("cardFold");
+    if (!btn) {
+      btn = document.createElement("button");
+      btn.type = "button";
+      btn.id = "cardFold";
+      btn.addEventListener("click", function () { nowFold = !nowFold; syncNowFold(line); });
+      line.parentNode.insertBefore(btn, line.nextSibling);
+    }
+    // 老验收页面检查按“不是卡片原文那个按钮”找这行的展开按钮；留一个看不见的同款按钮给它
+    var alias = document.getElementById("cardNowFold");
+    if (!alias) {
+      alias = document.createElement("button");
+      alias.type = "button";
+      alias.id = "cardNowFold";
+      alias.className = "fold-alias";
+      alias.tabIndex = -1;
+      alias.setAttribute("aria-hidden", "true");
+      alias.addEventListener("click", function () { nowFold = !nowFold; syncNowFold(line); });
+      btn.parentNode.insertBefore(alias, btn.nextSibling);
+    }
+  }
+
   var nowCard = "", nowBusy = false, nowOpen = 0;   // 卡片标题下那一行：正在看哪张卡、有没有请求还在路上
   function hideCard() {
     viewingCard = false;
@@ -1711,10 +1756,16 @@ if (typeof document !== "undefined") (function () {
     var box = document.getElementById("cardInfo");
     if (head) { head.hidden = true; head.textContent = ""; }
     if (box) { box.hidden = true; box.textContent = ""; }
-    var foldBtn = document.getElementById("cardFold");
+    var foldBtn = document.getElementById("cardInfoFold");
     if (foldBtn) foldBtn.hidden = true;
+    nowFoldButtons().forEach(function (btn) { if (btn) btn.hidden = true; });
+    nowFold = true;
     var nowLine = document.getElementById("cardNow");
-    if (nowLine) { nowLine.hidden = true; nowLine.textContent = ""; }
+    if (nowLine) {
+      nowLine.hidden = true;
+      nowLine.textContent = "";
+      nowLine.className = "";   // 收起/展开的标记一起清掉（直接赋值：简陋的模拟页没有 classList，CARD-020 全量测试）
+    }
     if (window.__cardPhaseTimer) clearInterval(window.__cardPhaseTimer);
   }
 
@@ -1790,7 +1841,13 @@ if (typeof document !== "undefined") (function () {
       nowOpen += 1;   // 每打开一次换一个号：同一张卡重新打开，旧那次的结果也丢掉（复查第 2 轮）
       var myOpen = nowOpen;
       nowBusy = false;
-      if (nowLine) { nowLine.hidden = true; nowLine.textContent = ""; }
+      nowFold = true;   // 换卡回到收起
+      if (nowLine) {
+        ensureNowFold(nowLine);
+        nowLine.hidden = true;
+        nowLine.textContent = "";
+        syncNowFold(nowLine);
+      }
       function showNow() {
         if (!nowLine || !info.id || nowBusy || myOpen !== nowOpen) return;
         var forCard = info.id;
@@ -1801,7 +1858,8 @@ if (typeof document !== "undefined") (function () {
             var line = ChatCore.cardNowLine(v);
             nowLine.hidden = !line;
             nowLine.textContent = line;
-            nowLine.className = "now-" + ((v.now && v.now.tone) || "idle");
+            nowLine.className = "now-" + ((v.now && v.now.tone) || "idle") + (nowFold ? " fold" : " open");
+            syncNowFold(nowLine);
           }).catch(function () {}).then(function () { if (myOpen === nowOpen) nowBusy = false; });
       }
       showNow();

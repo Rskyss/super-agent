@@ -103,7 +103,7 @@ class NewWords(unittest.TestCase):
         self.assertIn("### 2. 对齐需求 → 任务卡片", manual)
         self.assertIn("新建任务卡片", manual)
         self.assertIn("需求卡.md", manual, "调度员要知道任务卡片的文件名还是 需求卡.md")
-        self.assertIn("任务卡片", read("collab/规则.md"))
+        self.assertIn("任务卡片", read("agents/通用/四道关卡.md"))  # 规则 11-20 搬进规则包
         self.assertIn("任务卡片", read("collab/planner.py"))
         self.assertIn("新建任务卡片", read("collab/cli.py"))
 

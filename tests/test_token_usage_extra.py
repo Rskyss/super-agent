@@ -661,24 +661,28 @@ const flush = async () => {for(let i=0;i<16;i++) await Promise.resolve();};
 (async () => {
   await flush();
   const b = $('steps').children[0].querySelector('button');
-  assert.ok(b.querySelector('.k').textContent.includes('8,512 token'), '运行中要显示用量');
+  // 右栏显示小修第 1 条（用户 11-19）：用量另起一行（.u），状态行（.k）只留计时
+  assert.strictEqual(b.querySelector('.u').textContent, '8,512 token', '运行中要显示用量');
+  assert.ok(!b.querySelector('.k').textContent.includes('token'), '状态行不带用量');
   assert.ok(b.querySelector('.k').textContent.includes('已干'), '原有计时要保留');
   assert.ok(b.title.includes('正在改颜色'), '原有提示要保留');
   assert.ok(b.title.includes('输入 8,000（其中缓存读取 6,000）'), '提示要有用量明细');
   tick();
-  assert.ok(b.querySelector('.k').textContent.includes('8,512 token'), '半秒刷新不能擦掉用量');
+  assert.strictEqual(b.querySelector('.u').textContent, '8,512 token', '半秒刷新不能擦掉用量');
   assert.ok($('tokenTotal'), '合计元素必须在实际 HTML 里');
   assert.strictEqual($('tokenTotal').hidden, false);
   assert.strictEqual($('tokenTotal').textContent, '本卡合计 8,632 token');
   payload = {...payload, stations:[{...station, state:'done', elapsed:null, quiet:null}]};
   nextPoll(); await flush();
-  assert.strictEqual(b.querySelector('.k').textContent, '8,512 token', '结束后只有用量');
+  assert.strictEqual(b.querySelector('.u').textContent, '8,512 token', '结束后只有用量');
+  assert.strictEqual(b.querySelector('.k').textContent, '', '结束后没有计时');
   tick();
-  assert.strictEqual(b.querySelector('.k').textContent, '8,512 token');
+  assert.strictEqual(b.querySelector('.u').textContent, '8,512 token');
   payload = {...payload, stations:[{...station, state:'done', tokens:undefined}],
              tokens:{total:0, other:0}};
   nextPoll(); await flush();
   assert.strictEqual(b.querySelector('.k').textContent, '');
+  assert.strictEqual(b.querySelector('.u').textContent, '');
   assert.strictEqual($('tokenTotal').hidden, true, '切到零用量时要收起旧合计');
 })().catch(e => {console.error(e); process.exitCode = 1;});
 ''')
