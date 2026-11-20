@@ -18,7 +18,8 @@ assert.deepStrictEqual(hydrogen.efforts.map(function (e) { return e.value; }),
 var argon = groups.find(function (g) { return g.base === "gemini-4-argon"; });
 assert.strictEqual(argon.label, "Gemini 4 Argon", "“(High · 默认)”这类括号也去掉");
 assert.strictEqual(groups.filter(function (g) { return g.base === "gemini-4-argon"; }).length, 1, "同一模型只出现一次");
-assert.ok(groups.every(function (g) { return g.efforts.length >= 1; }), "agy 每个模型都至少一档");
+// 11-20 Orchestrator 三个编号本来就不带强度，各占一项；其余模型仍至少一档
+assert.ok(groups.every(function (g) { return g.efforts.length >= 1 || /^gemini-pro-orchestrator/.test(g.base); }), "agy 除 Orchestrator 外每个模型都至少一档");
 
 // 2. 拆不开的编号单独一项，没有强度
 var odd = T.splitEfforts([{ value: "my-model", label: "my-model（当前）" }, { value: "x-high", label: "X (High)" }]);
