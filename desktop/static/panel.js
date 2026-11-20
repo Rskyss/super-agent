@@ -46,7 +46,9 @@ var PanelCore = {
     if (p.written != null) return { text: "已写 " + p.written + " 项", pct: null };
     if (p.error) return { text: "进度算不出来（" + p.error + "）", pct: null };
     if (p.total != null && p.total > 0) {
-      return { text: "通过 " + p.passed + "/" + p.total, pct: Math.round(100 * p.passed / p.total) };
+      var words = p.own ? "本卡要做的 " + p.total + " 项，已过 " + p.passed + " 项"
+        : "通过 " + p.passed + "/" + p.total;
+      return { text: words, pct: Math.floor(100 * p.passed / p.total) };   // 只舍不入：没全过不显示满格（D2 复查第 3 轮）
     }
     if (p.computing || p.total === 0) return { text: "正在算通过了几项…", pct: 0 };
     return null;
@@ -500,14 +502,17 @@ if (typeof document !== "undefined") (function () {
       }
       b.querySelector(".d").textContent = kind === "idle" ? "" : stepText(s);
       b.querySelector(".k").textContent = kind === "idle" ? "" : PanelCore.metaText(s, since());
-      b.title = PanelCore.stepTitle(s);
+      var note = s.tokens != null ? "每答完一轮才更新一次" : "";
+      b.title = [PanelCore.stepTitle(s), note].filter(Boolean).join("\n");
       b.setAttribute("aria-label", s.role + " " + s.who + "，看交接");
     });
     var total = PanelCore.totalText(v.tokens);
     var totalBox = $("tokenTotal");
     if (totalBox) {
       totalBox.textContent = total;
-      totalBox.title = PanelCore.totalTitle(v.tokens);
+      totalBox.title = total
+        ? [PanelCore.totalTitle(v.tokens), "每答完一轮才更新一次"].filter(Boolean).join("\n")
+        : PanelCore.totalTitle(v.tokens);
       totalBox.hidden = !total;
     }
   }

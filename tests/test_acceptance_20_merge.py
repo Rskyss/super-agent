@@ -62,7 +62,11 @@ class HappyPath(MergeCase):
         self.assertEqual(self.main_file(), "x = 2\n")
         self.assertEqual(self.state(), "已合并")
         self.assertEqual(self.phase()["code"], "done")
-        self.assertIn(self.out("rev-parse", "--abbrev-ref", "HEAD"), self.last_flow("合并")["summary"])
+        # 第三批 C9：中间区只写“已放进项目”，分支名放进全文
+        self.assertEqual(self.last_flow("合并")["summary"], "已放进项目")
+        from collab.flow import text_of
+        self.assertIn(self.out("rev-parse", "--abbrev-ref", "HEAD"),
+                      text_of(self.collab / "cards" / "CARD-001", self.last_flow("合并")) or "")
         self.assertIn("CARD-001：改按钮", self.out("log", "-1", "--format=%s"))
         self.assertTrue((Path(self.project) / "docs" / "改按钮").is_dir(), "要归档")
         self.assertIn("CARD-001", (Path(self.project) / "docs" / "开发进度跟踪.md").read_text(encoding="utf-8"))

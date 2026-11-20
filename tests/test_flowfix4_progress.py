@@ -185,7 +185,7 @@ class Shown(unittest.TestCase):
     @unittest.skipUnless(shutil.which("node"), "需要 Node")
     def test_panel_text(self):
         script = ("const P=require('./desktop/static/panel.js');const a=P.progressText({passed:120,total:269});"
-                  "if(a.text!=='通过 120/269'||a.pct!==45)process.exit(1);"
+                  "if(a.text!=='通过 120/269'||a.pct!==44)process.exit(1);"   # 第三批 D2：百分比只舍不入
                   "if(P.progressText({written:37}).text!=='已写 37 项')process.exit(2);"
                   "if(P.progressText({computing:true}).pct!==0)process.exit(3);"
                   "if(P.progressText(null)!==null)process.exit(4);")

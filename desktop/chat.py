@@ -312,7 +312,7 @@ class ChatSession:
                 handoffs.append({"seq": seq, "kind": "需求", "time": tstr, "from": "你", "to": who,
                                  "summary": summarize(e.get("text") or "", 80), "tone": "", "has_text": True})
             elif t == "opening" and not e.get("history"):
-                handoffs.append({"seq": seq, "kind": "交代", "time": tstr, "from": "超级助手", "to": who,
+                handoffs.append({"seq": seq, "kind": "交代", "time": tstr, "from": "程序", "to": who,
                                  "summary": "自动交代：读项目说明与交接记录", "tone": "", "has_text": True})
             elif t == "message" and (e.get("text") or "").strip():
                 handoffs.append({"seq": seq, "kind": "回复", "time": tstr, "from": who, "to": "你",

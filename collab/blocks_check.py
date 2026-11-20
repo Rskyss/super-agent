@@ -241,7 +241,7 @@ def _check_tool(card, root, args, found, verified, keys, runner, timeout, termin
     secret_env = _secret_env(card, keys)
     with _OneAtATime(card["id"]):
         if not found:
-            how = ("关掉超级助手再重新打开，然后再检测一次" if terminal_path and _which(card["command"], terminal_path)
+            how = ("关掉这个应用再重新打开，然后再检测一次" if terminal_path and _which(card["command"], terminal_path)
                    else f"先装好 {card['name']}，再检测一次")
             return _save(card["id"], dict(ok=False, status="missing", verified=verified, seconds=0,
                                           reason=f"电脑上找不到 {card['command']} 这个命令", how=how), root, record)
@@ -450,8 +450,8 @@ def check_cli(card, root=None, approved=None, runner=None, timeout=DEFAULT_TIMEO
     with _OneAtATime(card["id"]):
         if not found:
             if terminal_path and _which(card["command"], terminal_path):
-                missing = {"reason": f"{card['name']} 装好了，但超级助手还没认到",
-                           "how": "关掉超级助手再重新打开，然后再检测一次"}
+                missing = {"reason": f"{card['name']} 装好了，但这个应用还没认到",
+                           "how": "关掉这个应用再重新打开，然后再检测一次"}
             else:
                 missing = {"reason": f"没装：电脑上找不到 {card['command']} 这个命令",
                            "how": f"先装好 {card['name']} 并登录，再检测一次"}

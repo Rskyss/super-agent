@@ -271,7 +271,8 @@ class ViewTest(unittest.TestCase):
         self.assertEqual(disp["state"], "active")
         self.assertTrue(disp["live"])
         self.assertIn("运行 npm test", disp["detail"])
-        self.assertIn("调度员 Codex 正在干活：运行 npm test", view["now"]["text"])
+        self.assertIn("Codex 正在干活：运行 npm test", view["now"]["text"])   # 第三批 C1：不再写“调度员”
+        self.assertNotIn("调度员", view["now"]["text"])
         self.assertTrue(len(view["handoffs"]) >= 3)
         seq = view["handoffs"][-1]["seq"]
         self.assertIn("142 项测试", event_text(self.project, "调度中", seq, chat_session=session))
@@ -308,7 +309,7 @@ class ViewTest(unittest.TestCase):
         self.assertEqual(disp["state"], "active")
         self.assertTrue(disp["live"])
         self.assertEqual(disp["detail"], "读了 2 个文件")
-        self.assertIn("调度员 Codex 正在干活：读了 2 个文件", view["now"]["text"])
+        self.assertIn("Codex 正在干活：读了 2 个文件", view["now"]["text"])   # 第三批 C1
 
     def test_title_ignores_internal_worker_instructions_and_keeps_requirement_name(self):
         cdir = self._card("CARD-001", state="待验收")

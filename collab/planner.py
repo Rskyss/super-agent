@@ -253,6 +253,84 @@ def existing_orders(project, requirement_text: str) -> list:
     return found
 
 
+def _order_sections(text: str) -> list:
+    """把施工单按二级标题切成 [(标题, 正文)]，正文不含标题行。"""
+    sections = []
+    title, body = None, []
+    for line in text.splitlines():
+        if line.startswith("## "):
+            if title is not None:
+                sections.append((title, body))
+            title, body = line[3:].strip(), []
+        elif title is not None:
+            body.append(line)
+    if title is not None:
+        sections.append((title, body))
+    return sections
+
+
+def _section_body(sections: list, keyword: str):
+    """按标题里的关键词找；找不到就是没有（不按第几节去猜：C1、C1.5 施工单第四节是“验收”，Codex 接手复查）。"""
+    for title, body in sections:
+        if keyword in title:
+            return body
+    return None
+
+
+def _first_paragraph(lines):
+    """取第一段：跳过开头的空行，遇到空行或标题就停。"""
+    paragraph = []
+    for line in lines or []:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            if paragraph:
+                break
+            continue
+        paragraph.append(stripped)
+    return "\n".join(paragraph)
+
+
+def _plan_from_order(project, rel: str):
+    """按施工单的固定格式摘出方案内容；摘要、允许路径或验收命令缺一项就返回 None。"""
+    try:
+        text = (Path(project) / rel).read_text(encoding="utf-8")
+    except (OSError, ValueError):
+        return None
+    sections = _order_sections(text)
+    summary = _first_paragraph(_section_body(sections, "要做什么"))
+    allowed = []
+    for line in _section_body(sections, "允许改") or []:
+        stripped = line.strip()
+        if "**不许改**" in stripped:
+            break
+        if not stripped.startswith("- "):
+            continue
+        quoted = re.search(r"`([^`]+)`", stripped)
+        if quoted:
+            path = quoted.group(1).strip()
+            if path and path not in allowed:
+                allowed.append(path)
+    command = re.search(r"验收命令：.*?`([^`\n]+)`", text)
+    test_command = command.group(1).strip() if command else ""
+    if not summary or not allowed or not test_command:
+        return None
+    steps = []
+    for line in _section_body(sections, "做法") or []:
+        stripped = line.strip()
+        if stripped.startswith("### ") and stripped[3:].strip():
+            steps.append(stripped[3:].strip())
+    not_do = _first_paragraph(_section_body(sections, "不做什么")) or "照施工单"
+    return {
+        "summary": summary,
+        "steps": steps or ["照施工单第三节做"],
+        "result": summary,
+        "not_do": not_do,
+        "questions": [],
+        "allowed": allowed,
+        "test_command": test_command,
+    }
+
+
 def _build_prompt(card_dir: Path, requirement_text: str, need_profile: bool, project=None) -> str:
     lines = [
         _READ_RULES,
@@ -322,6 +400,34 @@ def plan_card(project: str, card_id: str) -> int:
     try:
         requirement = req_path.read_text(encoding="utf-8")
         need_profile = _need_profile(project)
+        # 第一次写方案才照施工单直接生成；批准前点过“继续改”（有追加要求）就照旧叫 AI 重写，
+        # 新要求、范围增减都按老流程处理（CARD-016 三轮复查：在这条路上补合并、补抄要求，越补越多，Claude 接手收回）
+        revised = "## 追加要求" in requirement
+        if not need_profile and not revised:
+            for rel in existing_orders(project, requirement)[:1]:
+                data = _plan_from_order(project, rel)
+                if data is None:
+                    continue
+                allowed = _norm_paths(data.get("allowed"))
+                plan_md = _render_plan_md(data).replace(
+                    "# 拆解方案\n\n",
+                    f"# 拆解方案\n\n> 照施工单 {rel} 生成，没有让 AI 再写一遍。\n\n",
+                    1,
+                )
+                if has_blanks(plan_md):
+                    break
+                (card_dir / "方案.md").write_text(plan_md, encoding="utf-8")
+                req_path.write_text(_replace_allowed_section(requirement, allowed), encoding="utf-8")
+                (card_dir / "开工.json").write_text(
+                    json.dumps({"test_command": data["test_command"]}, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                flow_record(
+                    card_dir, "方案", src="程序", dst="你",
+                    summary=str(data.get("summary") or "").strip(),
+                )
+                render_board(collab)
+                return 0
         prompt = _build_prompt(card_dir, requirement, need_profile, project=project)
         models = plan_models(project)
         model = models.get("codex") or "gpt-6.1-sol"

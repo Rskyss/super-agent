@@ -89,7 +89,7 @@ def ensure_ignored(project_dir) -> bool:
         return False
     prefix = "" if not text or text.endswith("\n") else "\n"
     with ignore.open("a", encoding="utf-8") as fh:
-        fh.write(f"{prefix}# 超级助手的施工过程记录，只留在本机\n{IGNORE_RULE}\n")
+        fh.write(f"{prefix}# 施工过程记录，只留在本机\n{IGNORE_RULE}\n")
     return True
 
 

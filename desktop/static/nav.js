@@ -70,6 +70,16 @@ var NavCore = {
     if (d.toDateString() === yesterday.toDateString()) return "昨天 " + clock;
     return pad(d.getMonth() + 1) + "-" + pad(d.getDate());
   },
+  // 已合并、已放弃的卡下面那行时间：写完整年月日和时分（今天/昨天也写日期）
+  finishLine: function (c, now) {
+    if (!c || c.finished == null) return "";
+    var words = c.state === "已合并" ? "完成于 " : c.state === "已放弃" ? "放弃于 " : "";
+    if (!words) return "";
+    var d = new Date(c.finished * 1000);
+    var pad = function (n) { return n < 10 ? "0" + n : "" + n; };
+    return words + d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()) +
+      " " + pad(d.getHours()) + ":" + pad(d.getMinutes());
+  },
   visibleThreads: function (threads, all) { return all ? threads : threads.slice(0, 5); },
   markCurrent: function (threads, id) {
     return threads.map(function (t) { return Object.assign({}, t, { current: t.id === id }); });
@@ -146,8 +156,10 @@ if (typeof document !== "undefined") (function () {
   function cardRow(c) {
     var dot = NavCore.dotFor(c), on = mode === "card" && c.id === selected;
     var sub = dot.label + (c.rework ? " · 返工 " + c.rework + " 次" : "");
+    var fin = NavCore.finishLine(c);
     var row = '<div class="row"><button class="item' + (on ? " on" : "") + '" type="button" data-id="' + esc(c.id) + '" title="' + esc(c.id) + '">' +
-      '<span class="lead"><i class="dot ' + dot.tone + '"></i></span><span class="tt">' + esc(c.title) + '</span><span class="sub">' + esc(sub) + "</span></button>";
+      '<span class="lead"><i class="dot ' + dot.tone + '"></i></span><span class="tt">' + esc(c.title) + '</span><span class="sub">' + esc(sub) + "</span>" +
+      (fin ? '<span class="fin">' + esc(fin) + "</span>" : "") + "</button>";
     if (NavCore.canArchive(c)) {
       row += '<button class="rowact" type="button" data-archive="' + esc(c.id) + '" aria-label="归档" title="归档">' + BOX + "</button>";
     } else if (c.archived) {
@@ -302,7 +314,7 @@ if (typeof document !== "undefined") (function () {
       $("busy").hidden = !(v.card && v.card.id === "调度中" && v.card.state === "调度中");
       cards = v.cards;
       var key = JSON.stringify(cards.map(function (c) {
-        return [c.id, c.title, c.state, c.rework, c.phase ? c.phase.code : "", c.archived];
+        return [c.id, c.title, c.state, c.rework, c.phase ? c.phase.code : "", c.archived, c.finished];
       }));
       if (key !== lastKey) { lastKey = key; drawList(); }   // 没变化不重画：不打断滚动
       if (selected && mode === "card" && NavCore.keepSelected(selected, cards) === null) tell("superagent://main");

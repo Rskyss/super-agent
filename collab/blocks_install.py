@@ -64,7 +64,7 @@ _ADMIN_WORDS = {
 }
 _ADMIN_HOW = {
     "npm": "换一种安装方式（比如用 Homebrew 装），或者让管家带你在终端里处理",
-    "script": "安装脚本要电脑密码或管理员权限，超级助手不替你输：按官网说明在终端里自己装",
+    "script": "安装脚本要电脑密码或管理员权限，这个应用不替你输：按官网说明在终端里自己装",
     "brew": "Homebrew 的文件夹权限不对，要在终端里修：让管家带你一步步做",
 }
 
@@ -334,7 +334,7 @@ def _judge(item, code, output, lookup) -> dict:
         tool = item["needs"]
         if any(w in text for w in _ADMIN_WORDS[tool]):
             return {"ok": False, "status": "needs_admin", "found": False,
-                    "reason": "要管理员权限才能装，超级助手不会自动提权", "how": _ADMIN_HOW[tool]}
+                    "reason": "要管理员权限才能装，这个应用不会自动提权", "how": _ADMIN_HOW[tool]}
         lines = [ln.strip() for ln in _LINE_BREAK.split(output or "") if ln.strip()]
         tail = _mask_cut(lines[-1], 120) if lines else "没有输出"
         how = f"稍后再试一次；还不行就跟管家说。安装程序最后说：{tail}"
@@ -344,4 +344,4 @@ def _judge(item, code, output, lookup) -> dict:
         return {"ok": False, "status": "fail", "found": False, "reason": "安装没成功", "how": how}
     found = bool(_which(item["command"], lookup))
     return {"ok": True, "status": "ok", "found": found, "reason": f"{item['tool']} 装好了",
-            "how": "" if found else "装好了，但超级助手还没认到：关掉超级助手再重新打开，然后检测一次"}
+            "how": "" if found else "装好了，但这个应用还没认到：关掉这个应用再重新打开，然后检测一次"}

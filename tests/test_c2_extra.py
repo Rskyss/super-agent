@@ -167,7 +167,7 @@ class MergeDetails(c2.MergeCase):
             self.assertFalse((Path(self.project) / path).exists())
         for path in excluded + ["src/app.py"]:
             self.assertNotIn(path, note["summary"] + detail)
-        merged = next(e for e in flow if e["kind"] == "合并" and e["summary"].startswith("已放进 "))
+        merged = next(e for e in flow if e["kind"] == "合并" and e["summary"] == "已放进项目")
         self.assertLess(flow.index(note), flow.index(merged))
 
 

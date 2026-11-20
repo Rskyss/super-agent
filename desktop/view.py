@@ -40,6 +40,33 @@ def _face(tool) -> str:
     return TOOL_FACES.get(tool or "", (tool or "?")[:2])
 
 
+_PLAIN_WORDS = (
+    ("需要调度员看看", "需要你看看"),
+    ("需要调度员处理", "需要你看看"),
+    ("需要调度员看原因", "需要你看看"),
+    ("需要调度员看", "需要你看看"),
+    ("调度员备好了", "程序备好了"),
+)
+
+
+def _plain(text) -> str:
+    """界面上显示的文字：老记录里的“调度员”一律换成人话（记录字段和原文不动）。"""
+    text = str(text or "")
+    for old, new in _PLAIN_WORDS:
+        text = text.replace(old, new)
+    return text.replace("调度员", "程序")
+
+
+def _plain_phase(phase: dict) -> dict:
+    """阶段里给页面看的说明也换词；code、actions 这些判断字段原样保留。"""
+    if not isinstance(phase, dict):
+        return phase
+    shown = dict(phase)
+    shown["detail"] = _plain(shown.get("detail"))
+    shown["label"] = _plain(shown.get("label"))
+    return shown
+
+
 def _when(event):
     """记录的时刻，只用来相减算用了多久。新记录只有秒数 ts（跟时区无关）；老记录才有钟点 time。"""
     ts = event.get("ts")
@@ -111,11 +138,21 @@ def list_cards(project_dir) -> list:
         try:
             card = Card.load(cdir / "状态.json")
             phase = card_phase(str(project), card_id)
+            # 左栏完成时间：已合并取最后一条合并记录、已放弃取最后一条记录；别的状态没有（施工单只改这个函数）
+            finished = None
+            if card.state in ("已合并", "已放弃"):
+                events = read_flow(cdir)
+                if card.state == "已合并":
+                    events = [event for event in events if event.get("kind") == "合并"]
+                if events:
+                    when = _when(events[-1])
+                    finished = when.timestamp() if when is not None else None
         except (OSError, ValueError, TypeError, KeyError):
             continue
         cards.append({"id": card_id, "title": _title(cdir, card_id), "state": card.state,
-                      "rework": card.rework, "updated": _updated(cdir), "phase": phase,
-                      "archived": _archived(cdir, phase)})
+                      "rework": card.rework, "updated": _updated(cdir), "phase": _plain_phase(phase),
+                      "archived": _archived(cdir, phase),
+                      "finished": finished})
     cards.sort(key=lambda c: (c["updated"], c["id"]), reverse=True)
     return cards
 
@@ -130,7 +167,7 @@ def event_text(project_dir, card_id: str, seq: int, chat_session=None):
     for event in read_flow(cdir):
         if event.get("seq") == seq:
             if not event.get("text"):
-                return event.get("summary", "")
+                return _plain(event.get("summary", ""))
             target = (cdir / event["text"]).resolve()
             if cdir.resolve() not in target.parents:
                 return None
@@ -305,6 +342,8 @@ def _quiet_seconds(project: Path, card_id: str, cdir: Path, open_ev, now: dateti
 
 
 def _label(role: str, tool) -> str:
+    if role == "调度员":
+        return "程序"
     if role in ROLE_KEYS:
         return f"{role} {_name(tool)}".strip()
     return role
@@ -316,9 +355,10 @@ def _tone(event) -> str:
     if kind in ("判定", "页面检查"):
         return "ok" if event.get("result") == PASS else "bad"
     if kind == "回复":
-        if not event.get("ok", True) or summary.startswith("结论：不通过"):
+        concl = re.match(r"结论[：:]\s*(不通过|通过)", summary)
+        if not event.get("ok", True) or (concl and concl.group(1) == "不通过"):
             return "bad"
-        return "ok" if summary.startswith("结论：通过") else ""
+        return "ok" if concl and concl.group(1) == "通过" else ""
     if kind == "转人工":
         return "bad"
     if kind == "结束":
@@ -337,18 +377,18 @@ def _handoffs(events: list) -> list:
         out.append({
             "seq": e.get("seq"), "kind": e.get("kind"),
             "time": _since_start((when - start).total_seconds()) if when and start and when >= start else "",
-            "from": _label(e.get("src", ""), tool if e.get("kind") == "回复" else None),
-            "to": _label(e.get("dst", ""), tool if e.get("kind") == "派活" else None),
-            "summary": e.get("summary", ""), "tone": _tone(e), "has_text": bool(e.get("text")),
+            "from": _plain(_label(e.get("src", ""), tool if e.get("kind") == "回复" else None)),
+            "to": _plain(_label(e.get("dst", ""), tool if e.get("kind") == "派活" else None)),
+            "summary": _plain(e.get("summary", "")), "tone": _tone(e), "has_text": bool(e.get("text")),
         })
     return out
 
 
 def _dispatcher(saved) -> tuple:
-    """调度员的名字和头像字：桌面窗口告诉面板用户选的是谁；没说就不猜，只写“调度员”。"""
+    """聊天里干活的人的名字和头像字：桌面窗口告诉面板用户选的是谁；没说就是 Codex。"""
     saved = (saved or "").strip()
     if not saved:
-        return "调度员", "调"
+        return "Codex", "Cx"
     if saved.startswith("custom:"):
         words = saved[len("custom:"):].split()
         name = words[0] if words else "自定义"
@@ -451,6 +491,8 @@ def _saved_step_tokens(event: dict):
     saved = _normalize_saved_tokens(event.get("tokens"))
     if saved is not None:
         return saved
+    if event.get("src") == "程序":
+        return None   # 程序自己做的（照施工单生成方案、有施工单跳过交接资料）：没叫 AI，不算“没读到”
     tool = event.get("tool")
     if tool and usage_for(tool, output="") is None:
         return None
@@ -622,7 +664,7 @@ def _card_test_command(cdir: Path) -> str:
 def _set(stations, key, state, detail="", **extra):
     for s in stations:
         if s["key"] == key:
-            s.update({"state": state, "detail": detail, "live": False, "elapsed": None, "quiet": None})
+            s.update({"state": state, "detail": _plain(detail), "live": False, "elapsed": None, "quiet": None})
             s.update(extra)
 
 
@@ -680,32 +722,36 @@ def _fallback(stations, state: str):
             _set(stations, s["key"], mark, state)
         else:
             _set(stations, s["key"], "idle")
+    if state in ("待验收", "已合并"):
+        _set(stations, "disp", "done", "方案已定")
 
 
 def _chat_view(base: dict, chat: dict, tools: dict, reviewer_on: bool, dispatcher=None) -> dict:
-    """还没有正式建任务卡片（或旧卡已合并），左边调度员正在排查/对齐时的实时流转视图。"""
+    """还没有正式建任务卡片（或旧卡已合并），左边聊天正在排查/对齐时的实时流转视图。"""
     stations = _stations(tools, reviewer_on, dispatcher)
     disp_who, _ = _dispatcher(dispatcher)
     _set(stations, "you", "done", chat["user_detail"])
     if chat["asking"]:
         _set(stations, "disp", "wait", chat["step_text"], elapsed=chat["elapsed"])
-        now_text, tone = f"调度员 {disp_who} {chat['step_text']}", "wait"
+        now_text, tone = f"{disp_who} {chat['step_text']}", "wait"
     elif chat["busy"]:
         _set(stations, "disp", "active", chat["step_text"], live=True,
              elapsed=chat["elapsed"], quiet=chat["quiet"])
-        now_text, tone = f"调度员 {disp_who} 正在干活：{chat['step_text']}", "run"
+        now_text, tone = f"{disp_who} 正在干活：{chat['step_text']}", "run"
     else:
         _set(stations, "disp", "wait", chat["step_text"])
-        now_text, tone = f"调度员 {disp_who}：{chat['step_text']}", "wait"
+        now_text, tone = f"{disp_who}：{chat['step_text']}", "wait"
     _set(stations, "test", "idle", "等建卡派工")
     _set(stations, "dev", "idle", "等测试写完")
     _set(stations, "check", "idle", "等代码写完")
     _set(stations, "rev", "idle", "等测试通过" if reviewer_on else "这次不复查")
     _set(stations, "accept", "idle", "等全部做完")
     state = "调度中" if (chat["busy"] or chat["asking"]) else "待对齐"
+    handoffs = [dict(h, **{k: _plain(h.get(k, "")) for k in ("from", "to", "summary")})
+                for h in chat["handoffs"]]
     return dict(base, card={"id": "调度中", "title": chat["title"], "state": state, "rework": 0, "round": 1},
-                stations=stations, handoffs=chat["handoffs"], elapsed=chat["elapsed"],
-                now={"text": now_text, "tone": tone})
+                stations=stations, handoffs=handoffs, elapsed=chat["elapsed"],
+                now={"text": _plain(now_text), "tone": tone})
 
 
 def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session=None) -> dict:
@@ -782,13 +828,17 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
     resolved_replies = {}
     tokens = _add_tokens(stations, events, cdir, resolved_replies=resolved_replies, active_dispatch_idx=active_idx)
     card_test_cmd = _card_test_command(cdir)
-    phase = card_phase(str(project), card_id)
+    phase = _plain_phase(card_phase(str(project), card_id))
     view = dict(base, card={"id": card_id, "title": _title(cdir, card_id), "state": state,
                             "rework": card.rework, "round": rnd, "phase": phase},
                 stations=stations, handoffs=_handoffs(events), tokens=tokens)
 
     if not events:
         _fallback(stations, state)
+        if phase.get("code") == "by_claude":
+            view["now"] = {"text": phase.get("label") or "Claude 亲自做",
+                           "tone": phase.get("tone") or "run"}
+            return view
         tone = {"待验收": "ok", "已合并": "ok", "需Claude介入": "bad"}.get(state, "run")
         if _apply_plan_disp_station(stations, cdir, phase):
             tone = "bad" if phase.get("code") == "plan_failed" else "wait"
@@ -822,8 +872,8 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
             # 开工后才停下的：停下原因顶部已经说了，不挂在“写方案”这步，免得看着像写方案失败了（11-18 用户定）；
             # 还没开工（写方案阶段就停下）才算写方案这步没成
             "需Claude介入": (("done", "方案已定，后面有人卡住会叫你") if any(e.get("kind") == "开跑" for e in events)
-                           else ("fail", escalations[-1]["summary"] if escalations else "需要调度员介入")),
-            "待验收": ("done", "已向你汇报"), "已合并": ("done", "已放进项目")}
+                           else ("fail", escalations[-1]["summary"] if escalations else "卡停下了，等你处理")),
+            "待验收": ("done", "方案已定"), "已合并": ("done", "方案已定")}
     if chat and (chat["busy"] or chat["asking"]) and state in ("待对齐", "待派发", "待验收"):
         _set(stations, "disp", "wait" if chat["asking"] else "active", chat["step_text"],
              live=bool(chat["busy"]), elapsed=chat["elapsed"], quiet=chat["quiet"])
@@ -861,7 +911,7 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
         spent = sum(times) if times else None
         if open_ev and open_ev.get("dst") == role:
             if interrupted_run:
-                _set(stations, key, "wait", "上次在这里中断，可让调度员继续", live=False,
+                _set(stations, key, "wait", "上次在这里中断，可以点“接着跑”继续", live=False,
                      history=history, spent=spent, rounds=len(history) + 1)
             else:
                 started = _when(open_ev)
@@ -874,7 +924,7 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
                      history=history, spent=spent, rounds=len(history) + 1)
         elif role in replies:
             r = replies[role]
-            failed = not r.get("ok", True) or r.get("summary", "").startswith("结论：不通过")
+            failed = not r.get("ok", True) or bool(re.match(r"结论[：:]\s*不通过", r.get("summary", "")))
             detail = r.get("summary", "")
             conclusion = _review_conclusion(events, r) if role == "复查员" else None
             if conclusion is not None:
@@ -901,9 +951,20 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
     dev_reply = replies.get("开发员")
     judged = bool(last_verdict and (not dev_reply or last_verdict.get("seq", 0) > dev_reply.get("seq", 0)))
     testing = state in ("待测试", "测试中") and not judged and not open_ev
-    if testing:
+    # 写代码前程序先跑一遍新测试（先红检查）：最后一条是“先红开始”、没人在干、没中断、卡没到终态，就算在跑
+    # 只认这次开跑之后的：中断后接着跑，新进程还没开始先红检查时，不能拿上一进程留下的“先红开始”转圈计时
+    run_seq = max([e.get("seq", 0) for e in events if e.get("kind") == "开跑"], default=0)
+    last_red = next((e for e in reversed(events) if e.get("kind") in ("先红开始", "先红检查")), None)
+    red_running = bool(last_red and last_red.get("kind") == "先红开始" and last_red.get("seq", 0) > run_seq
+                       and not open_ev
+                       and not interrupted_run and state not in TERMINAL_STATES)
+    if red_running:
+        started = _when(last_red)
+        _set(stations, "check", "active", "写代码前先跑一遍新测试", live=True,
+             elapsed=int((now - started).total_seconds()) if started else None)
+    elif testing:
         if interrupted_run:
-            _set(stations, "check", "wait", "上次在跑测试时中断，可让调度员继续")
+            _set(stations, "check", "wait", "上次在跑测试时中断，可以点“接着跑”继续")
         else:
             _set(stations, "check", "active", "核对改动范围、跑测试…")
     elif last_verdict:
@@ -925,6 +986,8 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
         if phase.get("detail"):
             accepting_detail += f"，{phase['detail']}"
         _set(stations, "check", "active", accepting_detail)
+    elif red_running:
+        pass   # 追加要求后同一次开跑接着新一轮：先红检查在跑，不让上一轮的全量结果盖掉转圈
     elif full_running:
         _set(stations, "check", "active", "复查的同时在跑全部测试，看有没有改坏老功能（约十几分钟）")
     elif full_last and full_last.get("phase") in ("结果", "跳过") and (
@@ -973,7 +1036,7 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
                 st.pop(field, None)
 
     if disp_busy_after:
-        _set(stations, "accept", "idle", "等调度员最终核验完")
+        _set(stations, "accept", "idle", "等最终核验完")
     elif phase.get("code") in ("merge_failed", "copy_missing"):
         _set(stations, "accept", "fail", phase.get("detail") or phase.get("label") or "没能放进项目")
     elif state == "待验收":
@@ -997,12 +1060,14 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
 
     # 现在一句话
     if interrupted_run:
-        now_text, tone = "上次施工已中断（已完成步骤已保留，可让调度员接着跑完）", "warn"
+        now_text, tone = "上次施工已中断（已完成步骤已保留，可以点“接着跑”继续）", "warn"
     elif open_ev:
         role = open_ev.get("dst", "")
         step = open_ev.get("step", "")
         verb = f"正在返工（第 {open_ev.get('round', rnd)} 轮）" if step == "返工修改" else _VERBS.get(step, "正在干活")
         now_text, tone = f"{_label(role, tools.get(role))} {verb}", "run"
+    elif red_running:
+        now_text, tone = "程序在写代码前先跑一遍新测试", "run"
     elif testing:
         now_text, tone = f"程序正在跑测试（第 {rnd} 轮）", "run"
     elif full_running:
@@ -1010,28 +1075,28 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
     elif state in ("待对齐", "待派发") and chat and (chat["busy"] or chat["asking"]):
         disp_who, _ = _dispatcher(dispatcher)
         if chat["asking"]:
-            now_text, tone = f"调度员 {disp_who} {chat['step_text']}", "wait"
+            now_text, tone = f"{disp_who} {chat['step_text']}", "wait"
         else:
-            now_text, tone = f"调度员 {disp_who} 正在干活：{chat['step_text']}", "run"
+            now_text, tone = f"{disp_who} 正在干活：{chat['step_text']}", "run"
     elif disp_busy_after:
         disp_who, _ = _dispatcher(dispatcher)
         if chat["asking"]:
-            now_text, tone = f"调度员 {disp_who} {chat['step_text']}", "wait"
+            now_text, tone = f"{disp_who} {chat['step_text']}", "wait"
         else:
-            now_text, tone = f"调度员 {disp_who} 正在最终核验：{chat['step_text']}", "run"
+            now_text, tone = f"{disp_who} 正在最终核验：{chat['step_text']}", "run"
     elif state == "待对齐":
-        now_text, tone = "调度员在和你对齐需求、写方案，等你批准方案", "wait"
+        now_text, tone = "在和你对齐需求、写方案，等你批准方案", "wait"
     elif state == "待派发":
-        now_text, tone = "方案已批准，等调度员开工", "run"
+        now_text, tone = "方案已批准，等开工", "run"
     elif state == "待验收":
         now_text, tone = "做完了，等你确认", "ok"
     elif state == "已合并":
         now_text, tone = "已放进项目", "ok"
     elif state == "需Claude介入":
         reason = escalations[-1]["summary"] if escalations else "原因见交接记录"
-        now_text, tone = f"需要调度员介入：{reason}", "bad"
+        now_text, tone = f"卡停下了，等你处理：{reason}", "bad"
     else:
-        now_text, tone = "调度员在安排下一步", "run"
+        now_text, tone = "程序在安排下一步", "run"
 
     if open_ev and quiet is not None and quiet > QUIET_WARN_SECONDS and state not in TERMINAL_STATES:
         view["stale"] = True
@@ -1040,7 +1105,10 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
     code = phase.get("code")
     chat_live = bool(chat and (chat.get("busy") or chat.get("asking")))
     tone_map = {"wait": "wait", "run": "run", "bad": "bad", "ok": "ok", "done": "idle"}
-    if code in ("dropped", "interrupted", "merging", "merge_failed", "copy_missing", "accepting"):
+    if code == "by_claude":
+        now_text = phase.get("label") or "Claude 亲自做"
+        tone = tone_map.get(phase.get("tone"), tone)
+    elif code in ("dropped", "interrupted", "merging", "merge_failed", "copy_missing", "accepting"):
         now_text = phase.get("label") or now_text
         tone = tone_map.get(phase.get("tone"), tone)
     elif (code in ("plan_failed", "plan_waiting", "planning", "start_failed")
@@ -1050,7 +1118,7 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
     working = bool(open_ev) and not interrupted_run and state not in TERMINAL_STATES
     detail = live_hint(cdir / open_ev["live"], limit=150, tool=open_ev.get("tool", ""),
                        test_command=card_test_cmd) if working and open_ev.get("live") else ""
-    view["now"] = {"text": now_text, "tone": tone}
+    view["now"] = {"text": _plain(now_text), "tone": tone}
     # 写测试、写代码时的进度（第四轮 53）：程序记在 进度.json，只认这一次派活的
     if working and open_ev.get("dst") in ("测试员", "开发员"):
         from collab.progress import read as read_progress
@@ -1065,7 +1133,7 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
             e.get("kind") == "追加要求" and e.get("seq", 0) > drafted[-1].get("seq", 0) for e in events):
         view["draft"] = text_of(cdir, drafted[-1])
     if detail:
-        view["now"]["detail"] = detail
+        view["now"]["detail"] = _plain(detail)
     # 卡片标题下那一行“此刻在干什么”用（流程修理 ⑪）
     view["live"] = working
     view["quiet"] = int(quiet) if working and quiet is not None else None

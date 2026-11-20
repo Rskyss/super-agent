@@ -37,6 +37,78 @@ COLLAB_PACKAGE = Path(__file__).resolve().parent.parent.parent / "collab"
 FOLDER = Path(".collab") / "行政提议"
 _FIELDS = ("title", "do", "not_do", "done_when")
 _FIELD_NAMES = {"title": "标题", "do": "要做什么", "not_do": "不做什么", "done_when": "怎么算做完"}
+_LABEL_KEYS = {name: key for key, name in _FIELD_NAMES.items()}
+_HEADING = re.compile(r"^(#{1,3})\s+(.*)$")
+_COLON_LABEL = re.compile(r"^(标题|要做什么|不做什么|怎么算做完)\s*(\*\*)?\s*[:：]\s*(.*)$")
+
+
+def _colon_content(raw: str, content: str, label_closed: bool) -> str:
+    """冒号后面那一格的内容。标签外面加了 ** 时，收尾的那对星号（紧跟冒号或在行尾）属于标签，不算正文；
+    正文自己的星号原样留着（复查第五轮 2）。"""
+    if raw.startswith("**") and not label_closed:   # 标签的 ** 还没收：冒号后/行尾那对是它的收尾
+        if content.startswith("**"):
+            content = content[2:]
+        elif content.endswith("**"):
+            content = content[:-2]
+    return content.strip()
+
+
+def _label_line(line: str):
+    """这一行是不是格子标签：返回（格子, 内容方式, 冒号后面的内容）或 None。
+    方式为 heading 表示 Markdown 标题、别的标题返回 ("", "heading-stop", None)。"""
+    text = (line or "").strip()
+    if not text:
+        return None
+    heading = _HEADING.match(text)
+    if heading:
+        rest = heading.group(2).strip()
+        plain = re.sub(r"^\*\*\s*", "", rest)
+        found = _COLON_LABEL.match(plain)
+        if found:
+            return _LABEL_KEYS[found.group(1)], "colon", _colon_content(rest, found.group(3), bool(found.group(2)))
+        name = rest.strip("*").strip().rstrip("：:").strip()
+        if name in _LABEL_KEYS:
+            return _LABEL_KEYS[name], "heading", None
+        return "", "heading-stop", None
+    plain = re.sub(r"^\*\*\s*", "", text)
+    found = _COLON_LABEL.match(plain)
+    if found:
+        return _LABEL_KEYS[found.group(1)], "colon", _colon_content(text, found.group(3), bool(found.group(2)))
+    return None
+
+
+def _fields_from_text(text: str) -> dict:
+    """从用户粘贴的话里认出标了名字的格子；没写标签的格子不放进来。
+    认行首标签加中英文冒号，也认一至三级 Markdown 标题；标签两边的 **、空格忽略。"""
+    values = {}
+    current, mode, lines = None, "", []
+
+    def flush():
+        if current is None:
+            return
+        value = "\n".join(lines).strip()
+        if value:
+            values[current] = value
+
+    for line in str(text or "").splitlines():
+        found = _label_line(line)
+        if found is None:
+            if current is not None:
+                lines.append(line)
+            continue
+        key, way, inline = found
+        if way == "heading-stop":
+            if mode == "heading":   # Markdown 那格到下一个标题就结束
+                flush()
+                current, lines = None, []
+            elif current is not None:   # 冒号那格要到下一个标签行才结束
+                lines.append(line)
+            continue
+        flush()
+        current, mode = key, way
+        lines = [inline] if inline else []
+    flush()
+    return values
 _TEAM_ROLES = frozenset({"tester", "developer", "reviewer"})
 _TEAM_TOOLS = frozenset({"codex", "cursor", "agy"})
 _TEAM_REVIEWER_TOOLS = _TEAM_TOOLS | {"none"}
@@ -134,14 +206,36 @@ def cancel_open(project: str, conversation: str) -> None:
 
 
 def propose(conv, arguments: dict) -> str:
-    """模型调用 propose_task：字段齐全才生成提议；否则告诉它还缺什么。"""
-    missing = []
-    values = {}
-    for key in _FIELDS:
-        value = str((arguments or {}).get(key) or "").strip()
-        values[key] = value
-        if not value:
-            missing.append(_FIELD_NAMES[key])
+    """模型调用 propose_task：字段齐全才生成提议；否则告诉它还缺什么。
+    用户最后一条话里写了标签的格子以用户写的为准，模型漏填也在这里补上。"""
+    values = {key: str((arguments or {}).get(key) or "").strip() for key in _FIELDS}
+    user_text = ""
+    for message in reversed(getattr(conv, "messages", None) or []):
+        if isinstance(message, dict) and message.get("role") == "user":
+            content = message.get("content")
+            if isinstance(content, str):
+                user_text = content
+                break
+    values.update(_fields_from_text(user_text))
+
+    if (values["title"].startswith("按施工单") or "/" in values["title"]
+            or ".md" in values["title"]):
+        from collab.planner import existing_orders
+        orders = existing_orders(conv.project, "\n".join(
+            (values["title"], values["do"], user_text)))
+        if orders:
+            try:
+                text = (Path(conv.project) / orders[0]).read_text(encoding="utf-8")
+            except OSError:
+                text = ""
+            for line in text.splitlines():
+                if line.startswith("# "):
+                    heading = line[2:].strip()
+                    if heading:
+                        values["title"] = heading
+                    break
+
+    missing = [_FIELD_NAMES[key] for key in _FIELDS if not values[key]]
     if missing:
         return "还缺：" + "、".join(missing) + "，先问用户"
     with _lock:

@@ -141,7 +141,7 @@ assert.strictEqual(b.querySelector('.d').textContent,'正在检查刷新');
 
     def test_active_to_done_updates_history_and_clears_old_total_tooltip(self):
         self.check_dom(r'''
-assert.strictEqual($('tokenTotal').title,'其中交接资料等其他 34 token');
+assert.strictEqual($('tokenTotal').title,'其中交接资料等其他 34 token\n每答完一轮才更新一次');   // 第三批 C10
 await update({...station,state:'done',elapsed:null,quiet:null,spent:61,
   detail:'汇报：全部处理好了\n这里是完整说明',history:[{seconds:60,tokens:1000},{seconds:1,tokens:200}]},
   {total:1200,other:0});
@@ -151,7 +151,8 @@ assert.ok(b.title.includes('全部处理好了\n这里是完整说明'));
 assert.ok(b.title.includes('第 1 轮 1:00 · 1,000 token'));
 assert.ok(b.title.includes('第 2 轮 0:01 · 200 token'));
 assert.strictEqual($('tokenTotal').textContent,'本卡合计 1,200 token');
-assert.strictEqual($('tokenTotal').title,'','取数后不能留着上次其他用量提示');
+assert.ok(!$('tokenTotal').title.includes('其中交接资料'),'取数后不能留着上次其他用量提示');   // 第三批 C10：只剩“每答完一轮才更新一次”
+assert.strictEqual($('tokenTotal').title,'每答完一轮才更新一次');
 const done=b.querySelector('.k').textContent;
 now+=60000; tick();
 assert.strictEqual(b.querySelector('.k').textContent,done,'已完成的用时不能继续涨');

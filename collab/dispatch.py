@@ -252,7 +252,7 @@ def _make_handover(ask_fn, cdir: Path, adapter: str, models: dict, needs, worktr
     if text:
         (cdir / HANDOVER).write_text(text + "\n", encoding="utf-8")
         record(cdir, "交接资料", src="调度员", dst="开发员", ok=True, seconds=round(time.time() - started),
-               summary=f"调度员备好了交接资料（{len(text)} 字），写代码、复查都会先读它",
+               summary=f"程序备好了交接资料（{len(text)} 字），写代码、复查都会先读它",
                **({"tokens": tokens} if tokens is not None else {}))
     else:
         why = readable(result.output, adapter)[:200] if result is not None else why
@@ -1578,7 +1578,7 @@ def _stop_unreadable(collab: Path, cdir: Path, card: Card, reviewer_adapter: str
         words += f"上轮退回的严重问题还没确认修好：{'；'.join(prev_severe)}。"
     words += "完整原话在右边“交接”里；看过后可以点“接着跑”让复查员重新复查。"
     _escalate(collab, cdir, card,
-              f"复查员（{reviewer_adapter}）两次都没按固定格式写清单，程序看不懂，不猜；原话已存，需要调度员看",
+              f"复查员（{reviewer_adapter}）两次都没按固定格式写清单，程序看不懂，不猜；原话已存，需要你看看",
               cause=UNREADABLE, say=words,
               text=f"{review_text}\n\n——格式重写——\n\n{fixed_text}".strip())
 
@@ -1590,13 +1590,30 @@ def _worker_failed(collab: Path, cdir: Path, card: Card, role: str, adapter: str
     _append(cdir / "返工记录.md",
             f"- {datetime.now():%Y-%m-%d %H:%M} {role}（{adapter}）没有完成：{tail}\n")
     words = _credit_problem(role, adapter, result.output)
-    say = ""
-    if not words and "模型没回话" in str(result.output or ""):
+    output = str(result.output or "")
+    # 停下详情（右栏“交接”）统一在这里拼：先放工具报的原话（当时为什么停下），再放能照做的建议。
+    # 各分支只准备建议，不许另写详情——返工那次就是把原话换成了短句，右栏丢了等待时长和“在等模型”
+    # 的说明（复查第 9 条）。原话永远保留；限流只放那一条报错，后面别的输出不塞进来（复查第 6 条）。
+    reason_line = tail
+    advice = words   # 额度用完那句本身就是建议
+    if not words and ("429" in output or "Too Many Requests" in output):
+        # 被服务限流：换模型建议照旧，并说明过一会儿可以接着跑（第三批 C12）
+        switch = _switch_words(_suggest_model(_collab_root(cdir), adapter,
+                                              _dispatch_model(cdir, role, adapter)))
+        words = f"{role}（{adapter}）被服务限流（请求太多）停下了，建议在团队设置{switch}或过一会儿再点“接着跑”"
+        raw = next((ln.strip() for ln in output.splitlines()
+                    if "429" in ln or "Too Many Requests" in ln), "")
+        advice = words
+        reason_line = f"原始报错：{raw[:300]}" if raw else tail
+    elif not words and "模型没回话" in output:
         # 模型没回话被停下：用失败那次派活记录的模型名排除当前组合，再给换模型建议（11-19 观察记录第 41 条）
         switch = _switch_words(_suggest_model(_collab_root(cdir), adapter,
                                               _dispatch_model(cdir, role, adapter)))
         words = f"{role}（{adapter}）模型没回话被停下，建议在团队设置{switch}再点“接着跑”"
-        say = f"{tail}。建议在团队设置{switch}再点“接着跑”。"
+        advice = words
+    if not advice:   # 普通报错：没有建议可给，说明里也要写清是谁没完成（D1 复查第 3 轮，Claude 接手）
+        reason_line = f"{role}（{adapter}）没有完成：{tail}"
+    say = f"{reason_line}。{advice}" if advice and advice not in reason_line else reason_line
     _escalate(collab, cdir, card, words or f"{role}（{adapter}）没有完成：{tail}", say=say)
     return card, None
 
@@ -2086,12 +2103,40 @@ _GUARD_USUAL_NOTE = "\n\n写测试的已经补了测试守住这几条，跑本�
 
 
 def _red_check_one(cdir: Path, step: str, test_command, judge_fn, worktree, reply_seq=None):
-    """跑一次本卡测试并记“先红检查”；返回判定结果。"""
-    verdict = judge_fn(test_command, cwd=worktree, timeout=_TEST_TIMEOUT)
+    """跑一次本卡测试并记“先红检查”；返回判定结果。没过时把没过的测试记成名单（进度条只数这几项）。
+    真跑时本卡命令按段分开跑、输出全留（collab.progress.run_segments，和进度条同一套），名单才不漏；
+    有一段超时或跑不起来，这次不写名单（D2 复查第 1、2 轮，Claude 接手：不拿半截名单去猜）。"""
+    record(cdir, "先红开始", src="程序", step=step,
+           summary="写代码前先跑一遍新测试，确认它们现在真的不过", reply_to=reply_seq)
+    shell = ""
+    if isinstance(test_command, (list, tuple)):
+        parts = [str(part) for part in test_command]
+        if parts and parts[0].endswith("bash") and "-c" in parts:
+            at = parts.index("-c")
+            shell = parts[at + 1] if at + 1 < len(parts) else ""
+    elif isinstance(test_command, str):
+        shell = test_command
+    verdict = None
+    sure = judge_fn is not default_judge   # 测试里注入的假判定：照它的输出认名字
+    if judge_fn is default_judge and shell.strip():
+        from collab.progress import run_segments
+        verdict = run_segments(worktree, shell, _TEST_TIMEOUT)
+        sure = verdict is not None   # 拆得开、每段都单独跑完才有把握；拆不开退回整条跑，输出可能被截断
+    if verdict is None:
+        verdict = judge_fn(test_command, cwd=worktree, timeout=_TEST_TIMEOUT)
     if verdict.result == PASS:
         summary = RED_CHECK_GREEN
     elif verdict.result == FAIL:
         summary = RED_CHECK_RED
+        from collab.progress import failing_names
+        names = failing_names(verdict.output)
+        # 只有完全有把握才写名单：拆得开、每段跑完、没有一导入就报错的占位项、认出了名字（D2 复查第 3 轮）
+        if sure and names and "unittest.loader._FailedTest" not in (verdict.output or ""):
+            try:
+                (Path(cdir) / "开工前没过的测试.json").write_text(
+                    json.dumps({"tests": names, "step": step}, ensure_ascii=False), encoding="utf-8")
+            except OSError:
+                pass
     else:
         summary = f"还没改代码，本卡测试没跑成：{verdict.result}（交给后面的判定）"
     record(cdir, "先红检查", src="程序", step=step, result=verdict.result,
@@ -2809,7 +2854,7 @@ class _FullSlot:
             self.last_actual = bad_zero
             record(self.cdir, "全量", src="程序", phase="结果", result=ENV_ERROR,
                    summary="全部测试只跑了 0 项（没有实际运行任何测试）", text=(now.output or "")[-20000:])
-            return bad_zero, "全部测试只跑了 0 项（没有实际运行任何测试），需要调度员看看"
+            return bad_zero, "全部测试只跑了 0 项（没有实际运行任何测试），需要你看看"
         self.last_actual = now
         if now.result == PASS:
             record(self.cdir, "全量", src="程序", phase="结果", result=PASS, summary="全部测试都过了")
@@ -2818,7 +2863,7 @@ class _FullSlot:
             what = "超时（30 分钟没跑完）" if now.result == TIMEOUT else "跑不起来"
             record(self.cdir, "全量", src="程序", phase="结果", result=now.result,
                    summary=f"全部测试{what}", text=now.output[-20000:])
-            return now, f"全部测试{what}，需要调度员看看"
+            return now, f"全部测试{what}，需要你看看"
         files = fullrun.failing_files(now.output, self.worktree)
         listed = sum(len(v) for v in files.values())
         total = fullrun.summary_count(now.output)
@@ -2827,20 +2872,20 @@ class _FullSlot:
         if not files:
             record(self.cdir, "全量", src="程序", phase="结果", result=FAIL,
                    summary="全部测试没过，但认不出是哪几项", text=now.output[-20000:])
-            return now, "全部测试没过，但认不出是哪几项，需要调度员看看"
+            return now, "全部测试没过，但认不出是哪几项，需要你看看"
         base = self.runner.base(self.worktree, sorted(files), self.event)
         broken_base = [f for f in files if f not in base or (
             base[f].result != FAIL and base[f].result != PASS and "改之前没有这个测试文件" not in (base[f].output or ""))]
         if broken_base:   # 改之前的样子没跑成（超时、准备失败）：比不了，交给人看，不算写代码的错（复查第 3 轮）
             record(self.cdir, "全量", src="程序", phase="结果", result=FAIL,
                    summary="全部测试里有没过的，但改之前的样子没跑成，比不出是不是这次改坏的", text=now.output[-20000:])
-            return now, "全部测试里有没过的，但改之前的样子没跑成、比不出来，需要调度员看看"
+            return now, "全部测试里有没过的，但改之前的样子没跑成、比不出来，需要你看看"
         unrunnable = [f for f, names in files.items() if any("unittest.loader" in n for n in names)]
         if unrunnable:   # 测试文件导入就报错：多半是副本缺依赖或解释器不对，不能当“改之前就不过”放过（复查第 3 轮）
             record(self.cdir, "全量", src="程序", phase="结果", result=FAIL,
                    summary=f"全部测试里有测试文件跑不起来（{'、'.join(Path(f).stem for f in unrunnable)}）",
                    text=now.output[-20000:])
-            return now, "全部测试里有测试文件跑不起来（导入就报错，可能缺依赖），需要调度员看看"
+            return now, "全部测试里有测试文件跑不起来（导入就报错，可能缺依赖），需要你看看"
         bad = fullrun.culprits(now, base, self.worktree)
         names = "、".join(Path(f).stem for f in (bad or sorted(files)))
         if not bad:
@@ -2856,13 +2901,13 @@ class _FullSlot:
             names = "、".join(Path(f).stem for f in unclear)
             record(self.cdir, "全量", src="程序", phase="结果", result=FAIL,
                    summary=f"全部测试里 {names} 没过，单独重跑也没得出结论，不退回写代码的", text=now.output[-20000:])
-            return now, f"全部测试里 {names} 没过，单独重跑没得出结论（超时或跑不起来），需要调度员看看"
+            return now, f"全部测试里 {names} 没过，单独重跑没得出结论（超时或跑不起来），需要你看看"
         if shaky and len(shaky) == len(bad):
             names = "、".join(Path(f).stem for f in shaky)
             record(self.cdir, "全量", src="程序", phase="结果", result=FAIL,
                    summary=f"全部测试里 {names} 没过，但单独跑能过（多半是测试自己不稳），不退回写代码的",
                    text=now.output[-20000:])
-            return now, f"全部测试里 {names} 没过，但单独跑能过（多半是测试自己不稳），写代码的修不了，需要调度员看看"
+            return now, f"全部测试里 {names} 没过，但单独跑能过（多半是测试自己不稳），写代码的修不了，需要你看看"
         if shaky:
             bad = [f for f in bad if f not in shaky]
             names = "、".join(Path(f).stem for f in bad)
@@ -3111,9 +3156,20 @@ def run_card(card: Card, collab_dir, worktree, test_command, dev_adapter, test_a
     cdir.mkdir(parents=True, exist_ok=True)
     notes_job = None
     if handover and not (cdir / HANDOVER).is_file():
-        notes_job = threading.Thread(target=_make_handover, daemon=True,
-                                     args=(ask_fn, cdir, handover[0], handover[1], cdir / "需求卡.md", worktree))
-        notes_job.start()
+        order_found = False
+        try:
+            need = (cdir / "需求卡.md").read_text(encoding="utf-8")
+            from collab.planner import existing_orders
+            order_found = bool(existing_orders(Path(collab_dir).parent, need))
+        except (OSError, ValueError):
+            order_found = False
+        if order_found:
+            record(cdir, "交接资料", src="程序", dst="开发员", ok=True,
+                   summary="有施工单，跳过（写代码、复查直接读施工单）")
+        else:
+            notes_job = threading.Thread(target=_make_handover, daemon=True,
+                                         args=(ask_fn, cdir, handover[0], handover[1], cdir / "需求卡.md", worktree))
+            notes_job.start()
     full = _FullSlot(full_runner, worktree, cdir)
     if progress:
         _PROGRESS_ON.add(str(cdir))   # 写测试、写代码时右栏的进度（第四轮 53）
@@ -3391,7 +3447,7 @@ def _run_card(card, collab_dir, worktree, test_command, dev_adapter, test_adapte
                 and latest_conc.get("text")):
             # C1.8：旧做法“整段原话退回”已取消，续跑碰到这种记录不再按原话派活，停下转人工
             _escalate(collab, cdir, card,
-                      "上次复查是按整段原话退回的（旧做法，已取消），程序不再按原话派活；需要调度员看")
+                      "上次复查是按整段原话退回的（旧做法，已取消），程序不再按原话派活；需要你看看")
             return card, None
         if latest_conc is not None and latest_conc.get("result") == "退回":
             conc_seq = int(latest_conc.get("seq") or 0)
@@ -3441,7 +3497,8 @@ def _run_card(card, collab_dir, worktree, test_command, dev_adapter, test_adapte
                                and e.get("round") == rnd and e.get("ok") is True]
                 if dev_replies:
                     after = past[dev_replies[-1] + 1:]
-                    has_fail_after = any(e.get("kind") in ("判定", "页面检查") and e.get("result") != PASS
+                    has_fail_after = any(e.get("kind") in ("判定", "页面检查")
+                                        and e.get("result") not in (PASS, TIMEOUT)
                                         for e in after)
                     if not has_fail_after:
                         # 复查没给结论时：跳过开发员，只重新复查
@@ -3702,11 +3759,11 @@ def _run_card(card, collab_dir, worktree, test_command, dev_adapter, test_adapte
                             back_texts=back_texts, closed=False,
                         )
                         why = stop_reason or (
-                            "全部测试被跳过（没有可跑的 Python 测试），退回次数已用完，不能自动放行，需要调度员看看"
+                            "全部测试被跳过（没有可跑的 Python 测试），退回次数已用完，不能自动放行，需要你看看"
                             if full.skipped else
-                            "全部测试显示改坏了老功能，退回次数已用完，需要调度员看看"
+                            "全部测试显示改坏了老功能，退回次数已用完，需要你看看"
                             if verdict.result != PASS else
-                            "全部测试没有全部通过（或没跑成），退回次数已用完，需要调度员看看"
+                            "全部测试没有全部通过（或没跑成），退回次数已用完，需要你看看"
                         )
                         issues, hidden, severe_hidden, count = _plain_summary_items(back_problems)
                         more = _hidden_words(hidden, severe_hidden)
@@ -3793,7 +3850,7 @@ def _run_card(card, collab_dir, worktree, test_command, dev_adapter, test_adapte
 
         if verdict.result in (ENV_ERROR, TIMEOUT):
             # 环境或超时问题不是代码的错，不计返工轮数，直接叫 Claude
-            _escalate(collab, cdir, card, f"{_VERDICT_SUMMARY[verdict.result]}，需要调度员处理")
+            _escalate(collab, cdir, card, f"{_VERDICT_SUMMARY[verdict.result]}，需要你看看")
             return card, verdict
 
         if last_output is not None and verdict.output.strip() == last_output.strip():
@@ -3817,7 +3874,7 @@ def _run_card(card, collab_dir, worktree, test_command, dev_adapter, test_adapte
         if escalate:
             # on_test_failed 已经把状态转成“需Claude介入”，这里只补记原因
             record(cdir, "转人工", src="程序", dst="调度员",
-                   summary=f"返工 {card.rework} 次后测试仍没过，需要调度员处理")
+                   summary=f"返工 {card.rework} 次后测试仍没过，需要你看看")
             return card, verdict
         dev_prompt = (f"{_READ_RULES}上一版测试没过，测试输出如下，请修复后重新提交。\n\n"
                       f"{_short_test_note(cdir, verdict.output, verdict_file)}\n\n"

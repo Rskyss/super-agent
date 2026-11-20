@@ -263,7 +263,7 @@ def _check_installed(args: dict) -> str:
     path = os.environ.get("PATH", "")
     found = blocks_env._which(command, path)
     if not found:
-        return f"找不到 {command}：这台电脑上没装，或者装在超级助手找不到的地方。"
+        return f"找不到 {command}：这台电脑上没装，或者装在这个应用找不到的地方。"
     try:
         _, out = blocks_env.run_command([found, "--version"], path, 10)
         ver = blocks_env._version_line(out)

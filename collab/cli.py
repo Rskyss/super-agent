@@ -76,6 +76,9 @@ def cmd_new_card(args, **_):
     Card(args.card_id, state="待对齐").save(card_dir / "状态.json")  # 方案确认后才能派发
     if not (card_dir / "方案.md").exists():
         (card_dir / "方案.md").write_text(PLAN_TEMPLATE, encoding="utf-8")
+    if getattr(args, "by_claude", False):
+        (card_dir / "Claude亲自做.json").write_text(
+            json.dumps({"by": "Claude"}, ensure_ascii=False), encoding="utf-8")
     render_board(collab)
     flow_record(card_dir, "需求", src="你", dst="调度员", summary=text, text=text)
     print(f"已创建 {args.card_id}，状态：待对齐（写好方案、用户批准后才能开工）")
@@ -383,7 +386,7 @@ def cmd_install(args, **_):
     except InstallError as exc:
         print(f"接入失败：{exc}", file=sys.stderr)
         return 1
-    print("从 v0.2 起不需要再把协作包复制进项目了，直接用超级助手里的那一份。")
+    print("从 v0.2 起不需要再把协作包复制进项目了，直接用这个应用里的那一份。")
     print(f"已接入：{target}（施工过程记录只留在本机，已加进不提交名单）")
     if find_old_package(args.project) is not None:
         print("这个项目里还有一份旧的协作包副本（collab/），可以用 migrate 命令处理。")
@@ -466,6 +469,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("project")
     p.add_argument("card_id")
     p.add_argument("--requirement", required=True, help="任务卡片正文文件")
+    p.add_argument("--by-claude", action="store_true", help="这张卡由 Claude 亲自做（不出操作按钮）")
     p.set_defaults(func=cmd_new_card)
 
     p = sub.add_parser("run", help="派发一张卡")

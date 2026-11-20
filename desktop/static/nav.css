@@ -30,6 +30,7 @@ body { overflow: hidden; }
 .item .lead { display: grid; place-items: center; color: var(--dim); }
 .item .tt { grid-column: 2; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .item .sub { grid-column: 2; font-size: var(--fs-sm); color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.item .fin { grid-column: 2; font-size: var(--fs-sm); color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .newchat { display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 10px; font-size: var(--fs-base); text-align: left; color: var(--dim); background: none; border: 0; border-radius: var(--r-md); cursor: default; transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease); }
 .newchat:hover { background: rgba(255, 255, 255, .05); color: var(--text); }
 .newchat:focus-visible { box-shadow: inset 0 0 0 2px rgba(240, 162, 59, .5); }

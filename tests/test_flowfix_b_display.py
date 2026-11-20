@@ -186,7 +186,7 @@ const flush = async () => {for(let i=0;i<16;i++) await Promise.resolve();};
   payload = {...payload, tokens:{total:7364538, other:78696}};
   nextPoll(); await flush();
   assert.strictEqual($('tokenTotal').textContent, '本卡合计 736.5 万 token');
-  assert.strictEqual($('tokenTotal').title, '其中交接资料等其他 7.9 万 token');
+  assert.strictEqual($('tokenTotal').title, '其中交接资料等其他 7.9 万 token\n每答完一轮才更新一次');   // 第三批 C10
 })().catch(e => {console.error(e); process.exitCode = 1;});
 ''')
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

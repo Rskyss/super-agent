@@ -19,7 +19,7 @@ from datetime import datetime
 from pathlib import Path
 
 from collab.fullrun import copy_tree, run_command, safe_env
-from collab.judge import ENV_ERROR, TIMEOUT
+from collab.judge import ENV_ERROR, FAIL, TIMEOUT
 
 PROGRESS_FILE = "进度.json"
 MIN_GAP = 120        # 两次之间至少隔 2 分钟（用户 11-13 定）
@@ -53,6 +53,60 @@ def tally(output: str):
         failed = sum(int(n) for n in re.findall(r"(?:failures|errors)=(\d+)", bad.group(1)))
     skipped = re.search(r"skipped=(\d+)", output or "")
     return max(0, total - failed - (int(skipped.group(1)) if skipped else 0)), total
+
+
+def card_command_segments(test_command) -> list | None:
+    """本卡测试命令按 && 拆成一段段 python -m unittest；有一段不是这种写法就返回 None（不硬拆）。"""
+    text = str(test_command or "").strip()
+    if not text:
+        return None
+    commands = []
+    for piece in text.split("&&"):
+        piece = piece.strip()
+        if not piece:
+            return None
+        try:
+            argv = shlex.split(piece)
+        except ValueError:
+            return None
+        if len(argv) < 3 or argv[0] not in ("python", "python3") or argv[1:3] != ["-m", "unittest"]:
+            return None
+        commands.append(["python3", *argv[1:]] if argv[0] == "python" else argv)
+    return commands or None
+
+
+def run_segments(worktree, test_command, timeout):
+    """先红检查用：每段都跑、输出全留（只看末尾一段或第一段不过就停，没过的名单会漏，D2 复查第 1、2 轮）。
+    用全量和进度条同一个 run_command。拆不开返回 None，由调用方照旧整条跑。
+    结果：有一段超时算超时，有一段跑不起来算跑不起来，有一段没过算没过，都过才算过。"""
+    import os
+    from collab.judge import PASS, Verdict
+    segments = card_command_segments(test_command)
+    if not segments:
+        return None
+    results, outputs = [], []
+    for argv in segments:
+        v = run_command(argv, worktree, dict(os.environ), timeout)
+        results.append(v.result)
+        outputs.append(v.output or "")
+    for kind in (TIMEOUT, ENV_ERROR, FAIL):
+        if kind in results:
+            return Verdict(kind, None if kind != FAIL else 1, "\n".join(outputs))
+    return Verdict(PASS, 0, "\n".join(outputs))
+
+
+def failing_names(output: str) -> list:
+    """从 unittest 输出里认出没过的测试，统一成“模块.类.方法”。
+    老版 Python 括号里是“模块.类”，3.12 起是“模块.类.方法”，两种认成同一个名字；重复行只留一次。"""
+    names = []
+    for name, where in re.findall(r"^(?:FAIL|ERROR): (\S+) \(([^)]*)\)", output or "", re.M):
+        where = where.strip()
+        suffix = "." + name
+        base = where[:-len(suffix)] if where.endswith(suffix) else where
+        full = f"{base}.{name}" if base else name
+        if full not in names:
+            names.append(full)
+    return names
 
 
 def snapshot(worktree, ignore=()) -> frozenset:
@@ -113,21 +167,7 @@ class ProgressJob:
 
     # ---- 本卡测试命令：每一段都得是 python/python3 -m unittest ...，否则整套回退 ----
     def _card_commands(self):
-        if not self.test_command:
-            return None
-        commands = []
-        for piece in self.test_command.split("&&"):
-            piece = piece.strip()
-            if not piece:
-                return None
-            try:
-                argv = shlex.split(piece)
-            except ValueError:
-                return None
-            if len(argv) < 3 or argv[0] not in ("python", "python3") or argv[1:3] != ["-m", "unittest"]:
-                return None
-            commands.append(argv)
-        return commands or None
+        return card_command_segments(self.test_command)
 
     # ---- 写测试：数 def test_ ----
     def _tester_files(self):
@@ -162,8 +202,16 @@ class ProgressJob:
             copy_tree(self.worktree, copy, self.event)
             env = safe_env(tmp / "bin")
             passed = total = 0
+            own = []
+            try:
+                red = json.loads((self.cdir / "开工前没过的测试.json").read_text(encoding="utf-8"))
+                own = list(dict.fromkeys(
+                    name for name in (red.get("tests") or []) if isinstance(name, str)))
+            except (OSError, ValueError, AttributeError):
+                own = []
             commands = self._card_commands()
             if commands:
+                failed = set()
                 for argv in commands:
                     if argv[0] == "python":   # 隔离环境只保证有 python3，本卡命令写 python 也要能跑（复查第 4 轮）
                         argv = ["python3", *argv[1:]]
@@ -178,7 +226,23 @@ class ProgressJob:
                         # 导入就报错：照方案说“跑不起来”，不装成“通过 0/N”（复查第 2 轮）
                         return {"seq": self.seq, "step": self.step,
                                 "error": "测试跑不起来（多半是代码还没写到能导入）"}
-                    passed, total = passed + got[0], total + got[1]
+                    if own:   # 只数开工前没过的那几项；本段失败也要接着跑后面的段
+                        names = failing_names(v.output)
+                        if v.result == FAIL and not names:
+                            # 这段没过却认不出是哪项：名单里剩下的不能当成过了（复查第五轮 1）
+                            return {"seq": self.seq, "step": self.step,
+                                    "error": "测试没过，但看不出是哪几项"}
+                        failed.update(names)
+                    else:
+                        passed, total = passed + got[0], total + got[1]
+                if own:
+                    done = sum(1 for name in own if name not in failed)
+                    outside = [name for name in failed if name not in own]
+                    if outside and done == len(own):
+                        # 名单里的全过了、名单外还有没过的：不能显示满格（D2 复查第 2 轮，写测试补的兜底）
+                        return {"seq": self.seq, "step": self.step,
+                                "error": f"本卡要做的都过了，但还有 {len(outside)} 项测试没过"}
+                    return {"seq": self.seq, "step": self.step, "passed": done, "total": len(own), "own": True}
                 return {"seq": self.seq, "step": self.step, "passed": passed, "total": total}
             for rel in self.py:
                 p = Path(rel)

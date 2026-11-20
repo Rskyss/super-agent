@@ -1,6 +1,9 @@
 /* 右栏：只有流程和交接。依赖 theme.css */
 body { background: var(--bg-side); }
-.side { height: 100%; display: grid; grid-template-rows: auto auto minmax(0, 1fr); position: relative; }
+.side { height: 100%; display: flex; flex-direction: column; position: relative; }
+/* 一块接一块往下排，只让流程/交接列表伸缩（第三批 C4：原来三行排四块，“流程”被挤进伸缩行，高时空一块、矮时叠字） */
+.side > * { flex: none; }
+.side > .pane { flex: 1 1 auto; min-height: 0; }
 
 .accept-box { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px 8px; border-bottom: 1px solid var(--hair); }
 .accept-box[hidden] { display: none !important; }
@@ -46,7 +49,7 @@ body { background: var(--bg-side); }
 .pane[hidden] { display: none; }
 
 .nocard .seg, .nocard .pane, .nocard .actions, .nocard .plan-preview, .nocard .accept-box { display: none; }
-.blank { grid-row: 1 / -1; display: grid; place-items: center; color: var(--faint); font-size: var(--fs-base); }
+.blank { flex: 1 1 auto; display: grid; place-items: center; color: var(--faint); font-size: var(--fs-base); }
 .blank[hidden] { display: none; }
 
 /* 流程：一列步骤，只有正在发生的那一步浮起来 */

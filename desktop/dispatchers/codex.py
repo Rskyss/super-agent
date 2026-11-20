@@ -492,4 +492,4 @@ class CodexDispatcher:
             self._write({"id": rid, "result": {"answers": {}}})
             self.emit({"type": "notice", "text": "调度员想问你几个选择题，聊天视图暂时还不支持，已跳过；需要时从菜单“对话 → 打开终端（高级）”回答。"})
         else:
-            self._write({"id": rid, "error": {"code": -32601, "message": f"超级助手不支持：{method}"}})
+            self._write({"id": rid, "error": {"code": -32601, "message": f"这个应用不支持：{method}"}})

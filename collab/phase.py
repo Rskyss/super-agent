@@ -339,6 +339,11 @@ def card_phase(project: str, card_id: str) -> dict:
     events = read_flow(cdir)
     state = card.state
 
+    # Claude 亲自做的卡：没合并、没放弃前不出操作按钮，进度看流转记录（第三批 C11）
+    if (cdir / "Claude亲自做.json").is_file() and state not in ("已合并", "已放弃"):
+        return {"code": "by_claude", "label": "Claude 亲自做", "tone": "run", "needs_you": False,
+                "detail": "进度看下面的流转记录", "actions": []}
+
     run_rec = _read_backend(project, "run")
     run_live = (
         run_rec is not None

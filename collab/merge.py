@@ -468,7 +468,7 @@ def _merge(project: Path, card_id: str) -> None:
         record(cdir, "提醒", src="程序", dst="你",
                summary=f"副本里有 {len(omitted)} 个文件没带进项目：{shown}", text="\n".join(omitted))
     summary = f"已放进 {branch}"
-    record(cdir, "合并", src="程序", dst="你", summary=summary)
+    record(cdir, "合并", src="程序", dst="你", summary="已放进项目", text=f"已放进 {branch} 分支")
     ledger_add(project, f"{card_id}：{summary}")
     remove_copy(project, card_id)
 

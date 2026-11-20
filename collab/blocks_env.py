@@ -175,7 +175,7 @@ def _fix(item) -> str:
     if item["status"] == "没有":
         return f"管家可以带你装 {label}" if item["kind"] == "prereq" else f"跟管家说“帮我装 {label}”"
     if item["status"] == "找不到":
-        return "终端里已经装好，但超级助手还没认到：关掉超级助手再重新打开"
+        return "终端里已经装好，但这个应用还没认到：关掉这个应用再重新打开"
     if item["login"] == "没登录":
         return f"{label} 还没登录：在终端里登录一次，管家会告诉你命令"
     return ""
