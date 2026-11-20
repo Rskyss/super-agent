@@ -59,8 +59,9 @@ class NoOldNameInCode(unittest.TestCase):
 
 class NoOldNameInRoles(unittest.TestCase):
     def test_role_files(self):
-        roles = ROOT / "desktop" / "clerk" / "roles"
-        bad = [f"{f.name}:{i}" for f in roles.glob("*.md")
+        files = [ROOT / "agents" / "角色" / "积木库管家.md", *sorted((ROOT / "agents" / "手册" / "积木库").glob("*.md"))]
+        self.assertGreaterEqual(len(files), 5, "规则包第③步搬到 agents/ 后要真的查到文件")
+        bad = [f"{f.name}:{i}" for f in files
                for i, line in enumerate(f.read_text(encoding="utf-8").splitlines(), 1) if "超级助手" in line]
         self.assertEqual(bad, [], "AI 角色说明里不再自称超级助手")
 

@@ -15,7 +15,7 @@ from typing import Optional, Tuple
 from collab.card_attachments import attachment_prompt
 from collab.config import plan_models  # noqa: F401 — 写方案、备交接资料共用这一份（别的地方也从这里取）
 from collab.flow import record as flow_record
-from collab.rulebook import rules_for as _rules
+from collab.rulebook import rules_for as _rules, say as _say
 from collab.state import Card
 from collab.token_usage import usage_from_text
 from collab.workspace import PROFILE_TEMPLATE, has_blanks, profile_path, render_board
@@ -332,43 +332,15 @@ def _plan_from_order(project, rel: str):
 
 
 def _build_prompt(card_dir: Path, requirement_text: str, need_profile: bool, project=None) -> str:
-    lines = [
-        "你可以用只读命令查看项目，但不要修改任何文件。",
-        "根据下面的任务卡片，用大白话写一份拆解方案。这份方案是写给后面干活的人看的。",
-        "「不要修改文件」只约束你写方案这一步；方案内容里不要写这一条，也不要写“本次只输出方案”。",
-        "输出必须是 JSON，一个对象，键必须齐全："
-        + ", ".join(_PLAN_SCHEMA_KEYS)
-        + "。",
-        "- summary：一句话说明要做什么。",
-        "- steps：字符串数组，每一步一句话。",
-        "- result：用户会看到什么结果。",
-        "- not_do：明确不做什么。",
-        "- questions：字符串数组；没有问题就写空数组。问题里要带推荐答案。",
-        "- allowed：字符串数组，尽量窄，列出允许改动的相对路径（相对项目根）。",
-        "- test_command：一条测试命令字符串。",
-        "方案步骤里不要让施工方跑全部测试，全部测试由程序在复查时跑；test_command 只写本卡的测试。",
-        "- view_how：大白话说明打开后看哪里、看什么。用户点按钮就能打开，不要让用户运行命令。",
-        "- view_command：本机启动命令；网页类项目填写，用 --host 127.0.0.1 这类写法绑定本机地址，端口不要和项目日常开的相同；不是网页就填空字符串。",
-        "- view_url：打开的地址，网页类填 http://127.0.0.1 开头的地址；不是网页就填空字符串。",
-        "- view_command、view_url 要照项目代码里真实的启动入口和地址写（先查项目里启动网页的代码和路由），不要猜；查不到就都填空字符串。",
-    ]
-    if need_profile:
-        lines.append(
-            f"- profile：没有现成项目说明时，按下面模板各段填真实内容（不要用「（待填）」）：\n{PROFILE_TEMPLATE}"
-        )
-    else:
-        lines.append("- profile：项目里已有项目说明时，填空字符串。")
+    """写方案的交代：规则在最前面（规则包），交代在 agents/交代/写方案/（第③步）。"""
+    profile = (_say("写方案/项目说明·要写", 模板=PROFILE_TEMPLATE) if need_profile
+               else _say("写方案/项目说明·已有"))
     orders = existing_orders(project, requirement_text)
-    if orders:
-        # 施工单已经写好了（68b 里调度员仍从头写方案 5 分 42 秒，⑦）：只摘，不重新设计
-        lines.append("")
-        lines.append(f"这张卡已经有写好的施工单：{'、'.join(orders)}。不要重新设计、不要从头调研项目，读施工单照着摘："
-                     "summary、steps、result、not_do 按施工单概括；allowed 照施工单里“改哪些文件”逐条抄；"
-                     "test_command 照施工单“验收”里写的测试命令；施工单没写清的才写进 questions。")
-    lines.append("")
-    lines.append("任务卡片原文：")
-    lines.append(requirement_text.strip())
-    return _rules("写方案") + "\n".join(lines) + attachment_prompt(card_dir)  # 规则在最前面（规则包）
+    # 施工单已经写好了（68b 里调度员仍从头写方案 5 分 42 秒，⑦）：只摘，不重新设计
+    order_part = _say("写方案/施工单那段", 施工单="、".join(orders)) if orders else ""
+    return _rules("写方案") + _say(
+        "写方案/拆方案", 字段=", ".join(_PLAN_SCHEMA_KEYS), 项目说明那行=profile, 施工单那段=order_part,
+        卡片原文=requirement_text.strip()) + attachment_prompt(card_dir)
 
 
 def _fail(card_dir: Path, summary: str, text: Optional[str] = None) -> int:

@@ -101,7 +101,7 @@ class UserFacingWordsTest(unittest.TestCase):
 
 class RoleAndHandoffTest(unittest.TestCase):
     def test_blocks_clerk_role(self):
-        role_file = Path(blocks_tools.__file__).parent / "roles" / "积木库管家.md"
+        role_file = blocks_tools.ROLE_FILE   # 规则包第③步搬到 agents/角色/积木库管家.md
         text = role_file.read_text(encoding="utf-8")
         self.assertIn("你是这个应用的积木库管家", text.splitlines()[0])
         self.assertIn("这个应用自己不破解、不模拟点击", text)

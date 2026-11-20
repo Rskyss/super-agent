@@ -10,6 +10,7 @@ from collab.config import ConfigError, load_team
 from collab.flow import read_flow, rework_words
 from collab.phase import card_phase
 from collab.state import Card
+from collab.rulebook import describe_tools, say   # 行政的话和工具说明在 agents/交代/行政/（第③步）
 
 _MAX_RESULT = 6000
 _CARD_ID = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -27,77 +28,69 @@ _SECRET_WORD = re.compile(r"\bsk-[A-Za-z0-9_-]{16,}")
 TOOLS = [
     {"type": "function", "function": {
         "name": "read_project_profile",
-        "description": "读项目说明",
         "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
     }},
     {"type": "function", "function": {
         "name": "read_project_docs",
-        "description": "读项目自带的 README、CLAUDE.md、AGENTS.md、package.json 说明和顶层文件名。不读代码和密钥。",
         "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
     }},
     {"type": "function", "function": {
         "name": "read_ledger",
-        "description": "读开发进度台账的最后几行",
         "parameters": {"type": "object", "properties": {
-            "lines": {"type": "integer", "description": "读最后几行，默认 40，最多 80"},
+            "lines": {"type": "integer"},
         }, "additionalProperties": False},
     }},
     {"type": "function", "function": {
         "name": "list_cards",
-        "description": "列出所有任务卡片",
         "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
     }},
     {"type": "function", "function": {
         "name": "read_card",
-        "description": "读一张卡片的详情",
         "parameters": {"type": "object", "properties": {
-            "card_id": {"type": "string", "description": "卡片编号，例如 CARD-001"},
+            "card_id": {"type": "string"},
         }, "required": ["card_id"], "additionalProperties": False},
     }},
     {"type": "function", "function": {
         "name": "read_team",
-        "description": "读团队配置",
         "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
     }},
     {"type": "function", "function": {
         "name": "list_installed_tools",
-        "description": "查看本机 PATH 里是否装了 codex、agent、agy（只检查，不运行）",
         "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
     }},
     {"type": "function", "function": {
         "name": "propose_team_change",
-        "description": "向用户出示“改团队设置？”确认框。用户点确认后才写入配置。",
         "parameters": {"type": "object", "properties": {
-            "role": {"type": "string", "description": "tester / developer / reviewer"},
-            "tool": {"type": "string", "description": "codex / cursor / agy；复查可选 none"},
+            "role": {"type": "string"},
+            "tool": {"type": "string"},
         }, "required": ["role", "tool"], "additionalProperties": False},
     }},
     {"type": "function", "function": {
         "name": "propose_profile",
-        "description": "向用户出示“保存项目说明？”确认框。用户点确认才写入文件。",
         "parameters": {"type": "object", "properties": {
-            "profile": {"type": "string", "description": "完整的项目说明，含做什么、怎么启动、怎么测试、禁区、技术栈五项"},
+            "profile": {"type": "string"},
         }, "required": ["profile"], "additionalProperties": False},
     }},
     {"type": "function", "function": {
         "name": "propose_task",
-        "description": "向用户出示“变成任务？”确认框。用户点确认才建卡。",
         "parameters": {"type": "object", "properties": {
-            "title": {"type": "string", "description": "任务标题"},
-            "do": {"type": "string", "description": "要做什么"},
-            "not_do": {"type": "string", "description": "不做什么"},
-            "done_when": {"type": "string", "description": "怎么算做完"},
+            "title": {"type": "string"},
+            "do": {"type": "string"},
+            "not_do": {"type": "string"},
+            "done_when": {"type": "string"},
         },         "required": ["title", "do", "not_do", "done_when"], "additionalProperties": False},
     }},
 ]
 
 PROPOSE_REVISE = {"type": "function", "function": {
     "name": "propose_revise",
-    "description": "向用户出示“继续改？”确认框。用户点确认后才把新要求交给施工。",
     "parameters": {"type": "object", "properties": {
-        "text": {"type": "string", "description": "要改什么"},
+        "text": {"type": "string"},
     }, "required": ["text"], "additionalProperties": False},
 }}
+
+# 工具说明写在 agents/交代/行政/工具说明.md（规则包第③步）；程序这里只管工具名、参数名
+describe_tools(TOOLS + [PROPOSE_REVISE], "交代/行政/工具说明.md")
 
 LABELS = {
     "read_project_profile": "读 项目说明",
@@ -289,7 +282,7 @@ def team_incomplete_hint(project: str) -> str:
     try:
         team = load_team(project)
     except ConfigError:
-        return "团队配置读不出来：请在设置里先修好配置，或一项一项说清要改谁。"
+        return say("行政/团队配置读不出")
     missing = []
     for role in _TEAM_ROLES:
         v = team.get(role)
@@ -297,7 +290,7 @@ def team_incomplete_hint(project: str) -> str:
             missing.append(_ROLE_NAMES.get(role, role))
     if missing:
         first = missing[0]
-        return f"团队没配好：现在先只帮用户配好「{first}」这一项，再问别的。"
+        return say("行政/团队没配好", 角色=first)
     return ""
 
 

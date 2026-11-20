@@ -202,8 +202,8 @@ if (typeof document !== "undefined") (function () {
 
   function phaseHint(ph) {
     if (!ph) return "";
-    // 停下时右栏顶部只留“卡住了”，原因全文放到中间卡片标题下（用户 11-20）
-    if (ph.code === "blocked") return "卡住了";
+    // 停下时右栏顶部标明原因在哪看，原因全文还在中间卡片标题下（用户 11-20）
+    if (ph.code === "blocked") return "卡住了（原因在中间卡片标题下）";
     var parts = [ph.label || ""];
     if (ph.detail) parts.push(ph.detail);
     return parts.join(" · ");

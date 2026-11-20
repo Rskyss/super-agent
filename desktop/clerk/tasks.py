@@ -31,6 +31,7 @@ from datetime import datetime
 from collab import blocks, blocks_check, blocks_install, blocks_web
 from collab.blocks import BlockError
 from collab.providers import account_for, find as find_provider
+from collab.rulebook import say
 
 COLLAB_PACKAGE = Path(__file__).resolve().parent.parent.parent / "collab"
 
@@ -658,11 +659,11 @@ def latest_ability_hint(project: str, conversation: str) -> str:
         return ""
     title = latest.get("name") or latest.get("ability", {}).get("title") or ""
     if trial.get("ok"):
-        return f"\n\n上一张能力卡片（草稿）「{title}」试做成了，等用户看结果点‘放进能力层’。没点之前不能说已经放进去了。"
+        return say("积木库管家/试做成了", 能力=title)   # 话在 agents/交代/积木库管家/（规则包第③步）
     else:
         count = consecutive_trial_failures(project, conversation)
         reason = blocks_check._mask_cut(str(trial.get("reason") or ""), 300)
-        return f"\n\n上一张能力卡片（草稿）「{title}」试做没成：{reason}（第{count}次）。照原因改了再出草稿；连续 3 次没成就停下。"
+        return say("积木库管家/试做没成", 能力=title, 原因=reason, 次数=count)
 
 
 _proposal_subscribers: list = []

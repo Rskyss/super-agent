@@ -684,7 +684,8 @@ class ButlerTest(unittest.TestCase):
         self.assertIn("整家", tool["function"]["description"])
 
     def test_manual_says_no_model_picking(self):
-        text = (ROOT / "desktop/clerk/roles/积木库手册/api.md").read_text(encoding="utf-8")
+        # 规则包第③步：手册从 desktop/clerk/roles/ 搬到 agents/手册/积木库/
+        text = (ROOT / "agents/手册/积木库/api.md").read_text(encoding="utf-8")
         self.assertIn("整家", text)
         self.assertIn("不选模型", text)
         self.assertNotIn("挑一个", text)

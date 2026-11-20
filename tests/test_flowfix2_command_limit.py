@@ -92,7 +92,7 @@ class NoPlugins(unittest.TestCase):
         from collab import dispatch
         src = inspect.getsource(dispatch._dispatch)
         self.assertIn("no_plugins=True", src)
-        self.assertIn("不要打开浏览器", dispatch._NO_PLUGINS_NOTE)
+        self.assertIn("不要打开浏览器", dispatch._no_plugins_note())   # 规则包第③步：搬进 agents/交代/通用/不用插件.md
 
 
 class ReviewRound1C(unittest.TestCase):

@@ -143,7 +143,8 @@ class ProgressCommandEdges(unittest.TestCase):
 
 class ReportInstructionEdges(unittest.TestCase):
     def test_report_avoids_technical_names_and_keeps_existing_delivery_rules(self):
-        from collab.dispatch import _REPORT_ASK
+        from collab.rulebook import say   # 规则包第③步：汇报写法搬进 agents/交代/写代码/汇报写法.md
+        _REPORT_ASK = say("写代码/汇报写法")
         for required in ("大白话", "不写文件名", "函数名", "命令", "汇报：", "最后一行", "100", "不要另建汇报文件"):
             with self.subTest(required=required):
                 self.assertIn(required, _REPORT_ASK)

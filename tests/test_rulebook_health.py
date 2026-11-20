@@ -56,6 +56,15 @@ class CatchesBreakage(unittest.TestCase):
         self.edit("通用/四道关卡.md", "会被程序直接撤销", "按 A 程序自动撤销，会被程序直接撤销")
         self.assertTrue(any("A程序自动撤销" in p for p in rulebook.health(root=self.root)))
 
+    def test_forbidden_words_in_messages_are_caught(self):
+        # Codex 复查 T2～T6 第 1 条：交代文件也要查；例外只对登记的那几份、那一条说法
+        self.edit("交代/复查/每轮复查.md", "不要修改任何文件。", "按 A 模式处理。不要修改任何文件。")
+        self.assertTrue(any("每轮复查.md" in p and "A模式" in p for p in rulebook.health(root=self.root)))
+
+    def test_exception_only_covers_listed_files(self):
+        self.edit("交代/复查/每轮复查.md", "不要修改任何文件。", "调度员说过。不要修改任何文件。")
+        self.assertTrue(any("每轮复查.md" in p and "调度员" in p for p in rulebook.health(root=self.root)))
+
     def test_unregistered_file_is_caught(self):
         (self.root / "角色" / "新角色.md").write_text("# 新\n", encoding="utf-8")
         self.assertTrue(any("新角色.md" in p for p in rulebook.health(root=self.root)))

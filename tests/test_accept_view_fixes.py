@@ -353,8 +353,10 @@ class ReviewerPrompt(ProjectCase):
         dispatch._save_test_files(cdir, ["tests/test_page.py"])
         self.assertIn("tests/test_page.py", dispatch._tester_files_hint(cdir))
         self.assertIn("不算越界", dispatch._tester_files_hint(cdir))
-        source = (ROOT / "collab" / "dispatch.py").read_text(encoding="utf-8")
-        self.assertIn("{_tester_files_hint(cdir)}", source)
+        # 规则包第③步：复查交代搬进 agents/交代/，改查复查员真的收到这句（原来查代码里有没有这个写法）
+        prompt = dispatch._review_prompt(cdir, "需求卡.md", "", "", self.project, False)
+        self.assertIn("tests/test_page.py", prompt)
+        self.assertIn("不算越界", prompt)
 
 
 class Words(Case):
@@ -397,9 +399,13 @@ class Window(ProjectCase):
         self.assertIn('target.scheme?.lowercased() == "http"', body[:400])
 
     def test_prompt_asks_for_a_local_address(self):
-        source = (ROOT / "collab" / "planner.py").read_text(encoding="utf-8")
-        self.assertIn("127.0.0.1", source[source.index("def _build_prompt"):])
-        self.assertIn("--host", source[source.index("def _build_prompt"):])
+        # 规则包第③步：写方案的交代搬进 agents/交代/写方案/，改查写方案的真的收到这句（原来查代码原文）
+        import tempfile
+        from collab.planner import _build_prompt
+        with tempfile.TemporaryDirectory() as d:
+            prompt = _build_prompt(Path(d), "# 改按钮\n", False)
+        self.assertIn("127.0.0.1", prompt)
+        self.assertIn("--host", prompt)
 
 
 class Panel(ProjectCase):

@@ -132,14 +132,14 @@ async function part(name, check) {
       card: { id: "CARD-019", title: "切换项目", state: "需Claude介入", phase },
     }));
     await settle(); await settle();
-    assert.strictEqual(text(pane.el("phaseHint")), "卡住了");
+    assert.strictEqual(text(pane.el("phaseHint")), "卡住了（原因在中间卡片标题下）");   // 右栏停下提示：按右栏小修施工单原话
     assert.deepStrictEqual(pane.el("actionBtns").children.map(item => text(item)), [
       "接着跑", "不满意，继续改", "接受剩下的问题，进入待确认", "放弃这个需求",
     ]);
     await pane.swap(view({
       card: { id: "CARD-019", title: "切换项目", state: "需Claude介入", phase },
     }));
-    assert.strictEqual(text(pane.el("phaseHint")), "卡住了", "刷新后长原因不能回到顶部");
+    assert.strictEqual(text(pane.el("phaseHint")), "卡住了（原因在中间卡片标题下）", "刷新后长原因不能回到顶部");
     pane.check();
   });
 

@@ -11,6 +11,7 @@ from typing import Any
 from urllib.parse import quote
 
 from collab.phase import card_phase
+from collab.rulebook import say
 from collab.tasks import (
     TaskError,
     _load_card_for_revise,
@@ -93,35 +94,13 @@ def build_revision_prompt(criteria: list[str] | tuple[str, ...], user_text: str,
     else:
         count = 0
 
-    system_lines = [
-        '你负责把用户对任务卡的修改意见，拆成对“当前验收标准”的逐条结构化修改。',
-        '你只能输出一个严格 JSON 对象，格式固定为：{"changes":[...]}。不要输出任何解释、寒暄或多余文字。',
-        "changes 数组里只允许以下两种对象：",
-        '1. 替换现有第 N 条：{"replaceNth": 整数(从1开始), "text": "修改后的整条单行验收标准"}',
-        '2. 新增一条：{"add": "新增的单行验收标准"}',
-        "规则：",
-        "- 严禁发明删除、合并、排序、改标题等其他字段或操作；每条 text/add 必须是完整单行文字，不能包含换行符或 # 符号。",
-        '- 若修改意见能明确对应到修改第几条或新增什么标准，就拆出来；若只是描述现象、反馈问题或不够明确，无法确定怎么改验收标准，必须原样返回 {"changes":[]}。',
-    ]
-    if count > 0:
-        system_lines.append(
-            "- 用户这次附了截图，你看不到图：不要编造或猜测图里的内容。用户要求按截图改第 N 条时，把那条改写成保留原意、去掉被截图推翻的部分，并在末尾注明“（以本次附的截图为准）”。"
-        )
-    system = "\n".join(system_lines)
-
+    # 话在 agents/交代/行政/改要求拆分·*.md（规则包第③步；插件 dsh-plugin 里另有一份同样的话）
+    system = say("行政/改要求拆分·系统", 截图那条=say("行政/改要求拆分·截图") if count > 0 else "")
     criteria_list = list(criteria or [])
-    criteria_block = "\n".join(f"{idx}. {item}" for idx, item in enumerate(criteria_list, 1)) if criteria_list else "（当前暂无验收标准）"
-
-    user_lines = [
-        "当前验收标准：",
-        criteria_block,
-        "",
-        "用户原话：",
-        str(user_text or "").strip(),
-    ]
-    if count > 0:
-        user_lines.extend(["", f"用户这次附了 {count} 张截图（你看不到图，保存后写代码的人会看）。"])
-    user = "\n".join(user_lines)
+    criteria_block = ("\n".join(f"{idx}. {item}" for idx, item in enumerate(criteria_list, 1)) if criteria_list
+                      else say("行政/改要求拆分·没有标准"))
+    user = say("行政/改要求拆分·用户", 标准=criteria_block, 原话=str(user_text or "").strip(),
+               截图张数=say("行政/改要求拆分·几张截图", 张数=count) if count > 0 else "")
     return {"system": system, "user": user}
 
 

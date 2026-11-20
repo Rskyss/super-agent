@@ -127,6 +127,32 @@ class MissingIsReported(unittest.TestCase):
         self.assertTrue(notes, "缺规则文件要在流转里记一条，不悄悄跑")
         self.assertIn("复查分级", notes[0]["summary"])
 
+    def test_run_card_notes_broken_message_in_the_flow(self):
+        # Codex 复查 T1 第 2 条：交代里多了程序填不了的空位，也要在流转里记提醒
+        from collab.agents import AgentResult
+        from collab.dispatch import run_card
+        from collab.flow import read_flow
+        from collab.judge import PASS, Verdict
+        from collab.state import Card
+        from collab.workspace import init_collab
+        from review_fmt import listed_ask
+        path = self.root / "交代" / "复查" / "每轮复查.md"
+        path.write_text(path.read_text(encoding="utf-8").replace("不要修改任何文件。", "{未登记空位}不要修改任何文件。"),
+                        encoding="utf-8")
+        with tempfile.TemporaryDirectory() as d:
+            collab = init_collab(d)
+            cdir = collab / "cards" / "CARD-001"
+            cdir.mkdir(parents=True)
+            (cdir / "需求卡.md").write_text("x", encoding="utf-8")
+            with mock.patch.object(rulebook, "AGENTS_DIR", self.root):
+                run_card(Card("CARD-001", state="待派发"), collab_dir=collab, worktree=d, test_command=["t"],
+                         dev_adapter="cursor", test_adapter="codex",
+                         ask_fn=listed_ask(lambda a, p, c, **k: AgentResult(ok=True, output="结论：通过", attempts=1)),
+                         judge_fn=lambda c, cwd, timeout: Verdict(PASS, 0, "ok"), reviewer_adapter="agy")
+            notes = [e for e in read_flow(cdir) if e.get("kind") == "提醒" and "规则" in e.get("summary", "")]
+        self.assertTrue(notes, "交代坏了要在流转里记一条")
+        self.assertIn("未登记空位", notes[0]["summary"])
+
 
 class EachRoleGetsItsOwnRules(unittest.TestCase):
     def test_card_run_puts_role_rules_first(self):
@@ -171,7 +197,10 @@ class EachRoleGetsItsOwnRules(unittest.TestCase):
             self.assertNotIn("开工前先读规则", src)
             for role in re.findall(r"_rules\(['\"]([^'\"]+)['\"]\)", src):
                 self.assertIn(role, rulebook.roles(), f"{module.__name__} 用了没登记的角色 {role}")
-        self.assertGreaterEqual(len(re.findall(r"_rules\(['\"]", inspect.getsource(dispatch))), 13)
+        # 第③步起两处“测试没过”合成一个函数，按处数数不准了：改查真跑一张卡时每段派活的话都以规则开头
+        import prompt_cases
+        for case, text in prompt_cases.render("跑卡").items():
+            self.assertTrue(text.startswith("【规则】"), case)
 
 
 class ReviewerPromptLeavesGradingToRulebook(unittest.TestCase):

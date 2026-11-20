@@ -88,7 +88,7 @@ class NewWords(unittest.TestCase):
         role = blocks_tools.role_text() + "".join(blocks_tools.manual_text(n) for n in blocks_tools.MANUALS)
         for words in ("出提议前", "出提议后", "提议上会写", "积木块"):
             self.assertIn(words, role)
-        self.assertIn("一家平台一个积木块", read("desktop/clerk/roles/积木库手册/api.md"))
+        self.assertIn("一家平台一个积木块", read("agents/手册/积木库/api.md"))
 
     def test_blocks_errors(self):
         from collab import blocks

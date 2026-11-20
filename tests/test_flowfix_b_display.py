@@ -80,7 +80,8 @@ class Rounds(ProjectCase):
 
 class ReportAsk(unittest.TestCase):
     def test_report_line_asks_for_plain_words(self):
-        from collab.dispatch import _REPORT_ASK
+        from collab.rulebook import say   # 规则包第③步：汇报写法搬进 agents/交代/写代码/汇报写法.md
+        _REPORT_ASK = say("写代码/汇报写法")
         self.assertIn("汇报：", _REPORT_ASK)
         self.assertIn("不写文件名", _REPORT_ASK)
 

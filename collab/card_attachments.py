@@ -203,9 +203,5 @@ def attachment_prompt(card_dir: Path) -> str:
     paths = recorded_attachment_paths(Path(card_dir))
     if not paths:
         return ""
-    lines = [
-        "",
-        "本任务卡片附带以下截图，请先实际打开这些图片看清楚，再动手修改或检查（不要把图片复制进工作区）：",
-    ]
-    lines.extend(f"- {p}" for p in paths)
-    return "\n".join(lines)
+    from collab.rulebook import say   # 话在 agents/交代/通用/附图.md（规则包第③步）
+    return say("通用/附图", 列表="\n".join(f"- {p}" for p in paths))

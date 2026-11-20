@@ -9,9 +9,13 @@ from pathlib import Path
 from collab import blocks, blocks_check, blocks_env, blocks_install, blocks_web
 from collab.blocks import BlockError
 from desktop.clerk.tools import LABELS
+from collab.rulebook import AGENTS_DIR, describe_tools, file_text, say
 
-ROLE_FILE = Path(__file__).resolve().parent / "roles" / "积木库管家.md"
-MANUAL_DIR = Path(__file__).resolve().parent / "roles" / "积木库手册"
+# 积木库管家的身份说明和手册在规则包 agents/ 里（规则包第③步，原来在 desktop/clerk/roles/）
+ROLE_REL = "角色/积木库管家.md"
+MANUAL_REL = "手册/积木库"
+ROLE_FILE = AGENTS_DIR / ROLE_REL      # 老名字照旧能用（指向新位置）
+MANUAL_DIR = AGENTS_DIR / MANUAL_REL
 MANUALS = {"cli": "接命令行工具", "api": "接大模型 API", "web": "联网搜索和网上安装", "ability": "做能力"}
 # 用到这些工具就是在办这一类事：手册没翻过时，程序把它附在结果后面（积木库管家方案第二节）
 MANUAL_OF = {
@@ -27,138 +31,117 @@ _HELP_LIMIT = 3000
 TOOLS = [
     {"type": "function", "function": {
         "name": "scan_environment",
-        "description": "对电脑环境做一次体检：查 Node、npm、Homebrew、git 和各 CLI 装没装、什么版本、登没登录",
         "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
     }},
     {"type": "function", "function": {
         "name": "check_installed",
-        "description": "查某个命令装没装、什么版本",
         "parameters": {"type": "object", "properties": {
-            "command": {"type": "string", "description": "可执行文件名，例如 codex"},
+            "command": {"type": "string"},
         }, "required": ["command"], "additionalProperties": False},
     }},
     {"type": "function", "function": {
         "name": "read_help",
-        "description": "只运行 <命令> --help 读这个工具自带的帮助说明，限时 10 秒",
         "parameters": {"type": "object", "properties": {
-            "command": {"type": "string", "description": "可执行文件名"},
+            "command": {"type": "string"},
         }, "required": ["command"], "additionalProperties": False},
     }},
     {"type": "function", "function": {
         "name": "list_blocks",
-        "description": "列出基础层里已经接进来的每个积木块：名字、类型、上次检测结果",
         "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
     }},
     {"type": "function", "function": {
         "name": "install_options",
-        "description": "查某个工具在核实名单里的官方安装方式",
         "parameters": {"type": "object", "properties": {
-            "tool": {"type": "string", "description": "工具名，例如 codex、node"},
+            "tool": {"type": "string"},
         }, "required": ["tool"], "additionalProperties": False},
     }},
     {"type": "function", "function": {
         "name": "propose_install",
-        "description": "向用户出示安装提议，用户点确认后才执行安装",
         "parameters": {"type": "object", "properties": {
-            "install_id": {"type": "string", "description": "核实名单里的安装编号，例如 codex-npm"},
+            "install_id": {"type": "string"},
         }, "required": ["install_id"], "additionalProperties": False},
     }},
     {"type": "function", "function": {
         "name": "propose_connect_cli",
-        "description": ("向用户出示接入 CLI 的提议。codex/cursor/agy 优先传 template；别的工具传起草的 card。"
-                        "AI 助手（交代一句话它自己干活）的 card 写 run（含 {prompt}）；普通工具（给命令返回结果）写 "
-                        "role=tool 和 probe（一条只查不改的检测命令的参数列表），可选 ok_words；要密钥的写 secrets："
-                        "[{env: 交给工具时的环境变量名, label: 显示名}]，只写名字，密钥由用户在提议上填"),
         "parameters": {"type": "object", "properties": {
-            "template": {"type": "string", "description": "预置模板名：codex / cursor / agy"},
-            "card": {"type": "object", "description": "自定义的 CLI 接法说明"},
+            "template": {"type": "string"},
+            "card": {"type": "object"},
         }, "additionalProperties": False},
     }},
     {"type": "function", "function": {
         "name": "propose_connect_api",
-        "description": ("向用户出示接入大模型 API 的提议（含密钥框，密钥由用户在框里填）。按整家接：一家平台一个积木块，"
-                        "不选模型，提议上没有模型一栏，检测时程序自己拿这家的模型名单并试通。腾讯云、阿里百炼都只要一把 API 密钥，"
-                        "提议上只有一个密钥框；不是云账号的 SecretId、SecretKey 那一对。没调用这个工具，用户屏幕上就没有提议"),
         "parameters": {"type": "object", "properties": {
-            "provider": {"type": "string", "description": "tencent / bailian / other"},
-            "name": {"type": "string", "description": "other 时填这家平台的名字（如 DeepSeek）；腾讯云、阿里百炼不用填"},
-            "base_url": {"type": "string", "description": "other 时必填，https:// 开头"},
-            "model": {"type": "string", "description": "一般不填。只有检测结果说“问不到这家的模型名单”时，填用户说的一个模型名，只用来试通"},
+            "provider": {"type": "string"},
+            "name": {"type": "string"},
+            "base_url": {"type": "string"},
+            "model": {"type": "string"},
         }, "required": ["provider"], "additionalProperties": False},
     }},
 ]
 
+
 TOOLS.extend([
     {"type": "function", "function": {
         "name": "web_search",
-        "description": "用基础层里的联网搜索查资料（例如某个工具的官网和安装说明），最多 5 条结果",
         "parameters": {"type": "object", "properties": {
-            "query": {"type": "string", "description": "搜索词"},
+            "query": {"type": "string"},
         }, "required": ["query"], "additionalProperties": False},
     }},
     {"type": "function", "function": {
         "name": "read_page",
-        "description": "由程序打开一个 https 网页，把正文交给你看（只读，最多 8000 字）",
         "parameters": {"type": "object", "properties": {
-            "url": {"type": "string", "description": "完整的 https:// 网址"},
+            "url": {"type": "string"},
         }, "required": ["url"], "additionalProperties": False},
     }},
     {"type": "function", "function": {
         "name": "propose_web_install",
-        "description": ("核实名单里没有的工具：把官网上那一页的网址和页面上原样的安装命令交给程序，程序自己读页面核对、"
-                        "查安装包底细，都过了才向用户出示安装提议。只支持 npm install -g、brew install、"
-                        "curl … | sh/bash 三种写法"),
         "parameters": {"type": "object", "properties": {
-            "url": {"type": "string", "description": "写着安装命令的官网页面网址"},
-            "install_command": {"type": "string", "description": "页面上原样的那一行安装命令"},
-            "command": {"type": "string", "description": "装好后的命令名（脚本安装必填，例如 agent）"},
-            "official": {"type": "boolean", "description": "是不是工具厂商自己做的；拿不准填 false"},
-            "maker": {"type": "string", "description": "谁做的（公司或个人的名字）"},
-            "risk": {"type": "string", "description": "风险，一句大白话；不是官方的必须写，例如“读你浏览器里的登录，可能封号”"},
+            "url": {"type": "string"},
+            "install_command": {"type": "string"},
+            "command": {"type": "string"},
+            "official": {"type": "boolean"},
+            "maker": {"type": "string"},
+            "risk": {"type": "string"},
         }, "required": ["url", "install_command"], "additionalProperties": False},
     }},
     {"type": "function", "function": {
         "name": "list_models",
-        "description": ("问这家大模型平台它真有哪些模型（用已经存好的密钥，只读、不花额度）。用户问起这家有哪些模型时用；"
-                        "接入不需要先查，出提议不用选模型"),
         "parameters": {"type": "object", "properties": {
-            "provider": {"type": "string", "description": "tencent / bailian（只能查这两家）"},
-            "keyword": {"type": "string", "description": "只看名字里带这几个字母的，例如 hy、qwen、deepseek；不填看全部"},
+            "provider": {"type": "string"},
+            "keyword": {"type": "string"},
         }, "required": ["provider"], "additionalProperties": False},
     }},
     {"type": "function", "function": {
         "name": "read_block",
-        "description": "查看基础层里的某个积木块：类别、模型名单、能不能用，以及能力层里有哪些卡片用了它",
         "parameters": {"type": "object", "properties": {
-            "block": {"type": "string", "description": "积木块编号"},
-            "keyword": {"type": "string", "description": "可选，只看名字里带这几个字母的模型"},
+            "block": {"type": "string"},
+            "keyword": {"type": "string"},
         }, "required": ["block"], "additionalProperties": False},
     }},
     {"type": "function", "function": {
         "name": "list_abilities",
-        "description": "列出能力层里已有的所有能力卡片",
         "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
     }},
     {"type": "function", "function": {
         "name": "propose_ability",
-        "description": "出示能力卡片（草稿）。card 照《做能力》手册的格式写；程序先查格式，不合格不出草稿、把原因还给你。没调用这个工具，用户屏幕上就没有草稿。",
         "parameters": {"type": "object", "properties": {
-            "card": {"type": "object", "description": "能力卡片 JSON"},
+            "card": {"type": "object"},
         }, "required": ["card"], "additionalProperties": False},
     }},
     {"type": "function", "function": {
         "name": "read_manual",
-        "description": "翻开一本手册，照着办这一类事：cli 接命令行工具；api 接大模型 API；web 联网搜索和网上安装；ability 从积木块提取能力卡片",
         "parameters": {"type": "object", "properties": {
-            "name": {"type": "string", "enum": ["cli", "api", "web", "ability"], "description": "手册名"},
+            "name": {"type": "string", "enum": ["cli", "api", "web", "ability"]},
         }, "required": ["name"], "additionalProperties": False},
     }},
     {"type": "function", "function": {
         "name": "propose_connect_search",
-        "description": "基础层里还没有联网搜索时，向用户出示接入联网搜索（Tavily）的提议，用户在提议上填 Tavily 密钥",
         "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
     }},
 ])
+
+# 工具说明写在 agents/交代/积木库管家/工具说明.md（规则包第③步）；程序这里只管工具名、参数名
+describe_tools(TOOLS, "交代/积木库管家/工具说明.md")
 
 # 积木库的动作名不带空格，和项目窗口“读 xx”分开；聊天页按这些名字归类摘要（积木库管家方案第一节第 3 条）
 BLOCK_LABELS = {
@@ -172,19 +155,19 @@ LABELS.update(BLOCK_LABELS)
 
 
 def role_text() -> str:
-    return ROLE_FILE.read_text(encoding="utf-8")
+    return file_text(ROLE_REL)
 
 
 def manual_text(name: str) -> str:
     """一本手册的全文；名字不认得给空（名字只能是 MANUALS 里的，不拿它拼任意路径）。"""
     if name not in MANUALS:
         return ""
-    return (MANUAL_DIR / f"{name}.md").read_text(encoding="utf-8")
+    return file_text(f"{MANUAL_REL}/{name}.md")
 
 
 def manual_block(name: str) -> str:
     """附在结果或系统提示后面的样子。"""
-    return f"【手册：{MANUALS[name]}（{name}）】\n{manual_text(name).strip()}"
+    return say("积木库管家/手册开头", 名=MANUALS[name], 代号=name, 全文=manual_text(name).strip())
 
 
 _ACTION_LIMIT = 200

@@ -17,6 +17,7 @@ from desktop.clerk.client import ModelError
 from desktop.clerk import blocks_tools, tasks as clerk_tasks
 from desktop.clerk.tools import LABELS, PROPOSE_REVISE, TOOLS, run_tool, team_incomplete_hint
 from collab import blocks
+from collab.rulebook import say as _say
 
 FOLDER = Path(".collab") / "行政对话"
 _AUTH_HEADER = re.compile(r"(?i)(bearer|authorization:)\s+[A-Za-z0-9._~+/=-]{12,}")
@@ -30,8 +31,6 @@ BLOCKS_TOOL_ROUNDS = 8  # 积木库：翻手册、搜、读网页、出提议一
 # 只认这几种协议写法：<｜…（DeepSeek）、<|tool_calls_begin|>、<tool_call>；正常的表格、代码例子不动（复查）
 _TOOL_MARKUP = re.compile(r"<(?:｜|\|[A-Za-z_▁]{1,40}\|>|/?tool_calls?>)", re.I)
 _MAYBE_MARKUP = re.compile(r"<[^\s>]{0,44}$")  # 比协议名最长 40 再多留两边的竖线  # 边打字边显示时，结尾这一截可能是协议写法的开头，先不显示
-_LAST_ROUND = ("（这是系统提示，不是用户说的）这一轮能用的步骤用完了，不能再调用任何工具，也不要写出工具调用。"
-               "用大白话告诉用户做到哪一步、还差什么，请用户说“继续”接着做。")
 
 # 行政说“提议/确认框已经弹出来了”这一类话（第 9 项整体验收：模型有时没调用出提议的工具却这么说）
 _CARD = r"(?:安装提议|接入提议|提议|提议卡|接法卡|安装卡|卡片|确认框|确认卡)"  # 旧叫法：提议卡|接法卡|安装卡 仍认
@@ -54,8 +53,6 @@ _LATER_AFTER = re.compile(r"^(?:以后|之后|后)")  # “确认框出来了以
 # 前面是 的/个/张/出/进 这类时是名词（“上面的提议”“出了一个提议”“填进提议里”），不按动词排。
 _PROPOSE_AS_VERB = re.compile(r"(?<=[我们咱他她人想也还是就再倒才都只刚又])提议"
                               r"|(?<![的张个份置卡])提议(?:你|先|把|将)")
-_CLAIM_REMINDER = ("（这是系统提示，不是用户说的）你刚才说已经出了提议或确认框，但这一轮你没有调用任何 propose_ 开头的工具，"
-                   "用户什么提议都看不到。要出提议就现在调用对应的工具；不需要，就如实告诉用户刚才没有出提议。")
 _CARD_SHOWN = "已向用户出示确认框"  # 出提议工具成功时回给模型的话（clerk_tasks._publish_block 等）
 
 
@@ -123,29 +120,26 @@ def claims_task_box(text: str) -> bool:
 def _claim_reminder(open_cards: list) -> str:
     """上面还有没处理的提议时，点名那个：说的是它就照实说在上面，说的是新提议就现在出"""
     if not open_cards:
-        return _CLAIM_REMINDER
+        return _say("行政/没出提议却说出了")
     names = "、".join(f"「{clerk_tasks.card_label(c)}」"
                      for c in open_cards[:3])
-    return (f"（这是系统提示，不是用户说的）你刚才说出了提议或确认框，但这一轮你没有调用任何 propose_ 开头的工具。"
-            f"上面还有没处理的提议：{names}。你说的如果是上面这个，就照实告诉用户它在上面；说的是新的提议，就现在调用对应的工具。")
-ROLE = ("你是这个应用的行政人员，用户的前台和行政。用大白话简短回答，不说技术术语。"
-        "你能查项目说明、台账、卡片和团队设置；也能查本机 PATH 里有没有装 Codex、Cursor（agent 命令）、agy，只查不运行。"
-        "问进度必须先查，不能凭记忆。"
-        "问这个项目是什么、怎么用时，先读项目说明；没有或不够，再调用 read_project_docs 读项目自带资料，只按资料回答。"
-        "项目说明还没写时，读完资料后可以调用 propose_profile 起草。不知道的项不要编，先问用户。"
-        "你不能改代码、运行命令、推送或把改动放进项目。"
-        "用户明确要改产品或写代码时，先问清楚，再调用 propose_task。"
-        "用户说按施工单（或某个文件路径）建卡时，把路径原样写进卡片的“要做什么”就调用 propose_task，"
-        "不用先读那个文件（写方案时会去读）；用户说了不用读就一定不读。"
-        "施工单你不用读，也别说读不了；只说写方案时会读。"
-        "出确认框后只说一句“点确认就建卡，之后写方案给你批”，不要追问别的；开工和复查由流程自动安排，不用问用户。"
-        "用户明确要改团队分工（写测试、写代码、复查用谁）时，先问清楚，再调用 propose_team_change。"
-        "不要私自做工具连通检测；需要的话提醒用户去「设置」里点「检测」。"
-        "闲聊、问进度不调用 propose_task 或 propose_team_change。不能说“已经建好卡”或“已经改好团队”，用户点确认才算。"
-        "不清楚时一次只问一个问题，给出推荐答案和一句话理由。"
-        "不知道就直说，不编造。"
-        "这个项目叫：{name}。")
-NAMING = "用不超过 12 个字概括这段对话的主题，只回答标题本身。\n用户：{user}\n回答：{reply}"
+    return _say("行政/上面还有提议", 提议=names)
+# 行政的话在 agents/交代/行政/（规则包第③步）。老名字 ROLE、NAMING、_LAST_ROUND、_CLAIM_REMINDER 照旧能读，
+# 每次读都从 agents/ 取最新的（见文件末尾 __getattr__）；本文件里直接用 _say。
+
+
+def __getattr__(attr):
+    if attr == "ROLE":
+        return _say("行政/身份说明", 项目名="{name}")
+    if attr == "NAMING":
+        return _say("行政/起标题", 用户="{user}", 回答="{reply}")
+    if attr == "_LAST_ROUND":
+        return _say("行政/步骤用完")
+    if attr == "_CLAIM_REMINDER":
+        return _say("行政/没出提议却说出了")
+    raise AttributeError(attr)
+
+
 _ID_SHAPE = re.compile(r"[0-9a-f]{32}")
 
 
@@ -665,7 +659,7 @@ class ClerkDesk:
             if block_id:
                 bcard = clerk_tasks._load_block(block_id, root=conv.project)
                 bname = bcard.get("name", block_id) if bcard else block_id
-                role += f"\n\n这段对话是用户在基础层点积木块「{bname}」（{block_id}）的‘提取能力卡片’开的，说的就是这个积木块。不用先体检，照《做能力》办。"
+                role += _say("积木库管家/从积木块开的", 积木块名=bname, 积木块编号=block_id)
             ability_hint = clerk_tasks.latest_ability_hint(conv.project, conv.id)
             if ability_hint:
                 role += ability_hint
@@ -673,12 +667,11 @@ class ClerkDesk:
             open_cards = clerk_tasks.open_proposals(conv.project, conv.id)
             if open_cards:
                 names = "、".join(f"「{clerk_tasks.card_label(c)}」" for c in open_cards[:3])
-                role += (f"\n\n屏幕上现在有一张待处理的提议：{names}，用户还没点。"
-                         "它只管它自己那件事：用户要办的是另一样东西，要另出一个提议。")
+                role += _say("积木库管家/屏幕上有提议", 提议=names)
             else:
-                role += "\n\n屏幕上现在没有待处理的提议。要让用户填密钥、点确认，必须先调用 propose_ 开头的工具出提议。"
+                role += _say("积木库管家/屏幕上没有提议")
         else:
-            role = ROLE.format(name=Path(conv.project).name)
+            role = _say("行政/身份说明", 项目名=Path(conv.project).name)
             hint = team_incomplete_hint(conv.project)
             if hint:
                 role = f"{role} {hint}"
@@ -687,12 +680,8 @@ class ClerkDesk:
             from collab.phase import card_phase
             phase = card_phase(conv.project, card_id)
             detail = run_tool(conv.project, "read_card", {"card_id": card_id})
-            role += (
-                " 这段对话只谈这张卡。用户只和你说话，不能直接指挥执行的工具。"
-                "新任务请用户回主对话提。"
-                f"当前阶段：{phase.get('label') or ''}。{clerk_tasks.next_step_words(phase)}\n{detail}"
-                "\n用户问进度时，按上面此刻的状态答（对话里以前说过的进度可能已经过时），卡住了就说原因和能点的按钮。"
-            )
+            role += _say("行政/看卡", 阶段=phase.get("label") or "", 下一步=clerk_tasks.next_step_words(phase),
+                         卡片详情=detail)
         return [{"role": "system", "content": role}] + conv.messages[-HISTORY_LIMIT:]
 
     def _alive(self, conv: _Conversation, turn: int) -> bool:
@@ -796,7 +785,7 @@ class ClerkDesk:
                 raise _Stopped
             use_tools = round_no < limit
             if not use_tools and round_no:
-                messages.append({"role": "user", "content": _LAST_ROUND})
+                messages.append({"role": "user", "content": _say("行政/步骤用完")})
             if round_no:
                 getattr(on_text, "new_round", lambda: None)()
             try:
@@ -1050,7 +1039,7 @@ class ClerkDesk:
 
     def _name(self, conv: _Conversation, client, reply: str) -> None:
         """起名失败不要紧，标题先用用户的第一句话。"""
-        words = NAMING.format(user=conv.messages[0]["content"][:300], reply=reply[:300])
+        words = _say("行政/起标题", 用户=conv.messages[0]["content"][:300], 回答=reply[:300])
         try:
             answer = client.chat([{"role": "user", "content": words}])
         except ModelError:
