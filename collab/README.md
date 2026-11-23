@@ -28,6 +28,8 @@
 
 用户可以按次指定工具：`--dev-tool / --test-tool / --review-tool`（可选 cursor、codex、agy；复查可设 none）。
 
+**agy 怎么接（11-22 起）**：派活不再用 `agy -p`（Google 说个人订阅下程序自动调它“不支持”、可封号），改由翻译 `collab/agy_acp.py` 拉起官方给第三方的 `agy acp`（Agent Client Protocol），再把回话翻成原来 `agy -p --output-format stream-json` 的格式，读回复、报错、用量、看门人照旧。权限一律自动批；新接法出错不退回 `agy -p`。已知取舍：ACP 只在一件活做完时报 token 数，agy 的活跑到一半被停、超时或正在跑时，用量显示“读不到”。积木库里的预置 agy 仍是 `agy -p`（开发助手界面走不到）。详见 `docs/agy改走ACP/`。
+
 ## 三、完整流程（按顺序，一步都不能跳）
 
 以下命令里 `<P>` 是目标项目路径，`collab` 指**超级助手里的协作包**（源目录默认 `~/Desktop/project/开发助手/collab`（11-17 工具分家：协作包随开发助手）；桌面窗口启动调度员时会在开场话里写明完整路径）。
@@ -120,7 +122,7 @@ python3 collab run <P> CARD-xxx --test-command "npm test" --session-jsonl auto
   - “派活”在**开始干活时**就记，没有对应“回复”的那条派活就是“正在干”的人；“回复”记成没成、用时、一句话摘要。
   - 派活原文、回复全文、测试输出存在 `流转/` 目录（`NNN-派活.md` 等）；执行者的实时输出写进 `流转/NNN-实时输出.log`，干完也保留。
   - 只记录不判断：派活、返工、判定规则都不受它影响。桌面窗口的右边面板就读这份记录。
-  - **用量（token 第二版，11-18）**：“回复”“交接资料”“方案”带 `tokens` 字段（`ok/total/input/cached/output/reasoning/children`，合计 = 输入 + 输出，输入含缓存读取）。Codex、千问从会话记录读；agy 读实时输出里每一步的用量（跑完用最后的总数）；Cursor 读最后结果里的用量（在跑时写“这一轮结束后出数”）。记录里没有用量的老轮次，右栏打开时读当时的实时输出补上；读不到的写原因、标“没读到”，不编数。行政对话的累计用量记在 `行政对话/<编号>.jsonl` 的 `{"role":"usage","total":累计数}` 行，重开读最后一行。
+  - **用量（token 第二版，11-18）**：“回复”“交接资料”“方案”带 `tokens` 字段（`ok/total/input/cached/output/reasoning/children`，合计 = 输入 + 输出，输入含缓存读取）。Codex、千问从会话记录读；agy 读最后结果里的用量（11-22 改走 ACP 后中途没有每一步的用量，跑一半停掉的读不到）；Cursor 读最后结果里的用量（在跑时写“这一轮结束后出数”）。记录里没有用量的老轮次，右栏打开时读当时的实时输出补上；读不到的写原因、标“没读到”，不编数。行政对话的累计用量记在 `行政对话/<编号>.jsonl` 的 `{"role":"usage","total":累计数}` 行，重开读最后一行。
   - 交接全文和实时输出只留在本机 `.collab/`，归档时不复制进项目 `docs/`（又多又大，不该进代码历史）。
 
 ### 5. Claude 复核（不信任任何 AI 的自述）
@@ -178,7 +180,7 @@ python3 collab run <P> CARD-xxx --test-command "npm test" --session-jsonl auto
 | 现象 | 原因 / 做法 |
 |---|---|
 | Cursor 说写了文件，但没有 | 命令是 `agent`（不是 `cursor-agent`），要加 `--trust`；偶发不落盘，以文件为准 |
-| agy 报 `-p took "--output-format"` | 提示词必须紧跟 `-p` |
+| agy 报 `-p took "--output-format"` | 提示词必须紧跟 `-p`（11-22 起派活不再用 `-p`，只剩积木库预置 agy 会碰到） |
 | 加 `--force` / `--dangerously-skip-permissions` 被拒 | 不需要，也不要用 |
 | Codex 输出一堆 MCP 报错 | 忽略，不影响结果 |
 | Codex 不肯直接用浏览器工具 | 它自己的规则要求先得到许可；任务说明里写明“允许使用浏览器自动化” |

@@ -65,6 +65,11 @@ def explain(output: str, tool: str):
         return "额度用完或被限流", "等额度恢复后再检测一次，或这个岗位换一家"
     if "model" in text and any(k in text for k in ("not found", "invalid", "unknown", "does not exist", "not supported")):
         return "模型名不对", "在项目的 .collab/配置.json 里改成这家支持的模型名"
+    if tool == "agy":   # agy 走 ACP（11-22）：最后一行是结果的 JSON 外壳，原因在里面（复查第 1 轮）
+        from collab.agents import agy_error
+        said = agy_error(raw)
+        if said:
+            return "agy 没做成", f"它说：{said[:200]}。稍后再检测一次；仍不行就这个岗位换一家"
     lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
     tail = lines[-1][:120] if lines else "没有输出"
     return "命令跑完了，但没建出文件", f"看看这家工具在自动模式下能不能写文件。它最后说：{tail}"

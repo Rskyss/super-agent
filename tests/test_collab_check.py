@@ -51,8 +51,12 @@ class CheckTest(unittest.TestCase):
         """放一个假工具到 PATH 最前面。command：codex / agent（Cursor）/ agy。"""
         name = command.upper()
         path = self.bin / command
-        path.write_text(FAKE.replace("{name}", name), encoding="utf-8")
-        path.chmod(path.stat().st_mode | stat.S_IEXEC)
+        if command == "agy":   # 11-22 agy 改走 ACP：外面套一层会说 ACP 的壳（tests/fake_agy.py）
+            from fake_agy import write_fake_agy
+            write_fake_agy(path, FAKE.replace("{name}", name))
+        else:
+            path.write_text(FAKE.replace("{name}", name), encoding="utf-8")
+            path.chmod(path.stat().st_mode | stat.S_IEXEC)
         os.environ[f"FAKE_{name}"] = mode
         self._keys.append(f"FAKE_{name}")
 
@@ -159,10 +163,13 @@ class CheckTest(unittest.TestCase):
         for c in ("codex", "agent", "agy"):
             self.tool(c, "ok")
         self.team()
-        before = set(Path(tempfile.gettempdir()).glob("超级助手检测-*"))
-        check_team(self.project, timeout=10)
-        after = set(Path(tempfile.gettempdir()).glob("超级助手检测-*"))
-        self.assertEqual(after - before, set())
+        # 只看本测试专用的临时目录（11-22 agy 改走 ACP 后检测慢了一两秒，同时跑的别的测试建的检测文件夹会被数进来，误报）
+        own = Path(self.tmp.name) / "临时"
+        own.mkdir()
+        from unittest import mock
+        with mock.patch.object(tempfile, "tempdir", str(own)):
+            check_team(self.project, timeout=10)
+        self.assertEqual(list(own.glob("超级助手检测-*")), [])
 
     def test_cli_check_command(self):
         for c in ("codex", "agent", "agy"):

@@ -33,6 +33,10 @@ class TeamServerTest(unittest.TestCase):
         self.bin.mkdir()
         for name in ("codex", "agent", "agy"):
             p = self.bin / name
+            if name == "agy":   # 11-22 agy 改走 ACP：外面套一层会说 ACP 的壳（tests/fake_agy.py）
+                from fake_agy import write_fake_agy
+                write_fake_agy(p, OK_TOOL)
+                continue
             p.write_text(OK_TOOL, encoding="utf-8")
             p.chmod(p.stat().st_mode | stat.S_IEXEC)
         self._path = os.environ["PATH"]
@@ -124,7 +128,8 @@ class TeamServerTest(unittest.TestCase):
 
     def test_two_checks_at_once_keep_their_own_results(self):
         slow = self.bin / "agy"
-        slow.write_text("#!/bin/sh\nsleep 1\nn=$(cat 题目.txt); printf '%s\\n%s\\n' $((n+1)) $(ls | wc -l) > 连通检测.txt\n", encoding="utf-8")
+        from fake_agy import write_fake_agy   # 11-22 agy 改走 ACP（tests/fake_agy.py）
+        write_fake_agy(slow, "#!/bin/sh\nsleep 1\nn=$(cat 题目.txt); printf '%s\\n%s\\n' $((n+1)) $(ls | wc -l) > 连通检测.txt\n")
         team = {"dispatcher": "codex", "tester": "cursor", "developer": "agy", "reviewer": "none"}
         first = self._post("/api/team/check", {"project": str(self.project), "team": team, "roles": ["developer"]})["run"]
         second = self._post("/api/team/check", {"project": str(self.project), "team": team, "roles": ["tester"]})["run"]

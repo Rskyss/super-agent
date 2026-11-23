@@ -83,6 +83,10 @@ def wait_idle(desk, project, conversation, timeout=8):
 def write_script(path, body):
     path = Path(path)
     from review_fmt import listed_script   # C1.5：假复查员只说“结论：通过”时补上同义清单（tests/review_fmt.py）
+    if path.name == "agy":   # 11-22 agy 改走 ACP：假 agy 外面套一层会说 ACP 的壳（tests/fake_agy.py）
+        from fake_agy import write_fake_agy
+        write_fake_agy(path, "#!/bin/sh\n" + listed_script(body))
+        return
     path.write_text("#!/bin/sh\n" + listed_script(body), encoding="utf-8")
     path.chmod(path.stat().st_mode | stat.S_IEXEC)
 

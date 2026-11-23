@@ -30,9 +30,11 @@ def _step(tool, params):
 
 class Command(unittest.TestCase):
     def test_dispatch_uses_stream_json(self):
+        # 11-22 改走 ACP（docs/agy改走ACP/）：不再有 -p 和 --output-format，翻译 agy_acp.py 照原 stream-json 格式边干边吐
+        # （tests/test_agy_acp.py 验格式）；交代放在 “--” 之后、最后一个
         cmd = agy_command("干活", model="gemini-3.8-flash-high")
-        self.assertEqual(cmd[cmd.index("--output-format") + 1], "stream-json")
-        self.assertEqual(cmd[:3], ["agy", "-p", "干活"], "提示词必须紧跟 -p（README 已知问题）")
+        self.assertTrue(cmd[1].endswith("agy_acp.py"))
+        self.assertEqual(cmd[-2:], ["--", "干活"])
 
     def test_blocks_templates_unchanged(self):
         """积木库检测和能力卡片运行仍用一次性 json（它们只要结果，不看过程）"""

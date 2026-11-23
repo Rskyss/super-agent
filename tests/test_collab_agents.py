@@ -21,10 +21,11 @@ class CommandShapeTest(unittest.TestCase):
         self.assertIn('model_reasoning_effort="xhigh"', cmd)
         self.assertIn("workspace-write", cmd)
 
-    def test_agy_puts_prompt_right_after_dash_p(self):
+    def test_agy_goes_through_acp_bridge(self):
+        # 11-22 改走 ACP（docs/agy改走ACP/）：原来断言“交代紧跟 -p”，现在交代放在 “--” 之后，不再有 -p
         cmd = agy_command("做事")
-        self.assertEqual(cmd[1], "-p")
-        self.assertEqual(cmd[2], "做事")
+        self.assertNotIn("-p", cmd)
+        self.assertEqual(cmd[-2:], ["--", "做事"])
         self.assertIn("gemini-4-argon-high", cmd)
 
 

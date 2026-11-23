@@ -12,6 +12,7 @@ import re
 import signal
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 from dataclasses import dataclass
@@ -70,9 +71,14 @@ def codex_command(prompt: str, model: str = DEFAULT_MODELS["codex"],
     return cmd + [prompt]
 
 
+AGY_BRIDGE = str(Path(__file__).resolve().with_name("agy_acp.py"))
+
+
 def agy_command(prompt: str, model: str = DEFAULT_MODELS["agy"]):
-    # stream-json：每走一步吐一行（㉙：读代码十几分钟不改文件时，看门人和标题行靠它知道 agy 在干活），最后一行是结果
-    return ["agy", "-p", prompt, "--model", model, "--output-format", "stream-json"]
+    # 11-22 改走 ACP（docs/agy改走ACP/）：Google 说个人订阅下程序自动调 `agy -p` 不支持、可封号，官方给第三方的门是 `agy acp`。
+    # 翻译 agy_acp.py 用 ACP 跟 agy 说话，印出和原来 `agy -p --output-format stream-json` 一样的格式：
+    # 每走一步吐一行（㉙：读代码十几分钟不改文件时，看门人和标题行靠它知道 agy 在干活），最后一行是结果。出错不退回 -p（2A）。
+    return [sys.executable, AGY_BRIDGE, "--model", model, "--", prompt]   # “--” 后面才是交代：交代以 - 开头也不会被当成参数
 
 
 _plugin_cache: list = []
@@ -522,9 +528,17 @@ def _tool_working(tool_pid: int) -> bool:
             cur = parent.get(cur)
         if any(any(w in table[p][2].lower() for w in _HELPER_WORDS) for p in up):
             continue  # 插件、帮手，以及它们拉起的子进程
+        if _is_agy_acp(line):
+            continue  # agy 改走 ACP（11-22）：翻译拉起的 agy acp 是常驻服务，它自己不算在跑命令；它拉起的命令照算
         if _is_command(line) or _runs_real_program(line):
             return True
     return False
+
+
+def _is_agy_acp(line: str) -> bool:
+    """翻译 agy_acp.py 拉起的 `agy acp`（经包装壳时是 agy-real，参数里带 acp 子命令）。"""
+    words = line.split()
+    return bool(words) and os.path.basename(words[0]).startswith("agy") and "acp" in words[1:]
 
 
 def _runs_real_program(line: str) -> bool:
