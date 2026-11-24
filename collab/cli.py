@@ -178,12 +178,13 @@ def _remind_upgrades(project, card_id, tools=None) -> None:
         print(line, file=sys.stderr)
 
 
-def _full_runner():
-    """复查的同时跑全量（第四轮 59）；集成测试里用 SUPERAGENT_NO_FULL=1 关掉（不然会在项目副本里再跑一遍全量）。"""
+def _full_runner(project=None):
+    """复查的同时跑全量（第四轮 59）；集成测试里用 SUPERAGENT_NO_FULL=1 关掉（不然会在项目副本里再跑一遍全量）。
+    项目配了“全部测试命令”就用它（第三批 ⑯，网页项目也有兜底）。"""
     if os.environ.get("SUPERAGENT_NO_FULL") == "1":
         return None
-    from collab.fullrun import FullRunner
-    return FullRunner()
+    from collab.fullrun import FullRunner, runner_for
+    return runner_for(project) if project else FullRunner()
 
 
 def _finish_run_line(project, card_id, card, cdir) -> None:
@@ -205,6 +206,17 @@ def cmd_run(args, ask_fn=None, judge_fn=None, **_):
         print("测试命令是空的：没有可跑的测试，不能开工。", file=sys.stderr)
         return 1
     page_check = args.page_check if str(args.page_check or "").strip() else None   # 命令原样用，不删空格（复查第 2 轮）
+    walk_word = ""
+    walk_command = None
+    if not page_check:
+        try:
+            start_info = json.loads((_collab(args.project) / "cards" / args.card_id / "开工.json")
+                                    .read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            start_info = {}
+        walk_word = str(start_info.get("walk_command") or "").strip() if isinstance(start_info, dict) else ""
+        if walk_word:
+            walk_command = ["/bin/bash", "-o", "pipefail", "-c", walk_word]
     project = Path(args.project)
     if not vcs.is_git_repo(project):
         print(f"{project} 不是 git 仓库，请先 git init", file=sys.stderr)
@@ -300,7 +312,9 @@ def cmd_run(args, ask_fn=None, judge_fn=None, **_):
                         for name, tool in (("测试员", tools["test"]), ("开发员", tools["dev"]), ("复查员", reviewer))
                         if tool},
                 pid=main_pid, started=started_at,
-                text=f"判定命令：{test_command}\n页面检查：{page_check or '无'}\n改好的版本在：{worktree}")
+                text=(f"判定命令：{test_command}\n走查：{walk_word}\n改好的版本在：{worktree}"
+                      if walk_word else
+                      f"判定命令：{test_command}\n页面检查：{page_check or '无'}\n改好的版本在：{worktree}"))
     card, verdict = run_card(
         card, collab_dir=_collab(args.project), worktree=str(worktree),
         test_command=["/bin/bash", "-o", "pipefail", "-c", test_command],
@@ -311,9 +325,10 @@ def cmd_run(args, ask_fn=None, judge_fn=None, **_):
         allowed=allowed,
         page_command=(["/bin/bash", "-o", "pipefail", "-c", page_check]
                       if page_check else None),
+        walk_command=walk_command,
         reviewer_adapter=reviewer, require_tests=True,
         handover=_handover_worker(args.project) if ask_fn is None else None,  # 测试替身不备资料
-        full_runner=_full_runner() if ask_fn is None else None,
+        full_runner=_full_runner(args.project) if ask_fn is None else None,
         draft=ask_fn is None and os.environ.get("SUPERAGENT_NO_DRAFT") != "1",   # 停下后起草继续改（第四轮 56 甲）
         progress=ask_fn is None and os.environ.get("SUPERAGENT_NO_PROGRESS") != "1",   # 右栏进度条（第四轮 53）
         red_check=ask_fn is None and os.environ.get("SUPERAGENT_NO_RED_CHECK") != "1",   # 写测试先红卡
@@ -340,7 +355,8 @@ def cmd_takeover(args, **_):
     if not cdir.is_dir():
         print(f"没有这张卡片：{args.card_id}", file=sys.stderr)
         return 2
-    flow_record(cdir, "接手", src="Claude", summary=args.note or "",
+    who = (getattr(args, "by", "") or "Claude").strip() or "Claude"   # 外部项目谁主导就写谁（观察 ⑬）
+    flow_record(cdir, "接手", src=who, summary=args.note or "",
                 changed=args.changed, reviews=args.reviews, later=args.later)
     print("已记下")
     return 0
@@ -526,6 +542,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--reviews", type=int, default=0, help="Codex 复查了几轮")
     p.add_argument("--later", type=int, default=0, help="几条记进以后再修")
     p.add_argument("--note", default="", help="一句话说明接手修了什么")
+    p.add_argument("--by", default="Claude", help="谁接手的（默认 Claude；外部项目写主导的模型，如 Gemini）")
     p.set_defaults(func=cmd_takeover)
 
     p = sub.add_parser("accept-issues", help="接受复查剩下的问题，跑全部测试全过后进待确认")
@@ -549,9 +566,41 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("status", help="查看任务板")
     p.add_argument("project")
     p.set_defaults(func=cmd_status)
+
+    p = sub.add_parser("config", help="项目设置（第三批：全部测试命令）")
+    csub = p.add_subparsers(dest="config_item", required=True)
+    q = csub.add_parser("full-test", help="设置、查看或清掉这个项目的“全部测试命令”（复查同时在副本里跑）")
+    q.add_argument("project")
+    q.add_argument("command", nargs="?", default=None, help="要跑的命令；不写就只显示现在的")
+    q.add_argument("--clear", action="store_true", help="清掉，回到不配的样子")
+    q.set_defaults(func=cmd_config_full_test)
     return parser
+
+
+def cmd_config_full_test(args, **_):
+    from collab.config import ConfigError, load_full_test, save_full_test
+    try:
+        if args.clear:
+            save_full_test(args.project, "")
+            print("已清掉全部测试命令：Python 项目照旧跑 tests/ 下的全部测试，别的项目没有全部测试兜底")
+        elif args.command is not None:
+            if not args.command.strip():
+                print("命令是空的；要清掉请用 --clear", file=sys.stderr)
+                return 1
+            save_full_test(args.project, args.command)
+            print(f"已设置全部测试命令：{args.command.strip()}")
+        else:
+            now = load_full_test(args.project)
+            print(f"全部测试命令：{now}" if now else "还没配全部测试命令")
+    except ConfigError as exc:
+        print(f"项目设置读不出来：{exc}", file=sys.stderr)
+        return 1
+    return 0
 
 
 def main(argv=None, ask_fn=None, judge_fn=None) -> int:
     args = build_parser().parse_args(argv)
+    if isinstance(getattr(args, "project", None), str) and args.project:
+        # “.” 这类相对写法先换成完整路径：副本在“项目名-worktrees”里，名字取不到就找错地方（外部项目试跑 ㉔）
+        args.project = str(Path(args.project).expanduser().resolve())
     return args.func(args, ask_fn=ask_fn, judge_fn=judge_fn)

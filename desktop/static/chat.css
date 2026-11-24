@@ -151,3 +151,30 @@
 .composer textarea::placeholder { color: var(--faint); }
 .composer textarea:focus-visible { box-shadow: none; }
 .send-btn { min-width: 32px; height: 32px; padding: 0 9px; border-radius: 10px; display: inline-flex; align-items: center; justify-content: center; font-size: var(--fs-md); font-weight: 600; }
+
+/* 卡片原文下的走查截图（卡 B）：只有带截图的卡才给头部限高，普通卡片一像素不变 */
+.chat-head.has-walk { max-height: min(55vh, max(120px, calc(100vh - 315px))); overflow-y: auto; align-content: flex-start; }
+#cardWalk { flex: 1 0 100%; margin-top: 4px; }
+#cardWalk[hidden] { display: none !important; }
+.walk-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: var(--fs-sm); color: var(--dim); }
+#cardWalkTitle { color: var(--text); font-weight: 500; }
+#cardWalkFold { all: unset; cursor: pointer; font-size: var(--fs-sm); color: var(--accent); }
+#cardWalkFold:hover { text-decoration: underline; }
+#cardWalkFold:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+#cardWalkList { max-height: 26vh; overflow-y: auto; display: grid; gap: 8px; margin-top: 6px; }
+#cardWalkList[hidden] { display: none !important; }
+.walk-row { background: var(--bg-side); border-radius: var(--r-md); padding: 8px 10px; }
+.walk-step { font-size: var(--fs-sm); color: var(--text); margin-bottom: 6px; }
+.walk-pair { display: flex; gap: 8px; flex-wrap: wrap; }
+.walk-col { flex: 1 1 160px; min-width: 0; display: grid; gap: 4px; }
+.walk-label { font-size: var(--fs-xs); color: var(--dim); }
+.walk-thumb { all: unset; display: block; cursor: pointer; border-radius: var(--r-md); overflow: hidden; box-shadow: inset 0 0 0 1px var(--hair); background: var(--surface); }
+.walk-thumb:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.walk-img { display: block; width: 100%; height: auto; max-height: 160px; object-fit: contain; background: var(--bg); }
+#walkLightbox { position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center; padding: 18px; overflow: auto; background: color-mix(in srgb, var(--bg-side) 90%, transparent); }
+#walkLightbox[hidden] { display: none !important; }
+.walk-lightbox-card { max-width: 96vw; max-height: 94vh; min-height: 0; display: flex; flex-direction: column; align-items: center; gap: 10px; background: transparent; border-radius: 0; box-shadow: none; padding: 0; }
+#walkLightboxTitle { font-size: var(--fs-sm); color: var(--dim); flex: 0 0 auto; max-width: 92vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#walkLightboxImg { max-width: 94vw; max-height: calc(92vh - 76px); min-height: 0; object-fit: contain; border-radius: var(--r-md); box-shadow: var(--shadow-2); }
+#walkLightboxClose { font-size: var(--fs-base); border-radius: var(--r-md); padding: 6px 14px; cursor: pointer; border: 0; box-shadow: inset 0 0 0 1px var(--hair-2); background: transparent; color: var(--text); flex: 0 0 auto; }
+#walkLightboxClose:hover { background: var(--surface-2); }

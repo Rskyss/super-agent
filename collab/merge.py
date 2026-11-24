@@ -397,8 +397,16 @@ def merge_unfinished(project) -> str:
     return ""
 
 
+LOOK_FIRST = "施工单要求先看页面：点“已看过”再放进项目"
+
+
 def merge_card(project, card_id: str) -> dict:
     project = Path(project)
+    from collab.look import look_pending
+    cdir = _card_dir(project, card_id)
+    if (cdir / "状态.json").is_file() and look_pending(cdir, read_flow(cdir)):
+        # 第三批 ③：按钮之外再拦一道，绕不过去；不记“合并失败”，免得右栏盖掉“已看过”按钮（复查第 1 轮 7）
+        return {"ok": False, "reason": LOOK_FIRST}
     try:
         _merge(project, card_id)
         return {"ok": True, "reason": ""}

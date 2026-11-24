@@ -557,6 +557,7 @@ _STEP_SUMMARY = {
     "复查": "只读复查：对照需求检查改动",
     "改测试": "复查说测试本身写错了：只改测试",
     "补测试": "复查退回：先补测试守住问题（只改测试）",
+    "修测试报错": "测试没过，报错全在测试文件自己身上：只改测试",
     "起草": "起草“继续改”：把几轮复查合起来找共同原因",
 }
 
@@ -596,6 +597,7 @@ _BARE_LOCATION = re.compile(
 _EVIDENCE_LOCATION = re.compile(
     rf"(?:(?:[A-Za-z]:[/\\]|/)?(?:{_BARE_PATH_SEG}[/\\])+{_BARE_PATH_SEG}|[\w./\\-]+)\.[A-Za-z][A-Za-z0-9]{{0,7}}:\d+"
 )
+_PLAN_LINE = re.compile(r"施工单[^，。；\n]{0,40}?第\s*\d+(?:\s*[–—\-~、，,]\s*\d+)*\s*行")   # “施工单第 125、140 行”“施工单-04 第 87–93 行”（㉝；“第 2 版”不算）
 _LIST_FIELDS = ("级别", "来源", "类型", "现象", "位置", "证据")
 _LEVELS = ("严重", "中等", "轻微")
 _SOURCES = ("这次改的", "原来就有的")
@@ -759,8 +761,15 @@ def read_review_list(text: str, prev_count: int = None) -> tuple:
                 errors.append(f"第 {index} 条问题的实跑证据缺命令")
             if not str(proof.get("输出") or "").strip():
                 errors.append(f"第 {index} 条问题的实跑证据缺输出")
-        elif not _EVIDENCE_LOCATION.search(str(proof.get("对照") or "")):
-            errors.append(f"第 {index} 条问题的推演证据要写带扩展名的文件:行号")
+        else:
+            # 外部项目观察 ㉝：复查员常把“对照”写成“内容”“说明”，或只写“施工单第 N 行”；
+            # 认下并统一放进“对照”，不为格式再派一次最高档复查（第二批需求共识第三节 6）
+            key = next((k for k in ("对照", "内容", "说明") if str(proof.get(k) or "").strip()), None)
+            said = str(proof.get(key)) if key else ""
+            if key and key != "对照":
+                proof["对照"] = said   # 别名认下后放进“对照”，原文一字不动（老规矩：只规范分类字段）
+            if not (_EVIDENCE_LOCATION.search(said) or _PLAN_LINE.search(said)):
+                errors.append(f"第 {index} 条问题的推演证据要写带扩展名的文件:行号")
     return data, errors
 
 
@@ -1124,7 +1133,9 @@ def _old_tests_changed_note(cdir: Path, worktree) -> str:
     if not changed:
         return ""
     not_backed = _say("复查/老测试不在备份", 文件="、".join(from_head)) if from_head else ""
-    return _say("复查/老测试变动", 文件="、".join(changed), 备份=backup, 不在备份=not_backed)
+    backed = [c.replace("（整个删了）", "") for c in changed if c.replace("（整个删了）", "") not in from_head]
+    sample = (f"（{'、'.join(f'{backup}/{b}' for b in backed)}）" if backed else "")   # 逐个写出完整路径（复查第 2、3 轮 13）
+    return _say("复查/老测试变动", 文件="、".join(changed), 备份=backup, 示例=sample, 不在备份=not_backed)
 
 
 def _tester_conflict_note(cdir) -> str:
@@ -1259,7 +1270,7 @@ def _no_plugins_note() -> str:
 _PROGRESS_ON: set = set()   # 哪些卡开了进度（只在真的施工时开，测试替身不开）
 
 
-_DIFF_STEPS = ("写测试", "改测试", "补测试", "开发", "返工修改")   # 轨迹“看改动”：写测试、写代码（含返工）都存（第七批 7-2，对照 05t）
+_DIFF_STEPS = ("写测试", "改测试", "补测试", "修测试报错", "开发", "返工修改")   # 轨迹“看改动”：写测试、写代码（含返工）都存（第七批 7-2，对照 05t）
 _DIFF_DIR = "改动"
 _DIFF_LIMIT = 480 * 1024           # 一步的改动最多存 480KB（页面最多读 512KB），再多截掉并写明
 _SNAP_BIG = 5 * 1024 * 1024        # 没被 git 管的大文件（>5MB）不进快照，免得每步都整份塞进 git 对象库
@@ -1454,6 +1465,73 @@ def _switch_words(suggest: str) -> str:
     return f"换成 {suggest}" if suggest else "换一个模型"
 
 
+_PRIOR = {}   # 接着跑的卡：{卡片目录: {"base": 停卡/接手/改动, "told": 已交代过的岗位}}（外部项目试跑 ⑧⑮）
+_PRIOR_ROLES = ("测试员", "开发员", "复查员")
+
+
+_SECRET_TEXT = re.compile(
+    r"(sk-[A-Za-z0-9_\-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|xox[abpr]-[A-Za-z0-9\-]{10,}|AKIA[0-9A-Z]{16}"
+    r"|AIza[0-9A-Za-z_\-]{20,}|Bearer\s+[A-Za-z0-9._\-]{16,}|(?<=://)[^\s/:@]+:[^\s/@]+(?=@)"
+    r"|(?i:[\"']?(?:api[_-]?key|secret|token|password|passwd)[\"']?\s*[=:]\s*[\"']?)[^\s\"',}]{8,})")
+_PRIOR_LIST = 20      # 前情里每类文件最多列几个
+_PRIOR_LIMIT = 3000   # 前情整段最多几个字（复查第 1 轮第 7 条：别把巨大内容塞进提示词）
+
+
+def _scrub_secrets(text: str) -> str:
+    """转述给下一棒的话里，像密钥的一律换掉（复查第 1 轮第 7 条）。"""
+    return _SECRET_TEXT.sub("（已隐去）", text or "")
+
+
+def _short_list(paths: list) -> str:
+    return "、".join(paths[:_PRIOR_LIST]) + (f" 等 {len(paths)} 个" if len(paths) > _PRIOR_LIST else "")
+
+
+def _prior_story(cdir: Path, worktree):
+    """接着中断的活时，拼好停卡、接手、副本改动三段；第一次跑、或者这次是“继续改”的新要求，返回 None。"""
+    events = read_flow(cdir)
+    sent = [i for i, e in enumerate(events) if e.get("kind") == "派活"]
+    if not sent:
+        return None
+    if any(e.get("kind") == "追加要求" for e in events[sent[-1] + 1:]):
+        return None   # 做完或停下后点“继续改”：是新要求，补要求的话里已列出已有测试（复查第 1 轮第 8 条）
+    stops = [e for e in events if e.get("kind") in ("停下", "转人工")]
+    stop = (f"这张卡之前停过 {len(stops)} 次，最后一次：{(stops[-1].get('summary') or '').strip()[:200]}" if stops
+            else "这张卡之前没停过，是正常接着往下做")
+    takes = [e for e in events if e.get("kind") == "接手"]
+    take = ("有人接手改过：" + "；".join(f"{e.get('src') or '有人'}说“{(e.get('summary') or '').strip()[:200]}”"
+                                     for e in takes[-3:]) if takes else "之前没人接手改过")
+    try:
+        changed = [p for p in _not_card_data(worktree, cdir, _changed_list(worktree)) if not is_cache(p)]
+    except Exception:  # noqa: BLE001  拿不到改动清单也照样派活
+        changed = []
+    listed = set(_load_test_files(cdir))
+    # 没登记的测试文件（写测试写到一半被停）也算已有测试（复查第 1 轮第 8 条）
+    have_tests = [p for p in changed if p in listed or is_test_path(p)]
+    have_tests += [p for p in sorted(listed) if p not in have_tests and (Path(worktree) / p).is_file()]
+    others = [p for p in changed if p not in have_tests]
+    parts = []
+    if have_tests:
+        parts.append("副本里已有测试：" + _short_list(have_tests) + "（在它基础上接着做，不要推倒重写）")
+    if others:
+        parts.append("副本里已改过的其他文件：" + _short_list(others))
+    return {"停卡": _scrub_secrets(stop), "接手": _scrub_secrets(take), "改动": "；".join(parts) or "副本里还没有改动"}
+
+
+def _prior_note(cdir: Path, role: str) -> str:
+    """接着跑时，这个岗位这次第一次派活要附的前情；交代过一次就不再附。"""
+    state = _PRIOR.get(str(cdir))
+    if not state or role not in _PRIOR_ROLES or role in state["told"]:
+        return ""
+    state["told"].add(role)
+    replies = [e for e in read_flow(cdir) if e.get("kind") == "回复" and e.get("src") == role]
+    last = _scrub_secrets((text_of(cdir, replies[-1]) or "").strip()) if replies else ""   # 先隐去再截，截断处不留半截密钥
+    if len(last) > 800:
+        last = "……" + last[-800:]
+    prev = f"你这个岗位上一棒最后的汇报：\n{last}" if last else "你这个岗位之前没交过活"
+    note = _say("通用/前情", 上一棒=prev, **state["base"])
+    return note if len(note) <= _PRIOR_LIMIT else note[:_PRIOR_LIMIT] + "……（前情太长，后面省略）"
+
+
 def _dispatch(ask_fn, cdir: Path, role: str, adapter: str, step: str, prompt: str,
               worktree, models, round_no: int, test_command=None):
     """派一次活：开始时记“派活”（含原文、预留实时输出），干完记“回复”（含全文、用时）。"""
@@ -1472,7 +1550,8 @@ def _dispatch(ask_fn, cdir: Path, role: str, adapter: str, step: str, prompt: st
                summary=f"{role}用的 {adapter}（{model_text}）连续 {counted} 次没回话，建议先{switch}；这次照样派给它。",
                say=f"{role}用的 {adapter}（{model_text}）已经连续 {counted} 次没回话被停下，"
                    f"建议先在团队设置{switch}再点“接着跑”；这次照样派给它。")
-    prompt = prompt + _no_plugins_note() + (_cursor_sandbox_note() if adapter == "cursor" else "") + attachment_prompt(cdir)
+    prompt = (prompt + _prior_note(cdir, role) + _no_plugins_note() + (_cursor_sandbox_note() if adapter == "cursor" else "")
+              + attachment_prompt(cdir))
     # 先拍快照，再给 Cursor 写临时放行设置（不然“看改动”里会多出一份删掉设置，复查中等 11）
     before_tree = _tree_snapshot(worktree) if step in _DIFF_STEPS else None
     restore = cursor_permissions(worktree, test_command) if adapter == "cursor" else None
@@ -1947,8 +2026,10 @@ def _not_card_data(worktree, cdir: Path, paths) -> list:
     return out
 
 
-def _restore_guard_non_tests(worktree, guard_dir: Path, before: dict, revert_fn) -> None:
+def _restore_guard_non_tests(worktree, guard_dir: Path, before: dict, revert_fn) -> list:
+    """把写测试的越界动过的非测试文件还原；返回还原了哪些（㉗：流转据此如实写，没有就不写“已还原越界改动”）。"""
     root = Path(worktree)
+    restored = []
     files_dir = guard_dir / "files"
     after = _not_card_data(worktree, guard_dir.parents[1],
                            _expand_to_files(worktree, [p for p in _changed_list(worktree) if not is_cache(p)]))
@@ -1957,6 +2038,7 @@ def _restore_guard_non_tests(worktree, guard_dir: Path, before: dict, revert_fn)
             continue
         if rel in before and _file_digest(root / rel) == before[rel]:
             continue  # 写代码的改过、它没再动（不在 before 里的都是它新动的，删掉也算，第 2 轮 B 第 1 条）
+        was = _file_digest(root / rel)
         dest = root / rel
         if rel in before and before[rel] is None:     # 写代码的删掉的，它又建回来：照旧删掉
             if dest.is_file() or dest.is_symlink():
@@ -1966,6 +2048,9 @@ def _restore_guard_non_tests(worktree, guard_dir: Path, before: dict, revert_fn)
             shutil.copy2(files_dir / rel, dest)
         else:                                          # 原来没动过的：恢复成提交时的样子
             revert_fn(worktree, [rel])
+        if _file_digest(root / rel) != was:   # 真变了才算还原了（复查第 2 轮 12：撤销没生效也记成已还原）
+            restored.append(rel)
+    return restored
 
 
 def _restore_guard_tests(cdir: Path, worktree, guard_dir: Path, manifest: dict, revert_fn) -> None:
@@ -2041,7 +2126,7 @@ def _tester_work(ask_fn, cdir: Path, adapter: str, worktree, models, round_no: i
 
     result = _dispatch(ask_fn, cdir, "测试员", adapter, step, prompt, worktree, models, round_no,
                        test_command=test_command)
-    _restore_guard_non_tests(worktree, guard_dir, before, revert_fn)
+    crossed = _restore_guard_non_tests(worktree, guard_dir, before, revert_fn)
     if not result.ok:
         _restore_guard_tests(cdir, worktree, guard_dir, manifest, revert_fn)
         shutil.rmtree(guard_dir, ignore_errors=True)
@@ -2052,10 +2137,136 @@ def _tester_work(ask_fn, cdir: Path, adapter: str, worktree, models, round_no: i
              if (root / p).is_file()]
     _save_test_files(cdir, tests)
     _snapshot_test_files(cdir, worktree, tests)
-    record(cdir, "测试收尾", src="程序", step=step, round=round_no,
-           summary=f"{step}收尾完成：已还原越界改动、登记测试、更新快照")
+    crossed_bit = f"还原了 {len(crossed)} 处越界改动（{'、'.join(crossed[:3])}{'等' if len(crossed) > 3 else ''}）、" if crossed else ""
+    record(cdir, "测试收尾", src="程序", step=step, round=round_no, crossed=crossed or None,
+           summary=f"{step}收尾完成：{crossed_bit}登记测试、更新快照")
     shutil.rmtree(guard_dir, ignore_errors=True)
     return (True, result) if with_result else True
+
+
+MAX_TEST_FILE_RETURNS = 2   # 报错全在测试文件里时交回写测试的最多几次（外部项目试跑 ⑫，2026-11-23 方案）
+NOT_TEST_PROBLEM = "不是测试的问题"   # 写测试的看下来是产品代码没写时回复里写这句，程序转回写代码的
+
+# 带位置的“编译/类型/语法”报错（不是断言失败的调用栈）：
+# tsc：a.ts(12,3): error TS…；tsc 美化 / esbuild / mypy：a.ts:12:3 - error …、a.ts:12:3: ERROR: …、a.py:9:1: error: …
+_LOC_ERROR = (re.compile(r"^\s*(?P<path>[^()\n]+?)\((?P<line>\d+),\d+\):\s*error\b(?P<rest>.*)$"),
+              re.compile(r"^\s*(?P<path>[^:()\n]+?):(?P<line>\d+)(?::\d+)?(?::|\s+-)\s*(?:error|ERROR)\b(?P<rest>.*)$"))
+_PY_SYNTAX_AT = re.compile(r'^\s*File "(?P<path>[^"]+)", line (?P<line>\d+)\s*$')
+_PY_SYNTAX = re.compile(r"^(SyntaxError|IndentationError|TabError)\b")
+_ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+# 产品模块缺导出、找不到模块：报在测试文件里，其实是写代码的没写（复查第 1 轮第 4 条）
+_TS_MISSING = re.compile(r"\bTS(2305|2307|2614|2694|2724)\b")
+# 还有用例没过（断言失败）：可能是产品的错，不转（复查第 1 轮第 4 条）
+_CASE_FAILED = re.compile(r"ℹ fail [1-9]|^\s*✖ |^FAIL: |^ERROR: (?!.*unittest\.loader\._FailedTest)|\b[1-9]\d* failed\b"
+                          r"|^not ok \d+", re.M)
+_TS_ANY = re.compile(r"\berror TS\d+")
+# Python 产品缺东西：导入失败、属性没有（加载器包一层的“Failed to import test module”不算）
+_PY_MISSING = re.compile(r"^(ImportError|ModuleNotFoundError|AttributeError): (?!Failed to import test module)", re.M)
+
+
+def _is_listed_test(path: str, tests: list) -> bool:
+    p = path.strip().replace("\\", "/")
+    p = p[2:] if p.startswith("./") else p
+    return any(p == t or p.endswith("/" + t) for t in tests)
+
+
+def _test_file_errors(output: str, tests: list) -> list:
+    """测试没过的输出里，带位置的编译、类型、语法报错**全部**落在本卡测试名单里的文件时，返回这些报错行；
+    一处在别的文件（产品代码）、还有用例没过（断言失败）、产品模块缺导出、有认不出位置的类型报错，都返回空。
+    宁可少认，不可把产品的错认成测试的错（外部项目试跑 ⑫、复查第 1 轮第 4 条）。"""
+    if not output or not tests:
+        return []
+    from collab.judge import _OUTPUT_LIMIT
+    if len(output) >= _OUTPUT_LIMIT:
+        return []   # 判定输出被截短过，前面的产品报错可能被截掉，不转（复查第 2 轮新问题 5）
+    text = _ANSI.sub("", output)
+    if _CASE_FAILED.search(text) or _PY_MISSING.search(text):
+        return []
+    lines = text.splitlines()
+    found = []
+    for i, line in enumerate(lines):
+        m = next((r.match(line) for r in _LOC_ERROR if r.match(line)), None)
+        if m is None:
+            py = _PY_SYNTAX_AT.match(line)
+            if py and any(_PY_SYNTAX.match(x.strip()) for x in lines[i + 1:i + 6]):
+                m = py
+        if m is None:
+            if _TS_ANY.search(line):
+                return []   # 有类型报错却认不出位置：不转
+            continue
+        if not _is_listed_test(m.group("path"), tests) or _TS_MISSING.search(line):
+            return []
+        found.append(line.strip())
+    return found
+
+
+def _scope_with_tests(allowed, tests) -> list:
+    """允许范围 + 本卡测试名单。测试文件名原样匹配，名字里的 [ ] * ? 不当通配符（复查第 1 轮第 10 条）。
+    只带方括号的名字范围检查本来就按原样认（㉕）；带 * ? 的才转义。"""
+    import glob as _glob
+    return list(allowed or []) + [_glob.escape(t) if any(c in t for c in "*?") else t for t in tests]
+
+
+def _undo_unfinished_tester_fix(cdir: Path, worktree, revert_fn) -> None:
+    """修测试报错时被停下：写测试的半成品（越界改的产品文件、没收尾的测试）先还原，再重跑（复查第 3 轮第 1 条）。"""
+    guard_dir = cdir / _GUARD_BACKUP_DIR / "修测试报错"
+    loaded = _load_guard_backup(guard_dir, _latest_review_seq(cdir))
+    if loaded is None:
+        return
+    before = {rel: loaded["before"][rel] for rel in _not_card_data(worktree, cdir, list(loaded["before"]))}
+    manifest = dict(loaded, before=before, old_tests=_not_card_data(worktree, cdir, loaded["old_tests"]))
+    _restore_guard_non_tests(worktree, guard_dir, before, revert_fn)
+    _restore_guard_tests(cdir, worktree, guard_dir, manifest, revert_fn)
+    shutil.rmtree(guard_dir, ignore_errors=True)
+
+
+def _resume_after_fail(events) -> bool:
+    """接着跑时要不要先重跑本卡测试：最后一次判定是“没过”，而且之后写代码的、复查员都没再交过活（外部项目试跑 ⑭，
+    复查第 1 轮第 2、6 条：之后测过了、复查员回过话的走老路；返工次数是 0 也算）。走查没过的不算（走查要整套重来）。"""
+    verdicts = [i for i, e in enumerate(events) if e.get("kind") == "判定" and e.get("result") in (PASS, FAIL)]
+    # 超时、环境出错不算结论：环境好了再接着跑，仍按之前的“没过”先重跑（复查第 2 轮第 6 条）
+    if not verdicts:
+        return False
+    i = verdicts[-1]
+    last = events[i]
+    if last.get("result") != FAIL or last.get("walk") or "老测试" in str(last.get("summary") or ""):
+        return False   # 卡在老测试上：本卡测试本来就过，重跑它没意义（复查第 3 轮）
+    return not any(e.get("kind") == "回复" and e.get("src") in ("开发员", "复查员") for e in events[i + 1:])
+
+
+def _test_file_returns(cdir: Path) -> int:
+    """这次开跑以来交回写测试的次数（之前开跑里修好的不占名额，复查第 2 轮新问题 2）。"""
+    events = read_flow(cdir)
+    marks = [i for i, e in enumerate(events) if e.get("kind") in ("开跑", "追加要求")]   # 跑着时确认的新要求也重新算
+    start = marks[-1] + 1 if marks else 0
+    back = sum(1 for e in events[start:] if e.get("kind") == "交回测试")
+    product = sum(1 for e in events[start:] if e.get("kind") == "接着走" and e.get("product"))   # 判为产品问题的不占名额
+    return max(0, back - product)
+
+
+def _return_test_errors(ask_fn, cdir: Path, adapter: str, errors: list, needs, worktree, models, round_no: int,
+                        test_command, revert_fn) -> tuple:
+    """报错全在测试文件里：交回写测试的只改测试。返回 ("改好", "") / ("不是测试", 原话) / ("没交成", "")。"""
+    count = _test_file_returns(cdir) + 1
+    record(cdir, "交回测试", src="程序", dst="测试员",
+           summary=f"测试没过，但报错全在测试文件自己身上（{len(errors)} 处），交回写测试的改"
+                   f"（第 {count} 次，最多 {MAX_TEST_FILE_RETURNS} 次）",
+           text="\n".join(errors))
+    prompt = _rules("写测试") + _say("写测试/测试文件报错", 卡片=needs, 报错="\n".join(errors),
+                                    不是测试=NOT_TEST_PROBLEM,
+                                    测试命令提示=_run_hint(test_command) if test_command else "")
+    ok, result = _tester_work(ask_fn, cdir, adapter, worktree, models, round_no, test_command, revert_fn,
+                              "修测试报错", prompt, with_result=True)
+    if not ok:
+        return "没交成", ""
+    said = reply_text(result)
+    first = next((ln.strip() for ln in said.splitlines() if ln.strip()), "")
+    if first.lstrip("*#> ").startswith(NOT_TEST_PROBLEM):   # 暗号只认第一行（复查第 3 轮第 2 条）
+        record(cdir, "接着走", src="程序", dst="开发员", product=True,
+               summary="写测试的看过：报错是因为产品代码还没写好，不是测试的问题，转回写代码的",
+               say="写测试的看过，说不是测试的问题，转回写代码的。")
+        return "不是测试", said.strip()
+    return "改好", ""
 
 
 def _tester_fix(ask_fn, cdir: Path, adapter: str, items: list, needs, worktree, models, round_no: int,
@@ -2377,6 +2588,174 @@ def _single_line_phen(problem: dict) -> str:
     return " ".join(str(problem.get("现象") or "").splitlines()).strip()
 
 
+_WALK_DIR = "走查截图"
+_WALK_MANIFEST = "走查.json"
+_WALK_OUTPUT = "命令输出.txt"
+
+
+def _walk_round_dir(cdir, rnd: int) -> Path:
+    return Path(cdir) / _WALK_DIR / f"第{rnd}次"
+
+
+def _next_walk_round(cdir) -> int:
+    """走查截图/ 下已有“第几次”文件夹里最大的数加 1；杂文件、杂目录不算，从不清空、不复用。"""
+    base = Path(cdir) / _WALK_DIR
+    biggest = 0
+    if base.is_dir():
+        for child in base.iterdir():
+            match = re.fullmatch(r"第(\d+)次", child.name)
+            if match and child.is_dir():
+                biggest = max(biggest, int(match.group(1)))
+    return biggest + 1
+
+
+def _walk_delivery_events(cdir) -> list:
+    """最近一次写代码交活之后的走查记录，按先后排好。"""
+    events = read_flow(cdir)
+    last_dev = max((i for i, e in enumerate(events)
+                    if e.get("kind") == "回复" and e.get("src") == "开发员" and e.get("ok") is True),
+                   default=-1)
+    if last_dev < 0:
+        return []
+    return [e for e in events[last_dev + 1:] if e.get("kind") == "页面检查" and e.get("walk")]
+
+
+def _walk_error_summary(output: str):
+    """命令输出最后一行是 WalkError: “某某”这一步… 时，用大白话说明走查卡在哪一步；不合格返回空。"""
+    lines = [line for line in str(output or "").splitlines() if line.strip()]
+    if not lines:
+        return ""
+    line = lines[-1].lstrip()
+    for prefix in ("walk_tool.WalkError:", "WalkError:"):
+        if line.startswith(prefix):
+            match = re.match(r"(?:走查在)?“([^”]*)”这一步", line[len(prefix):].strip())
+            if match:
+                name = match.group(1)
+                if (0 < len(name) <= 20 and re.search(r"[\u4e00-\u9fff]", name)
+                        and not re.search(r"[/\\\s“”]", name)):
+                    return f"走查没过：卡在“{name}”这一步"
+            break
+    return ""
+
+
+def _walk_reason(output: str) -> str:
+    """给写代码的看的原话：WalkError 后面那句，或输出最后一行不空的字（最多 200 字）。"""
+    lines = [line for line in str(output or "").splitlines() if line.strip()]
+    if not lines:
+        return ""
+    line = lines[-1].strip()
+    for prefix in ("walk_tool.WalkError:", "WalkError:"):
+        if line.startswith(prefix):
+            line = line[len(prefix):].strip()
+            break
+    return _clip_line(line, 200)
+
+
+def _walk_manifest_problem(folder: Path, worktree):
+    """检查走查.json；没问题返回 (空, 每一步的截图清单)。清单不对时返回给人看的大白话问题。"""
+    manifest = folder / _WALK_MANIFEST
+    if not manifest.is_file():
+        return "没留下截图", None
+    try:
+        items = json.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return "步骤清单写得不对", None
+    if not isinstance(items, list) or not items:
+        return "没留下截图", None
+    root = Path(worktree).resolve()
+    folder_root = folder.resolve()
+    shots = []
+    for index, item in enumerate(items, 1):
+        if not isinstance(item, dict):
+            return "步骤清单写得不对", None
+        step = item.get("步骤")
+        if not isinstance(step, str) or not step.strip():
+            return "步骤清单写得不对", None
+        shot = item.get("截图")
+        if (not isinstance(shot, str) or "/" in shot or "\\" in shot
+                or not shot.endswith(".png")):
+            return f"第 {index} 步的截图不对", None
+        shot_file = folder / shot
+        try:
+            shot_real = shot_file.resolve()
+        except OSError:
+            return f"第 {index} 步的截图不对", None
+        if not shot_real.is_file() or folder_root not in shot_real.parents:
+            return f"第 {index} 步的截图不对", None
+        design = item.get("设计图", "")
+        if design is None:
+            design = ""
+        if not isinstance(design, str):
+            return f"第 {index} 步的设计图不在项目里", None
+        design = design.strip()
+        if design:
+            design_path = Path(design)
+            if design_path.is_absolute() or ".." in design_path.parts or not design.endswith(".png"):
+                return f"第 {index} 步的设计图不在项目里", None
+            try:
+                design_real = (root / design_path).resolve()
+            except OSError:
+                return f"第 {index} 步的设计图不在项目里", None
+            if root not in design_real.parents or not design_real.is_file():
+                return f"第 {index} 步的设计图不在项目里", None
+        shots.append({"步骤": step, "截图": f"{_WALK_DIR}/第{folder.name[1:-1]}次/{shot}", "设计图": design})
+    return "", shots
+
+
+def _write_walk_log(cdir, rnd: int, result: str, summary: str, shots) -> None:
+    lines = [f"\n## 第 {rnd} 次走查\n结论：{result}\n{summary}\n"]
+    if result == PASS:
+        for index, shot in enumerate(shots or [], 1):
+            lines.append(f"- 第 {index} 步 {shot['步骤']}：截图 {Path(shot['截图']).name}；"
+                         f"设计图 {shot['设计图'] or '无'}\n")
+    _append(Path(cdir) / "页面检查结果.md", "".join(lines))
+
+
+def _run_walk(cdir, worktree, walk_command, judge_fn, rnd: int) -> dict:
+    """给这次走查新建文件夹、跑命令、读步骤清单；返回结果、摘要、原话和截图。"""
+    folder = _walk_round_dir(cdir, rnd)
+    folder.mkdir(parents=True, exist_ok=True)
+    command = ["/usr/bin/env", f"WALK_SHOTS_DIR={folder}", *[str(part) for part in walk_command]]
+    verdict = judge_fn(command, cwd=worktree, timeout=_TEST_TIMEOUT)
+    output = str(verdict.output or "")
+    (folder / _WALK_OUTPUT).write_text("（只留了末尾部分）\n" + output[-4000:], encoding="utf-8")
+    rel = f"{_WALK_DIR}/第{rnd}次"
+    if verdict.result == TIMEOUT:
+        return {"result": TIMEOUT, "returncode": verdict.returncode, "output": output,
+                "summary": "走查没过：超时没跑完", "reason": "", "shots": [], "folder": rel, "round": rnd}
+    if verdict.result == ENV_ERROR:
+        return {"result": ENV_ERROR, "returncode": verdict.returncode, "output": output,
+                "summary": "走查没跑起来：环境出错（不是代码的问题）", "reason": "", "shots": [], "folder": rel,
+                "round": rnd}
+    if verdict.result != PASS:
+        reason = _walk_reason(output)
+        return {"result": FAIL, "returncode": verdict.returncode, "output": output,
+                "summary": _walk_error_summary(output) or "走查没过：命令报错（详情在交接里）",
+                "reason": reason, "shots": [], "folder": rel, "round": rnd}
+    problem, shots = _walk_manifest_problem(folder, worktree)
+    if problem:
+        return {"result": FAIL, "returncode": verdict.returncode, "output": output,
+                "summary": f"走查没过：{problem}", "reason": problem, "shots": [], "folder": rel, "round": rnd}
+    return {"result": PASS, "returncode": verdict.returncode, "output": output,
+            "summary": f"走查过了，截了 {len(shots)} 张图", "reason": "", "shots": shots, "folder": rel,
+            "round": rnd}
+
+
+def _record_walk(cdir, info: dict):
+    rnd = info["round"]
+    _write_walk_log(cdir, rnd, info["result"], info["summary"], info["shots"])
+    return record(cdir, "页面检查", src="程序", dst="" if info["result"] == PASS else "开发员",
+                  result=info["result"], round=rnd, summary=info["summary"], walk=True,
+                  folder=info["folder"], reason=info["reason"], shots=info["shots"])
+
+
+def _walk_fail_note(cdir, event: dict) -> str:
+    reason = str(event.get("reason") or "").strip()
+    folder = str(event.get("folder") or "").strip()
+    where = Path(cdir) / folder / _WALK_OUTPUT if folder else Path(cdir) / _WALK_OUTPUT
+    return f"走查没过的原因：{reason}；命令输出在 {where}"
+
+
 def _review_prompt(cdir: Path, needs, plan_hint: str, run_hint: str, worktree, later_round: bool) -> str:
     """每一轮复查的交代：首行结论 + 末尾固定清单；老测试变动和新跳过每轮都提醒。"""
     changed = _old_tests_changed_note(cdir, worktree)
@@ -2387,11 +2766,22 @@ def _review_prompt(cdir: Path, needs, plan_hint: str, run_hint: str, worktree, l
     if prev_items:
         listed = "\n".join(f"{i}. {_single_line_phen(p)}" for i, p in enumerate(prev_items, 1))
         check_back_note = _say("复查/上轮核对", 列表=listed)
+    walk_events = _walk_delivery_events(cdir)
+    walk_note = ""
+    if walk_events and walk_events[-1].get("result") == PASS:
+        steps = []
+        for index, shot in enumerate(walk_events[-1].get("shots") or [], 1):
+            shot_path = Path(cdir) / str(shot.get("截图") or "")
+            design = str(shot.get("设计图") or "").strip()
+            design_path = str((Path(worktree) / design).resolve()) if design else "无"
+            steps.append(f"第 {index} 步 {shot.get('步骤')}：截图 {shot_path}；设计图 {design_path}")
+        walk_note = _say("复查/走查截图", 步骤="\n".join(steps))
     return _rules("复查") + _say(
         "复查/每轮复查", 卡片=needs, 施工单提示=plan_hint, 测试命令提示=run_hint,
         测试员文件=_tester_files_hint(cdir), 老测试变动=changed, 新加跳过=skips, 测试的问题=TEST_PROBLEM,
         分清这次改的=_say("复查/分清这次改的", 这次改的=_NOW_TAG, 原来就有的=_OLD_TAG),
-        退回后=_say("复查/退回后只看改动") if later_round else "", 上轮核对=check_back_note)
+        退回后=_say("复查/退回后只看改动") if later_round else "", 上轮核对=check_back_note
+    ) + (("\n\n" + walk_note) if walk_note else "")
 
 
 def _reformat_prompt(cdir: Path, original: str, errors: list, needs, worktree) -> str:
@@ -2583,8 +2973,9 @@ def _lower_effort(models):
 
 
 def _prior_reviews(cdir: Path) -> int:
-    """这张卡之前有过几次复查结论（不管通过不通过）。"""
-    return sum(1 for e in read_flow(cdir) if e.get("kind") == "复查结论")
+    """这次开工（最后一条追加要求之后）有过几次复查结论（不管通过不通过）。
+    追加要求后第一次复查按第 1 轮：强度不降、不只看改动，和退回次数、上轮核对同一口径（外部项目观察 ㉚）。"""
+    return sum(1 for e in _after_revise(read_flow(cdir)) if e.get("kind") == "复查结论")
 
 
 def _closed_replies(cdir: Path) -> set:
@@ -2709,7 +3100,7 @@ def _top_effort(models, adapter: str) -> str:
     return best
 
 
-def _draft_revise(ask_fn, cdir: Path, adapter: str, models, worktree, needs, changed_fn, round_no) -> None:
+def _draft_revise(ask_fn, cdir: Path, adapter: str, models, worktree, needs, changed_fn, round_no, rule: str = "") -> None:
     """复查退回用完停下后（第四轮 56 甲）：调度员用复查员那家工具、最高强度、只读，把这次开工以来的几轮复查
     合起来找共同原因，写好“继续改”的话，预先填进继续改框；用户看一眼再发。起草不成只记一笔，不影响停下。"""
     rounds = []
@@ -2730,12 +3121,18 @@ def _draft_revise(ask_fn, cdir: Path, adapter: str, models, worktree, needs, cha
         files = [p for p in changed_fn(worktree) if not is_cache(p)]
     except Exception:  # noqa: BLE001
         files = []
+    what = "规则选项" if rule else "“继续改”的话"
     record(cdir, "起草", src="程序", dst="你", phase="开始",
-           summary="正在替你起草“继续改”的话",
-           say="我正在替你起草“继续改”的话（把这几轮复查合起来找共同原因），约 3–5 分钟，好了告诉你。")
+           summary=f"正在替你起草{what}",
+           say=(f"我正在替你拟 2～3 个规则选项（“{rule}”），约 3–5 分钟，好了告诉你。" if rule else
+                "我正在替你起草“继续改”的话（把这几轮复查合起来找共同原因），约 3–5 分钟，好了告诉你。"))
     body = "\n\n".join(_say("起草交代/第几次复查", 次=i + 1, 内容=t) for i, t in enumerate(rounds))
-    prompt = _rules("起草交代") + _say("起草交代/继续改", 卡片=needs,
-                                      文件="、".join(files) or _say("起草交代/看不出"), 复查结论=body)
+    if rule:   # 第三批 ⑱：要求没写清，先拟规则选项让人挑，挑好的那条就是“继续改”的话
+        prompt = _rules("起草交代") + _say("起草交代/规则选项", 卡片=needs, 规则=rule,
+                                          文件="、".join(files) or _say("起草交代/看不出"), 复查结论=body)
+    else:
+        prompt = _rules("起草交代") + _say("起草交代/继续改", 卡片=needs,
+                                          文件="、".join(files) or _say("起草交代/看不出"), 复查结论=body)
     if adapter not in ("codex", "qwen", "tencent"):
         adapter = "codex"   # Cursor、agy 没有按次只读的开关：起草改用 Codex（复查第 2 轮）
     effort = dict(models or {}, codex_effort=_top_effort(models, adapter), codex_sandbox="read-only")
@@ -2745,18 +3142,26 @@ def _draft_revise(ask_fn, cdir: Path, adapter: str, models, worktree, needs, cha
     except Exception:  # noqa: BLE001 — 起草失败不影响停下
         result, text = None, ""
     if result is not None and result.ok and text:
-        record(cdir, "起草", src="程序", dst="你", phase="好了", summary="“继续改”的话起草好了",
-               say="“继续改”的话起草好了：点“不满意，继续改”，框里已经填好，看一眼说得通就发；不对可以改了再发。",
+        record(cdir, "起草", src="程序", dst="你", phase="好了", summary=f"{what}起草好了",
+               say=("规则选项拟好了：点“不满意，继续改”，框里已经填好几个选项，删掉不要的、留下一个（或自己写一句）再发。"
+                    if rule else
+                    "“继续改”的话起草好了：点“不满意，继续改”，框里已经填好，看一眼说得通就发；不对可以改了再发。"),
                text=text)
     else:
-        record(cdir, "起草", src="程序", dst="你", phase="没成", summary="“继续改”的话没起草成",
-               say="“继续改”的话没起草成，只能请你自己写，或者等 Claude 来看。")
+        record(cdir, "起草", src="程序", dst="你", phase="没成", summary=f"{what}没起草成",
+               say=f"{what}没起草成，只能请你自己写，或者等 Claude 来看。")
 
 
 def _zero_tests_ran(output: str) -> bool:
     """全部测试末尾汇总显示实际只跑了 0 项（例如只有一个空测试文件），不能当通过放行。"""
-    counts = re.findall(r"^\s*Ran (\d+) tests?\b", output or "", re.M)
-    return bool(counts) and int(counts[-1]) == 0
+    text = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", output or "")   # 去掉颜色码再认（确认复查）
+    counts = re.findall(r"^\s*Ran (\d+) tests?\b", text, re.M)
+    if counts:
+        return int(counts[-1]) == 0
+    node = re.findall(r"^\s*(?:ℹ|#) tests (\d+)\s*$", text, re.M)   # node --test / tsx --test 的汇总（复查第 3 轮新 3）
+    if node:
+        return int(node[-1]) == 0
+    return bool(re.search(r"^=+ no tests ran\b|^collected 0 items\b", text, re.M | re.I))   # pytest
 
 
 class _FullSlot:
@@ -2777,19 +3182,22 @@ class _FullSlot:
         from collab import fullrun
         if self.runner is None or self.thread is not None:
             return
-        if not fullrun.applicable(self.worktree):
+        check = getattr(self.runner, "applicable", None)
+        if not (check(self.worktree) if callable(check) else fullrun.applicable(self.worktree)):
             self.last_actual = None
             if not self.skipped:
                 self.skipped = True
                 record(self.cdir, "全量", src="程序", phase="跳过",
-                       summary="不是 Python 项目（没有 tests/test_*.py），全量测试跳过，最后靠人看")
+                       summary="这个项目没配全部测试命令（也不是 Python 项目），全部测试跳过，没有兜底，最后靠人看")
             return
         self.skipped = False
         self.event = threading.Event()
         self.result = None
         self.last_actual = None
+        command = getattr(self.runner, "command", "")
         record(self.cdir, "全量", src="程序", phase="开始",
-               summary="复查的同时，程序在一份副本里跑全部测试（真 AI 工具藏起来），看有没有改坏老功能")
+               summary=(f"复查的同时，程序在一份副本里跑项目配的全部测试命令：{command}" if command else
+                        "复查的同时，程序在一份副本里跑全部测试（真 AI 工具藏起来），看有没有改坏老功能"))
 
         def work():
             try:
@@ -2832,6 +3240,8 @@ class _FullSlot:
             record(self.cdir, "全量", src="程序", phase="结果", result=now.result,
                    summary=f"全部测试{what}", text=now.output[-20000:])
             return now, f"全部测试{what}，需要你看看"
+        if getattr(self.runner, "command", ""):
+            return self._finish_command(now, judge_round)
         files = fullrun.failing_files(now.output, self.worktree)
         listed = sum(len(v) for v in files.values())
         total = fullrun.summary_count(now.output)
@@ -2890,6 +3300,30 @@ class _FullSlot:
                        f"本卡测试过了，但全部测试里这些老测试没过，改之前它们是过的（这次改动把原来的功能改坏了，"
                        f"要改代码让它们也过，不要改老测试；跑法：python3 -m unittest discover -s tests -p 文件名）：\n"
                        f"{listing}\n\n{_short_test_note(self.cdir, now.output)}"), ""
+
+    def _finish_command(self, now, judge_round: int):
+        """项目配的全部测试命令没过（第三批 ⑯）：认不出是哪一项，就在改之前的版本上再跑一次整条命令比。
+        改之前过 → 这次改坏了，退回写代码的并附输出；改之前也不过 → 不算写代码的错，停下；改之前跑不成 → 停下。"""
+        command = self.runner.command
+        before = self.runner.base_all(self.worktree, self.event)
+        tail = (now.output or "")[-6000:]
+        if before.result == FAIL:
+            record(self.cdir, "全量", src="程序", phase="结果", result=FAIL,
+                   summary=f"全部测试没过，改之前也不过（项目的全部测试本来就不过），比不出这次有没有改坏：{command}",
+                   text=tail)
+            return now, "项目的全部测试本来就不过（改之前就不过），先把它修好再用这一关，需要你看看"
+        if before.result != PASS:
+            record(self.cdir, "全量", src="程序", phase="结果", result=FAIL,
+                   summary="全部测试没过，但改之前的版本没跑成，比不出是不是这次改坏的", text=tail)
+            return now, "全部测试没过，但改之前的版本没跑成、比不出来，需要你看看"
+        record(self.cdir, "全量", src="程序", phase="结果", result=FAIL,
+               summary=f"全部测试没过，改之前是过的（这次改坏了老功能）：{command}", text=now.output)
+        record(self.cdir, "判定", src="程序", dst="开发员", result=FAIL, round=judge_round,
+               summary=f"第 {judge_round} 轮：复查过了，但项目的全部测试没过，改之前是过的", text=now.output)
+        _append(self.cdir / "测试结果.md", f"\n## 全部测试（{command}）\n结论：{now.result}\n\n{now.output}\n")
+        return Verdict(FAIL, now.returncode,
+                       f"本卡测试过了，但项目的全部测试没过，改之前它是过的（这次改动把原来的功能改坏了，"
+                       f"要改代码让它也过，不要改老测试）。全部测试命令：{command}\n没过的那段输出（末尾）：\n{tail}"), ""
 
 
 _SUMMARY_LIMIT = 4000
@@ -3119,7 +3553,7 @@ def run_card(card: Card, collab_dir, worktree, test_command, dev_adapter, test_a
              ask_fn=default_ask, judge_fn=default_judge, models=None,
              allowed=None, changed_fn=None, page_command=None, reviewer_adapter=None,
              revert_fn=None, require_tests=False, role_models=None, handover=None, full_runner=None,
-             draft=False, progress=False, red_check=False):
+             draft=False, progress=False, red_check=False, walk_command=None):
     """交接资料（第二轮 ㉚）：调度员在后台和写测试的同时备；不管施工怎么结束（交活、卡住、出错、被停），
     都在这里收尾——还没备完就停掉它，不留下后台的工具进程（复查 B 第 5 条、C 第 1 条）。"""
     import threading
@@ -3149,13 +3583,17 @@ def run_card(card: Card, collab_dir, worktree, test_command, dev_adapter, test_a
                                          args=(ask_fn, cdir, handover[0], handover[1], cdir / "需求卡.md", worktree))
             notes_job.start()
     full = _FullSlot(full_runner, worktree, cdir)
+    story = _prior_story(cdir, worktree)
+    if story is not None:
+        _PRIOR[str(cdir)] = {"base": story, "told": set()}
     if progress:
         _PROGRESS_ON.add(str(cdir))   # 写测试、写代码时右栏的进度（第四轮 53）
     try:
         return _run_card(card, collab_dir, worktree, test_command, dev_adapter, test_adapter, ask_fn, judge_fn,
                          models, allowed, changed_fn, page_command, reviewer_adapter, revert_fn, require_tests,
-                         role_models, notes_job, full, draft, red_check)
+                         role_models, notes_job, full, draft, red_check, walk_command)
     finally:
+        _PRIOR.pop(str(cdir), None)   # 放最前：后面收尾出错也不残留（复查第 1 轮第 11 条）
         full.stop()
         _PROGRESS_ON.discard(str(cdir))
         if notes_job is not None and notes_job.is_alive():
@@ -3239,9 +3677,115 @@ def _plain_summary_items(back_problems: list) -> tuple:
     return issues, hidden, severe_hidden, count
 
 
+_CODE_EXT = ("ts", "tsx", "js", "jsx", "mjs", "cjs", "py", "md", "json", "css", "scss", "html", "sql", "yml", "yaml",
+             "toml", "swift", "go", "rs", "java", "kt", "rb", "php", "vue", "svelte", "sh", "txt", "csv", "mdx", "lock")
+_PROBLEM_PATH = re.compile(
+    r"(?<![\w./\[\]-])((?:\./)?[\w@-]*(?:[\w@.\-]|\[[\w.\-]+\])*(?:/(?:[\w@.\-]|\[[\w.\-]+\]|\([\w.\-]+\))+)*"
+    rf"\.(?:{'|'.join(_CODE_EXT)}))(?![\w])")   # 只认常见代码文件后缀：/api/v1.usage 这类接口地址不算文件（复查第 2 轮 B5）
+
+
+def _pending_revert_note(cdir: Path) -> str:
+    """续跑时找回“范围外改动被撤”的提醒：最后一次撤销之后还没派过写代码的，就要带上（复查第 2 轮 8）。"""
+    events = read_flow(cdir)
+    last = next((e for e in reversed(events) if e.get("kind") == "范围" and e.get("reverted")), None)
+    if last is None:
+        return ""
+    seq = int(last.get("seq") or 0)
+    if any(e.get("kind") == "回复" and e.get("src") == "开发员" and e.get("ok") is True
+           and int(e.get("seq") or 0) > seq for e in events):
+        return ""   # 写代码的正常回过话才算提醒送到了（被停掉、报错的回复不算，收尾确认复查）
+    return _say("写代码/范围外改动被撤", 文件="、".join(str(f) for f in last["reverted"]))
+
+
+def _review_scope(allowed, cdir: Path):
+    """复查退回时拿来比对的允许范围：任务卡写的范围加上登记过的测试文件；没写范围就不比。"""
+    return _scope_with_tests(allowed, _load_test_files(cdir)) if allowed is not None else None
+
+
+def _outside_scope_problems(back_problems: list, allowed) -> list:
+    """复查退回的产品问题里，要改的文件全落在“允许改动的范围”外的那几条：[(现象, [文件…])]。
+    位置写不出文件名的不算（拿不准就照常退回）；测试写错的归测试员，不在这里管（外部项目观察 ㊲）。"""
+    if allowed is None:
+        return []
+    out = []
+    for problem in back_problems or []:
+        if not isinstance(problem, dict) or problem.get("类型") == "测试写错":
+            continue
+        where = re.sub(r"(?<![/\w])\[", " ", str(problem.get("位置") or ""))   # “[src/a.ts:12]”开头的方括号不是路径一部分
+        files = list(dict.fromkeys(m.group(1).removeprefix("./") for m in _PROBLEM_PATH.finditer(where)))
+        rest = _PROBLEM_PATH.sub(" ", where)
+        if re.search(r"[\w@.\-\]]/", rest):
+            continue   # 还写了认不出的目录或路径（如 “src/”）：拿不准，照常退回（复查第 2 轮 6）
+        if files and len(out_of_scope(files, allowed)) == len(files):
+            out.append((_single_line_phen(problem), files))
+    return out
+
+
+_RULE_ROOT = "要求没写清"
+_WRONG_ROOT = "做错了"
+
+
+def _root(problem) -> str:
+    value = str((problem or {}).get("病根") or "").strip()
+    return value if value in (_RULE_ROOT, _WRONG_ROOT) else ""
+
+
+def _same_index(problem, prev_count: int):
+    value = (problem or {}).get("同根")
+    if isinstance(value, str) and re.fullmatch(r"[0-9]{1,3}", value.strip()):   # 只认阿拉伯数字（复查第 2 轮 4：“①”会让 int() 报错）
+        value = int(value.strip())
+    if isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= prev_count:
+        return value
+    return None
+
+
+def _same_root_decision(cdir: Path, data: dict, back_problems: list):
+    """第三批 ⑱（参考 pstack“补丁反复出现就重新设计”）：这一轮和上一轮退回的问题是不是同一个病根。
+    返回 None，或 ("rule", 规则, 上一轮那条, 这一轮那条)：连续两轮“要求没写清”且同根，停下定规则；
+    或 ("redo", 上一轮那条, 这一轮那条)：连续两轮“做错了”且同根（含上一轮那条“没改好”），换备份写代码的。
+    只看会退回的问题；病根没填的不算（照现在的规矩退回）。"""
+    rejects = [e for e in _after_revise(read_flow(cdir)) if e.get("kind") == "复查结论" and e.get("result") == "退回"]
+    if len(rejects) < 2:
+        return None
+    prev = _conclusion_back_problems(rejects[-2])
+    if not prev:
+        return None
+    unfixed = set()
+    for entry in (data or {}).get("上轮核对") or []:
+        if isinstance(entry, dict) and entry.get("结果") == "没改好" and isinstance(entry.get("编号"), int):
+            unfixed.add(entry["编号"])
+    pairs = []
+    for idx in sorted(unfixed):
+        if 1 <= idx <= len(prev) and _root(prev[idx - 1]):
+            pairs.append((prev[idx - 1], prev[idx - 1]))
+    for p in back_problems or []:
+        if any(p is q for q in prev):
+            continue   # 上一轮那条原样留下的（没改好）上面已算过；新写的哪怕现象、位置一样也照“同根”算（复查第 1 轮 9）
+        k = _same_index(p, len(prev))
+        if k and _root(p) and _root(p) == _root(prev[k - 1]):
+            pairs.append((prev[k - 1], p))
+    for before, now in pairs:
+        if _root(before) == _RULE_ROOT:
+            rule = str(now.get("规则") or before.get("规则") or "").strip() or _single_line_phen(before)
+            return ("rule", rule, before, now)
+    for before, now in pairs:
+        if _root(before) == _WRONG_ROOT:
+            return ("redo", before, now)
+    return None
+
+
+def _switched_dev(cdir: Path) -> str:
+    """这张卡已经换成备份写代码的了吗（换了就一直用它）。"""
+    for e in reversed(read_flow(cdir)):
+        if e.get("kind") == "换写代码的" and e.get("to"):
+            return str(e["to"])
+    return ""
+
+
 def _handle_review_reject(collab: Path, cdir: Path, card: Card, *, ask_fn, reviewer_adapter: str, by_role: dict,
                           models, worktree, needs, changed_fn, draft: bool, rnd: int,
-                          data: dict, back_problems: list, review_text: str) -> tuple:
+                          data: dict, back_problems: list, review_text: str, allowed=None,
+                          dev_adapter: str = "") -> tuple:
     """复查不通过时的统一收口：先检查是否已超过自动退回上限，超限停下转人工，未超限记“退回”。
     正常流程与中断续跑共用这一处判断，避免续跑绕过两次上限。返回 (是否已转人工停下, 退回次数)。"""
     rejects = _review_rejects(cdir)
@@ -3255,6 +3799,45 @@ def _handle_review_reject(collab: Path, cdir: Path, card: Card, *, ask_fn, revie
     if back_problems:
         extra["退回问题"] = back_problems
     who = reviewer_adapter or "复查员"
+    outside = _outside_scope_problems(back_problems, allowed)
+    if outside:
+        # 要改的文件不在允许范围：退给写代码的只会改了被撤、测试必不过、空转到返工用完（train CARD-005，㊲）
+        files = list(dict.fromkeys(f for _, fs in outside for f in fs))
+        say = (f"复查退回的问题里有 {len(outside)} 件要改的文件不在“允许改动的范围”里（{'、'.join(files)}），"
+               f"写代码的改了也会被程序撤掉：{'；'.join(ph for ph, _ in outside)}。"
+               "请把这些文件加进任务卡的允许范围再点“接着跑”；或认定不归本卡，点“接受剩下的问题”"
+               "（先跑一遍全部测试，过了进待确认，这件记进以后再修）。")  # 复查第 3 轮 B2、收尾确认复查 B
+        record(cdir, "转人工", src="程序", dst="调度员", cause="要改的文件不在允许范围", text=review_text, say=say,
+               files=files, **extra, summary=f"复查要改的文件不在允许范围：{'、'.join(files)}")
+        card.transition("需Claude介入")
+        _save(collab, card)
+        return True, rejects
+    decision = _same_root_decision(cdir, data, back_problems)
+    if decision and decision[0] == "rule":
+        _, rule, before, now = decision
+        same = now is before
+        say = (f"复查连续两轮退回的问题是同一个根子：施工单没定这条规则——“{rule}”。"
+               f"上一轮退的是：{_single_line_phen(before)}"
+               + ("（这一轮还是没改好）" if same else f"；这一轮退的是：{_single_line_phen(now)}")
+               + "。写代码的只能一处处补，再退回也会冒出新的一处。请先把这条规则定清楚"
+                 "（纯技术规则由写施工单的人定，影响用户体验的交给用户），再点“不满意，继续改”写进去。")
+        record(cdir, "转人工", src="程序", dst="调度员", cause="需要定规则", text=review_text, say=say,
+               rule=rule, **extra, summary=f"需要定规则：{rule}")
+        card.transition("需Claude介入")
+        _save(collab, card)
+        if draft:
+            _draft_revise(ask_fn, cdir, who, by_role.get("复查员", models), worktree, needs, changed_fn, rnd,
+                          rule=rule)
+        return True, rejects
+    if decision and decision[0] == "redo" and dev_adapter and not _switched_dev(cdir):
+        from collab.config import load_backup_dev
+        backup = load_backup_dev(collab.parent)
+        if backup != dev_adapter:
+            _, before, now = decision
+            record(cdir, "换写代码的", src="程序", dst="开发员", to=backup, frm=dev_adapter,
+                   summary=f"换成 {backup}（{dev_adapter} 同一处连续两次没改对）",
+                   say=f"写代码的（{dev_adapter}）同一处连续两次没改对（{_single_line_phen(before)}），"
+                       f"下一次换成备份 {backup} 来改，这张卡后面都用它。")
     if rejects > MAX_REVIEW_RETURNS and not (test_items and not tried_tests):
         left = (f"复查还剩 {count} 件事：{_issues_words(issues)}{more}。" if issues
                 else "复查员没按格式写剩下的问题，原话在右边“交接”里。")
@@ -3292,7 +3875,7 @@ def _handle_review_reject(collab: Path, cdir: Path, card: Card, *, ask_fn, revie
 
 def _run_card(card, collab_dir, worktree, test_command, dev_adapter, test_adapter, ask_fn, judge_fn, models,
               allowed, changed_fn, page_command, reviewer_adapter, revert_fn, require_tests, role_models,
-              notes_job, full=None, draft=False, red_check=False):
+              notes_job, full=None, draft=False, red_check=False, walk_command=None):
     """role_models：{测试员|开发员|复查员: 模型设置}，每个岗位用自己的模型和强度（流程修理 ①）；没给的岗位用 models。"""
     by_role = role_models or {}
     collab = Path(collab_dir)
@@ -3402,7 +3985,7 @@ def _run_card(card, collab_dir, worktree, test_command, dev_adapter, test_adapte
     if require_tests and not tester_files:
         _escalate(collab, cdir, card, "本卡已经没有测试文件了，不能交给写代码的，需要把关的人看")
         return card, None
-    effective_allowed = list(allowed) + tester_files if allowed is not None else None
+    effective_allowed = _scope_with_tests(allowed, tester_files) if allowed is not None else None
 
     # 第二步：开发员照着测试写代码，直到测试通过
     dev_prompt = _rules("写代码") + _say(
@@ -3413,7 +3996,41 @@ def _run_card(card, collab_dir, worktree, test_command, dev_adapter, test_adapte
     if past_fails and card.rework > 0:
         last_output = text_of(cdir, past_fails[-1])
         last_output_file = _log_file(past_fails[-1].get("kind"))
+        if past_fails[-1].get("walk"):
+            last_output_file = f"{past_fails[-1].get('folder') or ''}/{_WALK_OUTPUT}".lstrip("/")
         dev_prompt = _dev_retry_prompt(cdir, needs, last_output, last_output_file, revise_bit, plan_hint, run_hint)
+        if past_fails[-1].get("walk"):
+            dev_prompt += "\n\n" + _walk_fail_note(cdir, past_fails[-1])
+    resume_skip_dev = False
+    if not force_after_review_reject and _resume_after_fail(past):
+        # 停在“测试没过”后接着跑：中间可能有人接手改过，先重跑一次，不拿停卡前的旧报错派活（外部项目试跑 ⑭）。
+        # 这次结果只用来决定派不派写代码的；真正放行仍在循环里撤越界、还原测试快照之后再判定（复查第 1 轮第 1 条）
+        _undo_unfinished_tester_fix(cdir, worktree, revert_fn)
+        again = judge_fn(test_command, cwd=worktree, timeout=_TEST_TIMEOUT)
+        if again.result in (ENV_ERROR, TIMEOUT):
+            record(cdir, "判定", src="程序", dst="", result=again.result, round=card.rework + 1,
+                   returncode=again.returncode, summary=f"接着跑前先重跑本卡测试：{_VERDICT_SUMMARY[again.result]}",
+                   text=again.output)
+            _escalate(collab, cdir, card, f"接着跑前重跑本卡测试：{_VERDICT_SUMMARY[again.result]}，需要你看看")
+            return card, again
+        if again.result == PASS:
+            resume_skip_dev = True
+            record(cdir, "接着走", src="程序", dst="",
+                   summary="接着跑：先重跑了本卡测试，已经过了，不再派写代码的",
+                   say="接着跑前先重跑了本卡测试，已经过了，直接往下走（复查）。")
+        else:
+            _append(cdir / "测试结果.md",
+                    f"\n## 接着跑前重跑\n结论：{again.result}\n退出码：{again.returncode}\n\n{again.output}\n")
+            record(cdir, "判定", src="程序", dst="开发员", result=again.result, round=card.rework + 1,
+                   returncode=again.returncode,
+                   summary=f"接着跑前先重跑本卡测试：{_VERDICT_SUMMARY.get(again.result, again.result)}，用这次的报错",
+                   text=again.output)
+            if test_adapter and _test_file_errors(again.output, _load_test_files(cdir)):
+                resume_skip_dev = True   # 报错全在测试文件里：循环里判定后先交回写测试的（复查第 1 轮第 6 条）
+            else:
+                last_output = again.output
+                dev_prompt = _dev_retry_prompt(cdir, needs, again.output, _log_file("判定"), revise_bit, plan_hint,
+                                               run_hint)
     if force_after_review_reject:
         # 补测阶段被中断后再接着跑：先核对上次复查退回有没有走完上限判断，再核对补测有没有交成
         review_file = cdir / "复查结果.md"
@@ -3426,6 +4043,32 @@ def _run_card(card, collab_dir, worktree, test_command, dev_adapter, test_adapte
             return card, None
         if latest_conc is not None and latest_conc.get("result") == "退回":
             conc_seq = int(latest_conc.get("seq") or 0)
+            scope_stop = next((e for e in reversed(past) if e.get("kind") == "转人工"
+                               and e.get("cause") == "要改的文件不在允许范围" and int(e.get("seq") or 0) > conc_seq), None)
+            if scope_stop is not None:
+                # 因“要改的文件不在允许范围”停的卡：接着跑前再看一次，范围没扩、也没改判就照样停（复查第 2 轮 7）
+                still = _outside_scope_problems(_conclusion_back_problems(latest_conc), _review_scope(allowed, cdir))
+                if still:
+                    files = list(dict.fromkeys(f for _, fs in still for f in fs))
+                    record(cdir, "转人工", src="程序", dst="调度员", cause="要改的文件不在允许范围", files=files,
+                           say=(f"范围还没扩：{'、'.join(files)} 仍不在任务卡的允许范围。"
+                                "加进允许范围再点“接着跑”；或认定不归本卡，点“接受剩下的问题”。"),
+                           退回问题=_conclusion_back_problems(latest_conc),
+                           summary=f"范围还没扩：{'、'.join(files)} 仍不在允许范围，先加进允许范围再接着跑，或点“接受剩下的问题”")
+                    card.transition("需Claude介入")
+                    _save(collab, card)
+                    return card, None
+            rule_stop = next((e for e in reversed(past) if e.get("kind") == "转人工"
+                              and e.get("cause") == "需要定规则" and int(e.get("seq") or 0) > conc_seq), None)
+            if rule_stop is not None:
+                # 停在“需要定规则”：规则没用“继续改”写进来就点接着跑，照样停（第三批复查第 1 轮 8、确认复查）
+                record(cdir, "转人工", src="程序", dst="调度员", cause="需要定规则", rule=rule_stop.get("rule"),
+                       say=f"规则还没定：“{rule_stop.get('rule') or ''}”。请点“不满意，继续改”把规则写进去，再接着做。",
+                       退回问题=_conclusion_back_problems(latest_conc),
+                       summary=f"规则还没定：{rule_stop.get('rule') or ''}")
+                card.transition("需Claude介入")
+                _save(collab, card)
+                return card, None
             if not any(int(e.get("seq") or 0) > conc_seq and e.get("kind") in ("退回", "转人工") for e in past):
                 reply_seq = int(latest_conc.get("reply") or 0)
                 reply_ev = next((e for e in past if int(e.get("seq") or 0) == reply_seq), None)
@@ -3436,7 +4079,7 @@ def _run_card(card, collab_dir, worktree, test_command, dev_adapter, test_adapte
                     collab, cdir, card, ask_fn=ask_fn, reviewer_adapter=reviewer_adapter,
                     by_role=by_role, models=models, worktree=worktree, needs=needs, changed_fn=changed_fn,
                     draft=draft, rnd=card.rework + 1, data=stop_data, back_problems=stop_back,
-                    review_text=rev_text,
+                    review_text=rev_text, allowed=_review_scope(allowed, cdir), dev_adapter=dev_adapter,
                 )
                 if stopped:
                     return card, None
@@ -3458,9 +4101,17 @@ def _run_card(card, collab_dir, worktree, test_command, dev_adapter, test_adapte
 
     first_iter = True
     review_round = _review_rejects(cdir) if force_after_review_reject else 0  # 这次写代码是不是复查退回来的（㉝）
+    skip_dev_once = resume_skip_dev   # 接着跑前重跑已过（⑭），或测试文件的错交回写测试的改好后（⑫）：不派写代码的，直接判定
+    if resume_skip_dev:
+        last_output = None   # 跳过写代码的直接判定：不拿停卡前的报错比“原地打转”（复查第 2 轮新问题 1）
+    product_errors = set()  # 写测试的判断为“产品没写好”的那几条测试文件报错
+    product_note = ""       # 写测试的说“不是测试的问题”时，下一次给写代码的话里带上它的原话
+    revert_note = _pending_revert_note(cdir)   # 上一次写代码的改了范围外的文件被程序撤掉：下一次派活告诉它（㊲；续跑也从流转里找回）
     while True:
         rnd = card.rework + 1
-        dev_already_done = False
+        dev_already_done = skip_dev_once
+        skip_dev_once = False
+        walk_fail_event = None
         if first_iter:
             first_iter = False
             if force_after_review_reject:
@@ -3486,7 +4137,7 @@ def _run_card(card, collab_dir, worktree, test_command, dev_adapter, test_adapte
             # 回去写代码之前收到你跑着时确认的修改：按“接着改”从补测试重新走
             return _run_card(card, collab_dir, worktree, test_command, dev_adapter, test_adapter, ask_fn, judge_fn,
                              models, allowed, changed_fn, page_command, reviewer_adapter, revert_fn, require_tests,
-                             role_models, None, full, draft, red_check)
+                             role_models, None, full, draft, red_check, walk_command)
 
         if not dev_already_done:
             # 复查打回重改：返工次数不增加，步骤记为“开发”
@@ -3494,8 +4145,14 @@ def _run_card(card, collab_dir, worktree, test_command, dev_adapter, test_adapte
                 step_name = "开发"
             else:
                 step_name = "返工修改"
-            dev = _dispatch(ask_fn, cdir, "开发员", dev_adapter, step_name,
-                            dev_prompt, worktree, by_role.get("开发员", models), rnd, test_command=test_command)
+            if revert_note:   # 上一次被撤的范围外改动：不管这次是测试没过还是复查退回派出，都告诉它（㊲，复查第 1 轮 8）
+                dev_prompt += revert_note
+                revert_note = ""
+            backup_dev = _switched_dev(cdir)   # 第三批 ⑱：同一处连续两次没改对，换成备份写代码的，之后一直用它
+            use_dev = backup_dev or dev_adapter
+            dev = _dispatch(ask_fn, cdir, "开发员", use_dev, step_name,
+                            dev_prompt, worktree, models if backup_dev else by_role.get("开发员", models), rnd,
+                            test_command=test_command)
             if not dev.ok:
                 # 被停下（超时、没动静）时先跑一次本卡测试：已经全过就直接交复查，不再派人重写（第三批 ㊾）
                 # 只认“被停下”（超时、看门人停的）；额度用完、报错这类它根本没干成，照旧停下说原因
@@ -3503,16 +4160,19 @@ def _run_card(card, collab_dir, worktree, test_command, dev_adapter, test_adapte
                 stopped = bool(reviewer_adapter) and str(dev.output or "").startswith(("超时", "看门人"))
                 quick = judge_fn(test_command, cwd=worktree, timeout=_TEST_TIMEOUT) if stopped else None
                 if quick is None or quick.result != PASS:
-                    return _worker_failed(collab, cdir, card, "开发员", dev_adapter, dev)
-                why = (readable(dev.output, dev_adapter) or agy_error(dev.output) or "没交活").strip().splitlines()
+                    return _worker_failed(collab, cdir, card, "开发员", use_dev, dev)
+                why = (readable(dev.output, use_dev) or agy_error(dev.output) or "没交活").strip().splitlines()
                 record(cdir, "接着走", src="程序", dst="复查员",
                        summary="写代码的被停下了，但本卡测试已经全过，直接交复查",
-                       say=f"写代码的（{dev_adapter}）被停下了（{(why[-1] if why else '没交活')[:60]}），"
+                       say=f"写代码的（{use_dev}）被停下了（{(why[-1] if why else '没交活')[:60]}），"
                            f"但本卡测试已经全过，直接交复查。")
             else:
                 _save_report(cdir, reply_text(dev))
-            _log_step(cdir, step_name, dev_adapter, worktree)
+            _log_step(cdir, step_name, use_dev, worktree)
 
+        if allowed is not None:
+            # 测试名单要用最新的：复查退回后补测试可能新建了测试文件（外部项目试跑 ⑲，train CARD-001 被当成越界撤掉又恢复）
+            effective_allowed = _scope_with_tests(allowed, _load_test_files(cdir))
         if effective_allowed is not None:
             changed = [p for p in changed_fn(worktree) if not is_cache(p)]  # 缓存和给工具的放行设置不算改动
             bad = out_of_scope(changed, effective_allowed)
@@ -3529,7 +4189,9 @@ def _run_card(card, collab_dir, worktree, test_command, dev_adapter, test_adapte
                     _escalate(collab, cdir, card, f"范围外的改动撤销失败：{'、'.join(still)}")
                     return card, None
                 _append(cdir / "返工记录.md", f"- {stamp} 已自动撤销范围外的改动：{'、'.join(bad)}\n")
-                record(cdir, "范围", src="程序", ok=True,
+                revert_note = _say("写代码/范围外改动被撤", 文件="、".join(bad))
+                reverted_files = bad
+                record(cdir, "范围", src="程序", ok=True, reverted=reverted_files,
                        summary=f"已自动撤销范围外的改动：{'、'.join(bad)}", text="\n".join(changed))
             else:
                 record(cdir, "范围", src="程序", ok=True,
@@ -3576,6 +4238,15 @@ def _run_card(card, collab_dir, worktree, test_command, dev_adapter, test_adapte
                        result=page.result, round=card.rework + 1,
                        summary=f"页面检查：{page.result}", text=page.output)
                 verdict, verdict_file = _with_log(page, "页面检查")
+
+            if verdict.result == PASS and walk_command:
+                # 走查：本卡测试（和页面检查）都过了才跑，每次给一个新的截图文件夹
+                walk_info = _run_walk(cdir, worktree, walk_command, judge_fn, _next_walk_round(cdir))
+                walk_event = _record_walk(cdir, walk_info)
+                if walk_info["result"] != PASS:
+                    walk_fail_event = walk_event
+                    verdict = Verdict(walk_info["result"], walk_info["returncode"], walk_info["output"])
+                    verdict_file = f"{walk_info['folder']}/{_WALK_OUTPUT}"
 
             if verdict.result == PASS:
                 # 相关老测试（第三批 ㉜）：本卡测试过了，再跑用到这次改动文件的老测试；不过就当测试没过退回写代码的
@@ -3787,7 +4458,7 @@ def _run_card(card, collab_dir, worktree, test_command, dev_adapter, test_adapte
                     collab, cdir, card, ask_fn=ask_fn, reviewer_adapter=reviewer_adapter,
                     by_role=by_role, models=models, worktree=worktree, needs=needs, changed_fn=changed_fn,
                     draft=draft, rnd=rnd, data=data, back_problems=back_problems,
-                    review_text=review_text,
+                    review_text=review_text, allowed=_review_scope(allowed, cdir), dev_adapter=dev_adapter,
                 )
                 if stopped:
                     return card, verdict
@@ -3814,7 +4485,7 @@ def _run_card(card, collab_dir, worktree, test_command, dev_adapter, test_adapte
             # 复查都过了、要交你验收前收到修改：用户 11-16 定按新要求再走一轮
             return _run_card(card, collab_dir, worktree, test_command, dev_adapter, test_adapter, ask_fn, judge_fn,
                              models, allowed, changed_fn, page_command, reviewer_adapter, revert_fn, require_tests,
-                             role_models, None, full, draft, red_check)
+                             role_models, None, full, draft, red_check, walk_command)
 
         if verdict.result == PASS:
             card.transition("待验收")
@@ -3827,6 +4498,34 @@ def _run_card(card, collab_dir, worktree, test_command, dev_adapter, test_adapte
             # 环境或超时问题不是代码的错，不计返工轮数，直接叫 Claude
             _escalate(collab, cdir, card, f"{_VERDICT_SUMMARY[verdict.result]}，需要你看看")
             return card, verdict
+
+        if verdict.result == FAIL and test_adapter:
+            # 报错全在测试文件自己身上（编译、类型、语法写法错）：写代码的改不了测试，交回写测试的改（外部项目试跑 ⑫）
+            test_errors = _test_file_errors(verdict.output, _load_test_files(cdir))
+            if test_errors and set(test_errors) <= product_errors:
+                test_errors = []   # 写测试的已判断这几条是产品没写好，交给写代码的（只管这几条，复查第 2 轮新问题 4）
+            if test_errors and _test_file_returns(cdir) >= MAX_TEST_FILE_RETURNS:
+                _escalate(collab, cdir, card,
+                          f"报错全在测试文件里，交回写测试的 {MAX_TEST_FILE_RETURNS} 次还没改好，需要你看看")
+                return card, verdict
+            if test_errors:
+                how, said = _return_test_errors(ask_fn, cdir, test_adapter, test_errors, needs, worktree,
+                                                by_role.get("测试员", models), rnd, test_command, revert_fn)
+                if how == "没交成":
+                    # 写测试的没交成（超时、报错）：测试文件的错不能退给写代码的（复查第 2 轮新问题 3）
+                    _escalate(collab, cdir, card, "报错全在测试文件里，交回写测试的却没交成，需要你看看")
+                    return card, verdict
+                if require_tests and not _load_test_files(cdir):
+                    _escalate(collab, cdir, card, "写测试的改测试文件时把本卡测试删光了，不能接着判定，需要你看看")
+                    return card, verdict
+                if how == "改好":
+                    card.transition("开发中")   # 回到施工中，再按老路判定；不算写代码的返工
+                    _save(collab, card)
+                    skip_dev_once = True
+                    continue
+                product_errors = set(test_errors)
+                product_note = _say("写代码/测试员说是产品问题", 原话=said)
+                last_output = None   # 写测试的给了新判断，写代码的要拿到它，不算原地打转（复查第 1 轮第 5 条）
 
         if last_output is not None and verdict.output.strip() == last_output.strip():
             # 同样的报错连续出现两次：说明在原地打转，再返工也是白费，立刻转人工
@@ -3852,3 +4551,9 @@ def _run_card(card, collab_dir, worktree, test_command, dev_adapter, test_adapte
                    summary=f"返工 {card.rework} 次后测试仍没过，需要你看看")
             return card, verdict
         dev_prompt = _dev_retry_prompt(cdir, needs, verdict.output, verdict_file, revise_bit, plan_hint, run_hint)
+        if product_note:
+            dev_prompt += product_note
+            product_note = ""
+
+        if walk_fail_event is not None:
+            dev_prompt += "\n\n" + _walk_fail_note(cdir, walk_fail_event)

@@ -31,6 +31,8 @@ var PanelCore = {
       accept: { key: "accept", label: "确认没问题，放进项目" },
       revise: { key: "revise", label: "不满意，继续改" },
       accept_issues: { key: "accept_issues", label: "接受剩下的问题，进入待确认" },
+      look_ok: { key: "look_ok", label: "已看过，和图一致" },
+      look_diff: { key: "look_diff", label: "已看过，有出入" },
     };
     var actions = (phase && phase.actions) || [];
     var out = [];
@@ -101,7 +103,7 @@ var PanelCore = {
     if (!s) return "";
     var lines = [], detail = PanelCore.cleanDetail(s.detail);
     if (detail) lines.push(detail);
-    if (s.rounds > 1 && s.history != null && s.history.length) {
+    if ((s.rounds || 0) + (s.earlier || 0) > 1 && s.history != null && s.history.length) {
       for (var i = 0; i < s.history.length; i++) {
         var h = s.history[i] || {}, segs = [];
         if (h.who) segs.push(h.who);
@@ -111,6 +113,7 @@ var PanelCore = {
         lines.push("第 " + (i + 1) + " 轮" + (segs.length ? " " + segs.join(" · ") : ""));
       }
     }
+    if (s.earlier > 0) lines.push("改要求之前还有 " + s.earlier + " 轮，整张卡共 " + (s.earlier + (s.rounds || 0)) + " 轮");
     var tip = PanelCore.tokenTitle(s.tokens);
     if (tip) lines.push(tip);
     return lines.join("\n");
@@ -127,11 +130,28 @@ var PanelCore = {
     if (!v || (!v.total && !(v.missing > 0))) return "";
     var text = "本卡合计 " + tokenAmount(v.total || 0) + " token";
     if (v.missing > 0) text += "（不含没读到的 " + v.missing + " 轮）";
+    if (v.fresh > 0) text += " · 新消耗约 " + tokenAmount(v.fresh);   // 外部项目观察 ㉓
     return text;
   },
   totalTitle: function (v) {
-    if (!v || !(v.other > 0)) return "";
-    return "其中交接资料等其他 " + tokenAmount(v.other) + " token";
+    if (!v) return "";
+    var lines = [];
+    if (v.other > 0) lines.push("其中交接资料等其他 " + tokenAmount(v.other) + " token");
+    if (v.fresh > 0) {   // 外部项目观察 ㉓ ⑨：只在有“新消耗”时多说两句，老卡照旧
+      if (v.other > 0) lines.push("“其他”里包括各步分出去的小帮手，各步那行不含它们");
+      if (v.total > v.fresh * 2) lines.push("合计里大部分是模型每走一步重读同一段内容（缓存读取），通常比新读入便宜得多");
+      lines.push("“新消耗”= 没走缓存的读入 + 写出 + 小帮手");
+    }
+    return lines.join("\n");
+  },
+  // 本卡合计下面那行干活总耗时：只算干活时间，停卡、等人点按钮的不算（外部项目试跑 ⑪）
+  workText: function (sec) {
+    if (sec == null || sec === "" || !isFinite(Number(sec))) return "";
+    var s = Math.max(0, Math.round(Number(sec)));
+    if (s < 60) return "干活共不到 1 分钟";
+    var m = Math.floor(s / 60);
+    if (m < 60) return "干活共 " + m + " 分钟";
+    return "干活共 " + Math.floor(m / 60) + " 小时 " + (m % 60) + " 分";
   },
   // 本卡合计下面那行完成时间：按电脑本地时间写成“完成于 月-日 时:分”
   doneText: function (ts) {
@@ -234,7 +254,7 @@ if (typeof document !== "undefined") (function () {
       .filter(Boolean);
     actionBusy = true;
     renderActions();
-    postCard("prepare_revise", words, cardId).then(function (res) {
+    postCard("prepare_revise", words, cardId, files).then(function (res) {
       if (!res.ok || !res.d || !res.d.ok) {
         alert((res.d && res.d.error) || "拆分修改要求失败，请重试");
         actionBusy = false;
@@ -244,6 +264,11 @@ if (typeof document !== "undefined") (function () {
       var criteriaBase = Array.isArray(res.d.criteria_base) ? res.d.criteria_base : [];
       var criteriaChanges = Array.isArray(res.d.criteria_changes) ? res.d.criteria_changes : [];
       var summary = String(res.d.summary || "").trim();
+      if (res.d.redesign && !window.confirm(String(res.d.redesign) + "\n\n还是按这次的修改继续吗？")) {
+        actionBusy = false;
+        renderActions();
+        return;
+      }
       if (criteriaChanges.length > 0 && !window.confirm(summary || "确认按以上改动继续吗？")) {
         actionBusy = false;
         renderActions();
@@ -271,6 +296,41 @@ if (typeof document !== "undefined") (function () {
       renderActions();
     });
   });
+
+  function lookDiff() {   // 照样放进项目：记下哪里不一样，放行
+    var words = ($("lookText").value || "").trim();
+    if (!words) { alert("请写一句哪里和图不一样"); return; }
+    var cardId = view.card.id;
+    actionBusy = true;
+    renderActions();
+    postCard("look_diff", words, cardId).then(function (res) {
+      actionBusy = false;
+      if (!res.ok || (res.d && res.d.error)) {
+        alert((res.d && res.d.error) || "没记上，请重试");
+        renderActions();
+        return;
+      }
+      $("lookBox").hidden = true;
+      $("lookText").value = "";
+      poll();
+    }).catch(function () {
+      alert("操作失败，请检查服务后重试");
+      actionBusy = false;
+      renderActions();
+    });
+  }
+  // 退回去改：不放行，只把那句话填进“继续改”框；真提交了修改，卡才回去改（复查第 1 轮 6）
+  $("lookRedo").addEventListener("click", function () {
+    if (!view || !view.card || actionBusy) return;
+    var words = ($("lookText").value || "").trim();
+    if (!words) { alert("请写一句哪里和图不一样"); return; }
+    $("lookBox").hidden = true;
+    var box = $("reviseBox");
+    if (box) box.hidden = false;
+    var field = $("reviseText");
+    if (field) { field.value = "看页面和图不一样：" + words; field.focus(); }
+  });
+  $("lookKeep").addEventListener("click", function () { if (view && view.card && !actionBusy) lookDiff(); });
 
   function runCardAction(act, cardId) {
     actionBusy = true;
@@ -341,6 +401,14 @@ if (typeof document !== "undefined") (function () {
       }
       return;
     }
+    if (act === "look_diff") {   // 有出入：写一句，再选退回去改还是照样放进项目
+      var lb = $("lookBox");
+      if (lb) lb.hidden = false;
+      var lt = $("lookText");
+      if (lt) lt.focus();
+      return;
+    }
+    if (act === "look_ok" && !window.confirm("确认已经打开页面，对照施工单写的图看过，和图一致？")) return;
     if (act === "discard" && !window.confirm("这次的改动不会进入项目，你的项目不会变。改好的版本也会删除。")) return;
     if (act === "accept_issues" && !window.confirm(PanelCore.acceptIssuesConfirm(view.card.phase && (view.card.phase.issues || view.card.phase.detail)))) return;
     var cardId = view.card.id;   // 问的时候可能切了卡：批准的必须是点的那张
@@ -407,11 +475,53 @@ if (typeof document !== "undefined") (function () {
     box.hidden = false;
     $("acceptResult").textContent = view.accept.result || "";
     $("acceptHow").textContent = view.accept.how || "";
+    renderLook();
     var btn = $("previewBtn");
     btn.hidden = view.accept.copy_there === false;   // 副本不在了，点了也打不开
     btn.textContent = previewLabel();
     btn.disabled = previewIsBusyHere() || previewClosing;
   }
+
+  // 第三批 ③：施工单要求对照的图，点了在新窗口打开（只读看图接口，按“设计图”认）
+  function renderLook() {
+    var row = $("lookRow");
+    var look = view && view.look;
+    if (!row) return;
+    if (!look) { row.hidden = true; return; }
+    row.hidden = false;
+    $("lookLine").textContent = look.line || "";
+    var list = $("lookImages");
+    list.textContent = "";
+    (look.images || []).forEach(function (img) {
+      var li = document.createElement("li");
+      if (img.exists) {
+        // 桌面窗口不让开新窗口：就在右栏里铺一层看大图，点一下关掉（复查第 1 轮 5）
+        var a = document.createElement("a");
+        a.textContent = img.name || img.path;
+        a.href = "#";
+        a.setAttribute("data-look-src", "/api/clerk/card/image?" + new URLSearchParams({
+          project: project, card: view.card.id, kind: "design", path: img.path, token: token
+        }).toString());
+        li.appendChild(a);
+      } else {
+        li.textContent = (img.name || img.path) + "（项目里找不到这张图）";
+      }
+      list.appendChild(li);
+    });
+  }
+
+  $("lookImages").addEventListener("click", function (ev) {
+    var a = ev.target.closest("a[data-look-src]");
+    if (!a) return;
+    ev.preventDefault();
+    var light = $("lookLight");
+    $("lookLightImg").src = a.getAttribute("data-look-src");
+    light.hidden = false;
+  });
+  $("lookLight").addEventListener("click", function () {
+    $("lookLight").hidden = true;
+    $("lookLightImg").removeAttribute("src");
+  });
 
   function showPreviewError(reason, path) {
     var err = $("previewErr");
@@ -551,14 +661,22 @@ if (typeof document !== "undefined") (function () {
       var spoken = PanelCore.metaText(s, since());
       b.setAttribute("aria-label", s.role + " " + s.who + (spoken ? "，" + spoken : "") + "，看交接");
     });
-    var total = PanelCore.totalText(v.tokens);
+    var tokenView = v.tokens && v.tokens_fresh > 0 ? Object.assign({}, v.tokens, { fresh: v.tokens_fresh }) : v.tokens;
+    var total = PanelCore.totalText(tokenView);
     var totalBox = $("tokenTotal");
     if (totalBox) {
       totalBox.textContent = total;
       totalBox.title = total
-        ? [PanelCore.totalTitle(v.tokens), "每答完一轮才更新一次"].filter(Boolean).join("\n")
-        : PanelCore.totalTitle(v.tokens);
+        ? [PanelCore.totalTitle(tokenView), "每答完一轮才更新一次"].filter(Boolean).join("\n")
+        : PanelCore.totalTitle(tokenView);
       totalBox.hidden = !total;
+    }
+    var workBox = $("workTime");
+    if (workBox) {
+      var work = PanelCore.workText(v.work_seconds);
+      workBox.textContent = work;
+      workBox.title = work ? "从开跑到停下、转人工或做完，几段加起来；停卡、等你点按钮的时间不算" : "";
+      workBox.hidden = !work;
     }
     var doneBox = $("doneAt");
     if (doneBox) {
@@ -647,7 +765,11 @@ if (typeof document !== "undefined") (function () {
     return fetch(url).then(function (r) { return r.json(); }).then(function (v) {
       if (asked !== selected) return;   // 取的时候又换了卡，这一份作废
       $("offline").hidden = true;
-      if (v.error) { $("blank").hidden = false; $("blank").textContent = v.error; return; }
+      if (v.error) {
+        $("blank").hidden = false; $("blank").textContent = v.error;
+        if ($("workTime")) $("workTime").hidden = true;   // 读不到新卡：不留上一张卡的耗时（外部项目试跑复查第 1 轮第 12 条）
+        return;
+      }
       view = v; fetchedAt = Date.now();
       var cardNow = v.card ? v.card.id : null;
       if (cardNow !== shownCard) {   // 自动跟到另一张卡时，上一张卡的开工小框不能留着
@@ -676,7 +798,10 @@ if (typeof document !== "undefined") (function () {
       var logKey = (v.card ? v.card.id : "") + ":" + v.handoffs.length;
       if (!$("pane-log").hidden && logKey !== lastLogKey) drawList();
       lastLogKey = logKey;
-    }).catch(function () { $("offline").hidden = false; });
+    }).catch(function () {
+      $("offline").hidden = false;
+      if ($("workTime")) $("workTime").hidden = true;   // 读不到时不留旧耗时（外部项目试跑复查第 2 轮第 12 条）
+    });
   }
   function loop() { poll().then(function () { setTimeout(loop, POLL_MS); }); }
 
@@ -686,6 +811,7 @@ if (typeof document !== "undefined") (function () {
       selected = id || null;
       closeStartDialog();
       $("reviseBox").hidden = true;   // 没提交的修改不能发到另一张卡
+      $("lookBox").hidden = true;
       $("reviseText").value = "";
       $("reviseFiles").value = "";
       $("previewErr").hidden = true;

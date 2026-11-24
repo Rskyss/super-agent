@@ -184,7 +184,8 @@ def is_review_stop(stop: Optional[dict]) -> bool:
     old_review_stop = not stop.get("cause") and str(stop.get("summary") or "").endswith(
         "复查不通过，需要调度员看原因"
     )  # 更新前停下的卡没有标记，按当时程序写的原话认（复查第 2 轮）
-    return stop.get("cause") == "复查不通过" or old_review_stop
+    # 要改的文件不在允许范围也算复查停下：认定“不归本卡”时可以直接接受剩下的问题（收尾确认复查 B）
+    return stop.get("cause") in ("复查不通过", "要改的文件不在允许范围") or old_review_stop
 
 
 def _stop_text(project, card_id: str, event: dict) -> str:
@@ -425,6 +426,9 @@ def card_phase(project: str, card_id: str) -> dict:
         base_detail = _blocked_detail(events)
         detail = base_detail
         actions = ["resume", "revise", "discard"]
+        last_stop_ev = next((e for e in reversed(events) if e.get("kind") == "转人工"), None)
+        if last_stop_ev and last_stop_ev.get("cause") == "需要定规则":
+            actions = ["revise", "discard"]   # 第三批 ⑱：规则要用“继续改”写进去，不能原样接着跑（复查第 1 轮 8、确认复查）
         after_stop = _after_last(events, "转人工")
         drafts = [e for e in after_stop if e.get("kind") == "起草"]
         if drafts and drafts[-1].get("phase") == "开始":
@@ -530,6 +534,9 @@ def card_phase(project: str, card_id: str) -> dict:
         for ev in tail:
             if ev.get("kind") in ("合并失败", "合并开始", "合并"):
                 last_result = ev
+        from collab.look import look_pending as _look_pending
+        if _look_pending(cdir, events) and not (cdir / "合并进行中.json").is_file():
+            last_result = None   # 要先看页面：旧的“合并失败”不能盖掉“已看过”按钮（复查第 3 轮 4）
         if (cdir / "合并进行中.json").is_file():
             told = last_result.get("summary") if last_result and last_result.get("kind") == "合并失败" else ""
             if not told and _merge_not_started(project, cdir):
@@ -566,6 +573,25 @@ def card_phase(project: str, card_id: str) -> dict:
             detail = f"另有 {old_count} 件开工前就有的问题，已记进台账，这次不改"
         else:
             detail = ""
+        from collab.look import last_look, look_info
+        look = look_info(cdir)
+        if look["required"]:
+            seen = last_look(events)
+            if not seen:
+                return {
+                    "code": "look_pending", "label": "等看页面", "tone": "wait", "needs_you": True,
+                    "detail": "施工单要求放进项目前先看页面" + (f"：{look['line']}" if look["line"] else "")
+                              + "。看过后点“已看过”，才能放进项目",
+                    "actions": ["look_ok", "look_diff", "revise", "discard"], "branch": branch, "later": later,
+                }
+            if seen.get("choice") == "有出入":
+                note = str(seen.get("note") or "")
+                detail = (detail + "；" if detail else "") + f"看页面有出入：{note}"
+                return {
+                    "code": "review", "label": "等你确认", "tone": "ok", "needs_you": True,
+                    "detail": detail, "look_note": note,
+                    "actions": ["accept", "revise", "discard"], "branch": branch, "later": later,
+                }
         return {
             "code": "review", "label": "等你确认", "tone": "ok", "needs_you": True,
             "detail": detail,

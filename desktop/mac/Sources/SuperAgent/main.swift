@@ -137,6 +137,227 @@ final class ViewSwitch: NSView {
     }
 }
 
+struct WalkGalleryItem: Equatable {
+    let kind: String
+    let path: String
+    let title: String
+}
+
+/// 解析网页点击时单向传入的图集快照；非法项一律过滤，点击项优先按 clickedIndex 精准匹配（同名步骤复用设计图不串步），异常时安全退回单图
+func parseWalkGallery(raw: String?, clickedKind: String, clickedPath: String, clickedTitle: String, clickedIndex: Int) -> ([WalkGalleryItem], Int) {
+    let fallback = WalkGalleryItem(kind: clickedKind, path: clickedPath, title: clickedTitle)
+    guard let raw = raw, !raw.isEmpty,
+          let data = raw.data(using: .utf8),
+          let arr = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] else {
+        return ([fallback], 0)
+    }
+    var items: [WalkGalleryItem] = []
+    for entry in arr {
+        guard let k = entry["kind"] as? String, (k == "shot" || k == "design"),
+              let p = entry["path"] as? String, !p.isEmpty else { continue }
+        let t = (entry["title"] as? String) ?? ""
+        items.append(WalkGalleryItem(kind: k, path: p, title: t))
+    }
+    guard !items.isEmpty else { return ([fallback], 0) }
+    if clickedIndex >= 0 && clickedIndex < items.count
+        && items[clickedIndex].kind == clickedKind && items[clickedIndex].path == clickedPath {
+        return (items, clickedIndex)
+    }
+    if let exact = items.firstIndex(where: { $0.kind == clickedKind && $0.path == clickedPath && $0.title == clickedTitle }) {
+        return (items, exact)
+    }
+    if let first = items.firstIndex(where: { $0.kind == clickedKind && $0.path == clickedPath }) {
+        return (items, first)
+    }
+    return ([fallback], 0)
+}
+
+/// 计算左右翻页的下一个下标（多图首尾循环，单图或无效步长返回 nil）
+func nextWalkGalleryIndex(current: Int, count: Int, delta: Int) -> Int? {
+    guard count > 1 else { return nil }
+    let step = delta < 0 ? -1 : (delta > 0 ? 1 : 0)
+    guard step != 0 else { return nil }
+    let base = ((current % count) + count) % count
+    return (base + step + count) % count
+}
+
+/// 盖住整个开发助手大窗口的走查大图视图：深暗遮罩 + 无框高清大图 + 顶部极简标题与关闭 + 左右翻图
+final class WalkImageOverlayView: NSView {
+    var onClose: (() -> Void)?
+    var onStep: ((Int) -> Void)?
+
+    private let topBar = NSView()
+    private let titleLabel = NSTextField(labelWithString: "")
+    private let closeBtn = NSButton(title: "✕", target: nil, action: nil)
+    private let imageView = NSImageView()
+    private let statusLabel = NSTextField(labelWithString: "")
+    private let prevBtn = NSButton(title: "‹", target: nil, action: nil)
+    private let nextBtn = NSButton(title: "›", target: nil, action: nil)
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.backgroundColor = NSColor(srgbRed: 0.04, green: 0.045, blue: 0.06, alpha: 0.88).cgColor
+
+        topBar.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(topBar)
+
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        titleLabel.font = NSFont.systemFont(ofSize: 13, weight: .medium)
+        titleLabel.textColor = NSColor.white.withAlphaComponent(0.9)
+        titleLabel.alignment = .center
+        titleLabel.lineBreakMode = .byTruncatingMiddle
+        titleLabel.maximumNumberOfLines = 1
+        titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        topBar.addSubview(titleLabel)
+
+        closeBtn.translatesAutoresizingMaskIntoConstraints = false
+        closeBtn.isBordered = false
+        closeBtn.wantsLayer = true
+        closeBtn.layer?.cornerRadius = 16
+        closeBtn.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.14).cgColor
+        closeBtn.attributedTitle = NSAttributedString(string: "✕", attributes: [
+            .foregroundColor: NSColor.white.withAlphaComponent(0.92),
+            .font: NSFont.systemFont(ofSize: 15, weight: .medium),
+        ])
+        closeBtn.toolTip = "关闭 (Esc)"
+        closeBtn.target = self
+        closeBtn.action = #selector(tappedClose)
+        topBar.addSubview(closeBtn)
+
+        imageView.translatesAutoresizingMaskIntoConstraints = false
+        imageView.imageScaling = .scaleProportionallyDown
+        imageView.imageAlignment = .alignCenter
+        imageView.wantsLayer = true
+        imageView.layer?.cornerRadius = 6
+        imageView.layer?.masksToBounds = true
+        imageView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        imageView.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
+        imageView.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        imageView.setContentHuggingPriority(.defaultLow, for: .vertical)
+        addSubview(imageView)
+
+        statusLabel.translatesAutoresizingMaskIntoConstraints = false
+        statusLabel.font = NSFont.systemFont(ofSize: 14, weight: .regular)
+        statusLabel.textColor = NSColor.white.withAlphaComponent(0.75)
+        statusLabel.alignment = .center
+        statusLabel.isHidden = true
+        addSubview(statusLabel)
+
+        for (btn, glyph, tip, action) in [
+            (prevBtn, "‹", "上一张 (←)", #selector(tappedPrev)),
+            (nextBtn, "›", "下一张 (→)", #selector(tappedNext)),
+        ] as [(NSButton, String, String, Selector)] {
+            btn.translatesAutoresizingMaskIntoConstraints = false
+            btn.isBordered = false
+            btn.wantsLayer = true
+            btn.layer?.cornerRadius = 18
+            btn.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.14).cgColor
+            btn.attributedTitle = NSAttributedString(string: glyph, attributes: [
+                .foregroundColor: NSColor.white.withAlphaComponent(0.92),
+                .font: NSFont.systemFont(ofSize: 22, weight: .regular),
+            ])
+            btn.toolTip = tip
+            btn.target = self
+            btn.action = action
+            btn.isHidden = true
+            addSubview(btn)
+        }
+
+        let titleCenterX = titleLabel.centerXAnchor.constraint(equalTo: topBar.centerXAnchor)
+        titleCenterX.priority = .defaultHigh
+        let imgCenterY = imageView.centerYAnchor.constraint(equalTo: centerYAnchor, constant: 12)
+        imgCenterY.priority = NSLayoutConstraint.Priority(999)
+
+        NSLayoutConstraint.activate([
+            topBar.topAnchor.constraint(equalTo: topAnchor),
+            topBar.leadingAnchor.constraint(equalTo: leadingAnchor),
+            topBar.trailingAnchor.constraint(equalTo: trailingAnchor),
+            topBar.heightAnchor.constraint(equalToConstant: 44),
+
+            closeBtn.trailingAnchor.constraint(equalTo: topBar.trailingAnchor, constant: -14),
+            closeBtn.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
+            closeBtn.widthAnchor.constraint(equalToConstant: 32),
+            closeBtn.heightAnchor.constraint(equalToConstant: 32),
+
+            titleCenterX,
+            titleLabel.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
+            titleLabel.leadingAnchor.constraint(greaterThanOrEqualTo: topBar.leadingAnchor, constant: 88),
+            titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: closeBtn.leadingAnchor, constant: -12),
+
+            imageView.topAnchor.constraint(greaterThanOrEqualTo: topBar.bottomAnchor, constant: 12),
+            imageView.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor, constant: -24),
+            imageView.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: 60),
+            imageView.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -60),
+            imageView.centerXAnchor.constraint(equalTo: centerXAnchor),
+            imgCenterY,
+
+            statusLabel.centerXAnchor.constraint(equalTo: centerXAnchor),
+            statusLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+
+            prevBtn.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+            prevBtn.centerYAnchor.constraint(equalTo: centerYAnchor),
+            prevBtn.widthAnchor.constraint(equalToConstant: 36),
+            prevBtn.heightAnchor.constraint(equalToConstant: 36),
+
+            nextBtn.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
+            nextBtn.centerYAnchor.constraint(equalTo: centerYAnchor),
+            nextBtn.widthAnchor.constraint(equalToConstant: 36),
+            nextBtn.heightAnchor.constraint(equalToConstant: 36),
+        ])
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    func configure(title: String, index: Int, total: Int) {
+        titleLabel.stringValue = total > 1 ? "\(title)  (\(index + 1) / \(total))" : title
+        let multi = total > 1
+        prevBtn.isHidden = !multi
+        nextBtn.isHidden = !multi
+        statusLabel.isHidden = true
+    }
+
+    func setImage(_ image: NSImage) {
+        statusLabel.isHidden = true
+        imageView.image = image
+    }
+
+    func showError(_ message: String) {
+        imageView.image = nil
+        statusLabel.stringValue = message
+        statusLabel.isHidden = false
+    }
+
+    private func displayedImageRect() -> NSRect? {
+        guard let img = imageView.image, img.size.width > 0, img.size.height > 0 else { return nil }
+        let b = imageView.bounds
+        let scale = min(1.0, min(b.width / img.size.width, b.height / img.size.height))
+        let drawW = img.size.width * scale
+        let drawH = img.size.height * scale
+        return NSRect(x: b.midX - drawW / 2, y: b.midY - drawH / 2, width: drawW, height: drawH)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        if !statusLabel.isHidden {
+            let ptStatus = statusLabel.convert(event.locationInWindow, from: nil)
+            if statusLabel.bounds.contains(ptStatus) { return }
+        }
+        if let rect = displayedImageRect() {
+            let ptImg = imageView.convert(event.locationInWindow, from: nil)
+            if rect.contains(ptImg) { return }
+        }
+        onClose?()
+    }
+
+    override func rightMouseDown(with event: NSEvent) {}
+    override func otherMouseDown(with event: NSEvent) {}
+    override func scrollWheel(with event: NSEvent) {}
+
+    @objc private func tappedClose() { onClose?() }
+    @objc private func tappedPrev() { onStep?(-1) }
+    @objc private func tappedNext() { onStep?(1) }
+}
+
 /// 这一次是不是走查、截图或自测：--walk 开头的都算，再加截图、行政自测、用文件交密钥。
 /// 自测一律用单独的钥匙串和单独的设置，不改用户的窗口记忆，不真开浏览器（精读报告 S11：
 /// 以前各处各写一份名单，--walk-clerk、--walk-clerk-forget 这些不算自测，会读、存、删用户真实的密钥）
@@ -405,6 +626,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
     var pendingPlaceCard: String?        // 切回来时记下的卡，等聊天页加载完再打开
     var pendingPlaceProject: String?     // pendingPlaceCard 属于哪个项目，防止串到同编号的卡
     var closeMenuMonitor: Any?           // 点左栏以外的位置时，顺手关掉项目浮层
+    var walkOverlay: WalkImageOverlayView?
+    var walkImageTask: URLSessionDataTask?
+    var chatPageSeq = 0
+    var walkImageSeq = 0
+    var walkGalleryItems: [WalkGalleryItem] = []
+    var walkGalleryIndex = 0
+    var walkOverlayCard: String?
+    var walkKeyMonitor: Any?
     var rightWanted = true               // 点开卡片时右栏开不开；没选卡片时右栏根本不存在
     var navWidth: CGFloat = 264
     var rightWidth: CGFloat = 372
@@ -458,6 +687,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
     /// 积木库开着时关项目窗口：只藏起来，对话和终端在后台照常跑，菜单“窗口 → 项目窗口”叫回来
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         guard sender === window, blocks.isOpen else { return true }
+        closeWalkImageOverlay()
         window.orderOut(nil)
         return false
     }
@@ -468,6 +698,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        closeWalkImageOverlay()
         flushChatPlace()
         quitting = true
         stopTerminal()
@@ -651,6 +882,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
         move = { [weak self] in
             guard let self = self, !moved else { return }
             moved = true
+            self.closeWalkImageOverlay()
             self.closeChatOnServer(clearView: true)
             self.project = url
             self.selectedCard = nil
@@ -910,6 +1142,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
 
     /// 左栏点了一张卡（nil 是主对话）。配了行政时，中间换成这张卡自己的对话
     func selectCard(_ id: String?) {
+        closeWalkImageOverlay()
         pendingPlaceCard = nil
         pendingPlaceProject = nil
         selectedCard = id
@@ -1113,6 +1346,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
     }
 
     func showLeft(_ view: LeftView, opening: Bool, chatMode: String = "continue") {
+        closeWalkImageOverlay()
         defer { syncRight(); syncNav(); syncBackToChat() }
         updateViewSwitch()
         let who = Dispatcher.forProject(project)
@@ -1203,11 +1437,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
             chatWeb.evaluateJavaScript("window.SuperAgentChat && window.SuperAgentChat.resume()", completionHandler: nil)
             return
         }
+        closeWalkImageOverlay()
+        chatPageSeq += 1
         chatLoadedKey = key
         let place = savedPlace(for: project)
         let query = "project=\(urlEncode(project.path))&dispatcher=\(urlEncode(saved))&token=\(chatToken)"
             + "&mode=\(mode)&opening=\(opening ? 1 : 0)&clerk=\(clerkReady ? 1 : 0)"
-            + "&thread=\(urlEncode(place["thread"] ?? ""))&draft=\(urlEncode(place["draft"] ?? ""))"
+            + "&thread=\(urlEncode(place["thread"] ?? ""))&draft=\(urlEncode(place["draft"] ?? ""))&shell=1&shell_page=\(chatPageSeq)"
         if let url = URL(string: "http://127.0.0.1:\(port)/static/chat.html?\(query)") {
             chatWeb.load(URLRequest(url: url))
         }
@@ -1359,6 +1595,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
             place["thread"] = value("thread") ?? ""
             place["draft"] = String((value("draft") ?? "").prefix(2000))
             UserDefaults.standard.set(place, forKey: placeKey(for: project))
+        case "walk-image":
+            guard isChatMainFrame(webView, navigationAction),
+                  window.isVisible,
+                  leftView == .chat, let activeCard = selectedCard,
+                  chatLoadedKey != nil,
+                  let page = Int(value("page") ?? ""), page == chatPageSeq,
+                  value("project") == project.path,
+                  let card = value("card"), card == activeCard,
+                  let kind = value("kind"), (kind == "shot" || kind == "design"),
+                  let rel = value("path"), !rel.isEmpty else { return }
+            let title = value("title") ?? ""
+            let clickedIndex = max(0, Int(value("index") ?? "") ?? 0)
+            let (items, startIndex) = parseWalkGallery(
+                raw: value("items"), clickedKind: kind, clickedPath: rel, clickedTitle: title, clickedIndex: clickedIndex
+            )
+            openWalkImageOverlay(card: card, items: items, index: startIndex)
         case "clerk-open":
             if let raw = value("url"), let target = URL(string: raw),
                target.scheme?.lowercased() == "http",
@@ -1379,6 +1631,122 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
             }
         default:
             break
+        }
+    }
+
+    func isChatMainFrame(_ webView: WKWebView, _ action: WKNavigationAction) -> Bool {
+        webView === chatWeb && action.sourceFrame.isMainFrame && action.targetFrame?.isMainFrame == true
+    }
+
+    func openWalkImageOverlay(card: String, items: [WalkGalleryItem], index: Int) {
+        guard port != nil, let root = window?.contentView, index >= 0, index < items.count else { return }
+
+        let isNewOverlay = (walkOverlay == nil)
+        let overlay: WalkImageOverlayView
+        if let existing = walkOverlay {
+            overlay = existing
+        } else {
+            let view = WalkImageOverlayView()
+            view.translatesAutoresizingMaskIntoConstraints = false
+            view.onClose = { [weak self] in self?.closeWalkImageOverlay() }
+            view.onStep = { [weak self] delta in self?.stepWalkGallery(delta) }
+            root.addSubview(view)
+            NSLayoutConstraint.activate([
+                view.topAnchor.constraint(equalTo: root.topAnchor),
+                view.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+                view.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+                view.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            ])
+            walkOverlay = view
+            overlay = view
+        }
+
+        if walkKeyMonitor == nil {
+            walkKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                guard let self = self, event.window === self.window, self.walkOverlay != nil, self.window.attachedSheet == nil else { return event }
+                if event.keyCode == 53 {
+                    self.closeWalkImageOverlay()
+                    return nil
+                }
+                if event.keyCode == 123 {
+                    self.stepWalkGallery(-1)
+                    return nil
+                }
+                if event.keyCode == 124 {
+                    self.stepWalkGallery(1)
+                    return nil
+                }
+                return event
+            }
+        }
+
+        walkGalleryItems = items
+        walkGalleryIndex = index
+        walkOverlayCard = card
+        if isNewOverlay {
+            overlay.configure(title: items[index].title, index: index, total: items.count)
+        }
+        loadWalkOverlayImage(card: card, item: items[index], index: index, total: items.count)
+    }
+
+    func stepWalkGallery(_ delta: Int) {
+        guard walkOverlay != nil, let card = walkOverlayCard,
+              let next = nextWalkGalleryIndex(current: walkGalleryIndex, count: walkGalleryItems.count, delta: delta) else { return }
+        walkGalleryIndex = next
+        loadWalkOverlayImage(card: card, item: walkGalleryItems[next], index: next, total: walkGalleryItems.count)
+    }
+
+    func loadWalkOverlayImage(card: String, item: WalkGalleryItem, index: Int, total: Int) {
+        guard let port = port else { return }
+        walkImageTask?.cancel()
+        walkImageTask = nil
+        walkImageSeq += 1
+        let seq = walkImageSeq
+        let askedProject = project.path
+
+        let query = "project=\(urlEncode(askedProject))&card=\(urlEncode(card))&kind=\(urlEncode(item.kind))"
+            + "&path=\(urlEncode(item.path))&token=\(chatToken)"
+        guard let imgURL = URL(string: "http://127.0.0.1:\(port)/api/clerk/card/image?\(query)") else {
+            if let overlay = walkOverlay {
+                overlay.configure(title: item.title, index: index, total: total)
+                overlay.showError("图片加载失败")
+            }
+            return
+        }
+        let task = URLSession.shared.dataTask(with: imgURL) { [weak self] data, response, err in
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            let cancelled = (err as? URLError)?.code == .cancelled
+            let ok = err == nil && status == 200
+            DispatchQueue.main.async {
+                guard let self = self, self.walkImageSeq == seq,
+                      let currentOverlay = self.walkOverlay, self.project.path == askedProject,
+                      self.walkOverlayCard == card else { return }
+                if cancelled { return }
+                if ok, let raw = data, let img = NSImage(data: raw) {
+                    currentOverlay.configure(title: item.title, index: index, total: total)
+                    currentOverlay.setImage(img)
+                } else {
+                    currentOverlay.configure(title: item.title, index: index, total: total)
+                    currentOverlay.showError("图片加载失败")
+                }
+            }
+        }
+        walkImageTask = task
+        task.resume()
+    }
+
+    func closeWalkImageOverlay() {
+        walkImageSeq += 1
+        walkImageTask?.cancel()
+        walkImageTask = nil
+        walkGalleryItems = []
+        walkGalleryIndex = 0
+        walkOverlayCard = nil
+        walkOverlay?.removeFromSuperview()
+        walkOverlay = nil
+        if let monitor = walkKeyMonitor {
+            NSEvent.removeMonitor(monitor)
+            walkKeyMonitor = nil
         }
     }
 
@@ -1405,6 +1773,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
     func closeChatOnServer(clearView: Bool = false, then: (@MainActor @Sendable () -> Void)? = nil) {
         chatKept = false
         if clearView {
+            chatPageSeq += 1
+            closeWalkImageOverlay()
             chatLoadedKey = nil
             chatWeb.stopLoading()
             chatWeb.loadHTMLString(Self.message("", background: "#17181b"), baseURL: nil)
@@ -2044,6 +2414,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
 
     func serverStopped(code: Int32) {
         guard !quitting else { return }
+        chatPageSeq += 1
+        closeWalkImageOverlay()
         server = nil
         port = nil  // 旧端口已经没有服务，留着会让聊天页连不回来
         let detail = serverOutput.isEmpty ? "" : "<br><br><small>\(htmlEscape(String(serverOutput.suffix(300))))</small>"
@@ -2214,6 +2586,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
 
     @objc func newChat(_ sender: Any?) {
         guard Dispatcher.forProject(project) != nil || clerkReady else { return showLeft(.config, opening: false) }  // 左栏“新对话”也绕不过行政必配
+        closeWalkImageOverlay()
         if leftView == .chat {
             if chatLoadedKey != nil {
                 chatWeb.evaluateJavaScript("window.SuperAgentChat && window.SuperAgentChat.startFresh && window.SuperAgentChat.startFresh()", completionHandler: nil)

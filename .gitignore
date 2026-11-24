@@ -19,3 +19,6 @@ desktop/mac/build/
 # 依赖目录（DSH 插件和根目录的 npm 依赖，本机安装，不进 git）
 node_modules/
 dsh-plugin/core/lib/
+
+# 外部项目（train）的详细观察笔记，含客户项目细节，只留在本机
+docs/流程数据/外部项目观察-train.md

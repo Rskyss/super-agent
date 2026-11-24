@@ -198,8 +198,20 @@ def remember_versions(project_dir, results) -> None:
             fcntl.flock(lock, fcntl.LOCK_UN)
 
 
-def version_changes(project_dir, team=None) -> list:
-    """团队里用到的工具，版本和上次检测通过时不一样的，每家一句提醒。从没检测过、问不到版本的不提醒。"""
+def _upgrade_name(cmd: str, team) -> str:
+    """升级提醒里显示的工具名：Codex 借壳给千问/腾讯云时一并说明。"""
+    if cmd == "codex":
+        tools = {v for v in (team or {}).values() if isinstance(v, str)} if isinstance(team, dict) else set()
+        if "tencent" in tools and "qwen" in tools:
+            return "Codex（千问、腾讯云也用它的壳）"
+        if "tencent" in tools:
+            return "Codex（腾讯云也用它的壳）"
+        return "Codex（千问也用它的壳）"
+    return {"agent": "Cursor", "agy": "agy"}.get(cmd, cmd)
+
+
+def version_changes_detail(project_dir, team=None) -> list:
+    """团队里用到的工具，版本和上次检测通过时不一样的，返回结构化明细。从没检测过、问不到版本的不提醒。"""
     try:
         saved = json.loads(_versions_path(project_dir).read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -216,7 +228,6 @@ def version_changes(project_dir, team=None) -> list:
         if cmd and cmd not in commands:
             commands.append(cmd)
     out = []
-    names = {"codex": "Codex（千问也用它的壳）", "agent": "Cursor", "agy": "agy"}
     for cmd in commands:
         tool = next(t for t, c in COMMANDS.items() if c == cmd)
         old = saved.get(cmd)
@@ -224,9 +235,22 @@ def version_changes(project_dir, team=None) -> list:
             continue   # 没检测通过过的不问（问版本要起一次工具）
         now = tool_version(tool)
         if now and old != now:
-            out.append(f"{names.get(cmd, cmd)} 升级了（{old} → {now}），建议去团队设置重新检测一次，"
-                       f"确认它和你选的模型还接得上")
+            name = _upgrade_name(cmd, team)
+            out.append({
+                "command": cmd,
+                "name": name,
+                "old": old,
+                "now": now,
+                "tools": [t for t, c in COMMANDS.items() if c == cmd],
+                "message": f"{name} 升级了（{old} → {now}），建议去团队设置重新检测一次，"
+                           f"确认它和你选的模型还接得上",
+            })
     return out
+
+
+def version_changes(project_dir, team=None) -> list:
+    """团队里用到的工具，版本和上次检测通过时不一样的，每家一句提醒。从没检测过、问不到版本的不提醒。"""
+    return [item["message"] for item in version_changes_detail(project_dir, team)]
 
 
 def check_team(project_dir, team=None, timeout: float = DEFAULT_TIMEOUT, on_result=None,

@@ -503,7 +503,8 @@ class FailureHandover(FlowCase):
             record(self.cdir, "判定", src="程序", result=FAIL, round=1, text=output, summary="测试没过")
             (self.cdir / "测试结果.md").write_text(output, encoding="utf-8")
             card = Card("CARD-003", state="开发中", rework=1)
-        verdicts = iter([Verdict(PASS, 0, "ok")] if resume else [Verdict(FAIL, 1, output), Verdict(PASS, 0, "ok")])
+        # 接着跑时程序先重跑一次本卡测试（外部项目试跑 ⑭，2026-11-23）：这里让它仍没过，写代码的才会拿到报错交接
+        verdicts = iter([Verdict(FAIL, 1, output), Verdict(PASS, 0, "ok")])
         final, _ = self.flow(judge=lambda *a, **k: next(verdicts), card=card)
         self.assertEqual(final.state, "待验收")
         prompt = self.calls_for("dev")[0 if resume else 1]["prompt"]

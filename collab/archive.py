@@ -90,6 +90,16 @@ def _acceptance_text(feature: str, card: Card, cdir: Path, final_state: str) -> 
     review = _review_text(cdir)
     page = _last_conclusion(cdir / "页面检查结果.md")
     test_text = test or "没有测试记录"
+    from collab.look import last_look, look_info
+    look_line = ""
+    if look_info(cdir)["required"]:   # 第三批 ③：看页面的结果进验收记录（复查第 2 轮 6）
+        seen = last_look(read_flow(cdir))
+        if not seen:
+            look_line = "- 看页面：没看就放进项目了"
+        elif seen.get("choice") == "有出入":
+            look_line = f"- 看页面：有出入，照样放进项目——{seen.get('note') or ''}"
+        else:
+            look_line = "- 看页面：看过，和图一致"
     return "\n".join([
         f"# 验收记录：{feature}（{card.card_id}）",
         "",
@@ -98,6 +108,7 @@ def _acceptance_text(feature: str, card: Card, cdir: Path, final_state: str) -> 
         f"- 测试：{test_text}（最后一轮）",
         f"- 独立复查：{review or '未复查'}",
         f"- 页面检查：{page or '未做自动页面检查'}",
+        *([look_line] if look_line else []),
         "- 过程记录：见本目录下的 过程记录/（谁做了什么、每轮测试输出、返工原因）",
         "",
     ])

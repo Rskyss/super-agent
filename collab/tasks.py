@@ -377,6 +377,29 @@ def apply_queued_items(project, card_id: str, items: list) -> tuple:
     return applied, failed
 
 
+def redesign_note(project, card_id: str, files=None, criteria_changes=None) -> str:
+    """第三批 ⑳：这次“继续改”比原施工单大很多吗（新加的要改文件超过原范围一半，或者改了验收标准）。
+    是就返回一句提醒（只提醒，不拦），不是返回空。"""
+    from collab.scope import read_allowed
+    try:
+        body = (Path(project) / ".collab" / "cards" / str(card_id) / "需求卡.md").read_text(encoding="utf-8")
+    except OSError:
+        body = ""
+    have = set(read_allowed(body) or [])
+    new = [f for f in _clean_scope_files(files or []) if f not in have]
+    bits = []
+    if have and len(new) * 2 > len(have):
+        bits.append(f"新加 {len(new)} 个文件（原来允许改 {len(have)} 个）")
+    elif not have and new:
+        bits.append(f"新加 {len(new)} 个文件")
+    if criteria_changes:
+        bits.append("改了验收标准")
+    if not bits:
+        return ""
+    return ("这次修改比原施工单大很多（" + "、".join(bits) + "），像是重新设计。"
+            "建议先改施工单，或者另开一张卡。")
+
+
 def revise_card(project, card_id: str, text: str, files=None,
                 criteria_base=None, criteria_changes=None, attachments=None) -> None:
     """把新要求追加到任务卡片；如有结构化逐条修改或截图，全部预检通过后再落盘。

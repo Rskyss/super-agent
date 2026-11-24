@@ -97,6 +97,99 @@ var TeamCore = {
     if (need.some(function (r) { return s.results[r] && !s.results[r].ok; })) return false;
     return s.configured || need.every(function (r) { return s.results[r] && s.results[r].ok; });
   },
+  TOOL_COMMANDS: { codex: "codex", cursor: "agent", agy: "agy", qwen: "codex", tencent: "codex" },
+  commandOf: function (tool) { return TeamCore.TOOL_COMMANDS[tool] || ""; },
+  normalizeUpgrades: function (items, legacyMessages) {
+    if (Array.isArray(items) && items.length) {
+      return items.filter(function (it) { return it && typeof it === "object"; }).map(function (it) {
+        return {
+          command: String(it.command || ""),
+          name: String(it.name || ""),
+          old: String(it.old || ""),
+          now: String(it.now || ""),
+          tools: Array.isArray(it.tools) ? it.tools.map(String) : [],
+          message: String(it.message || ""),
+        };
+      }).filter(function (it) { return !!(it.command || it.message); });
+    }
+    if (Array.isArray(legacyMessages) && legacyMessages.length) {
+      return legacyMessages.filter(Boolean).map(function (m) {
+        return { command: "", name: "", old: "", now: "", tools: [], message: String(m) };
+      });
+    }
+    return [];
+  },
+  upgradeAffectedRoles: function (item, team, active) {
+    var t = team || {};
+    return (active || []).filter(function (r) {
+      if (!TeamCore.needsCheck(t, r)) return false;
+      if (item && Array.isArray(item.tools) && item.tools.length) {
+        return item.tools.indexOf(t[r]) !== -1;
+      }
+      if (item && item.command) {
+        return TeamCore.commandOf(t[r]) === item.command;
+      }
+      return true;
+    });
+  },
+  upgradeState: function (s) {
+    var nextResolved = Object.assign({}, (s && s.resolved) || {});
+    var t = (s && s.team) || {};
+    var active = (s && s.active) || [];
+    var res = (s && s.results) || {};
+    var pend = (s && s.pending) || {};
+    var visible = [];
+    var unpassedRoles = [];
+    var toCheckRoles = [];
+    var seenUnpassed = {};
+    var seenToCheck = {};
+    ((s && s.items) || []).forEach(function (item) {
+      var key = (item && (item.command || item.message)) || "";
+      if (!key || nextResolved[key]) return;
+      var roles = TeamCore.upgradeAffectedRoles(item, t, active);
+      if (!roles.length) return;
+      var remaining = roles.filter(function (r) { return !(res[r] && res[r].ok); });
+      if (!remaining.length) {
+        nextResolved[key] = true;
+        return;
+      }
+      visible.push({ item: item, affected: roles, remaining: remaining });
+      remaining.forEach(function (r) {
+        if (!seenUnpassed[r]) {
+          seenUnpassed[r] = true;
+          unpassedRoles.push(r);
+        }
+        if (!pend[r] && !seenToCheck[r]) {
+          seenToCheck[r] = true;
+          toCheckRoles.push(r);
+        }
+      });
+    });
+    return {
+      resolved: nextResolved,
+      visible: visible,
+      unpassedRoles: unpassedRoles,
+      toCheckRoles: toCheckRoles,
+      checking: unpassedRoles.length > 0 && toCheckRoles.length === 0,
+    };
+  },
+  upgradeLineText: function (entry, roleNames) {
+    var names = roleNames || { tester: "写测试", developer: "写代码", reviewer: "复查" };
+    var item = (entry && entry.item) || {};
+    var affected = (entry && entry.affected) || [];
+    var remaining = (entry && entry.remaining) || [];
+    if (item.name && item.old && item.now) {
+      var head = item.name + " 升级了（" + item.old + " → " + item.now + "）";
+      if (remaining.length && remaining.length < affected.length) {
+        return head + "，还差 " + remaining.map(function (r) { return names[r] || r; }).join("、") + " 未重新检测，确认它和你选的模型还接得上";
+      }
+      if (affected.length) {
+        return head + "，受影响岗位：" + affected.map(function (r) { return names[r] || r; }).join("、") + "，建议重新检测确认还接得上";
+      }
+      return head + "，建议重新检测确认还接得上";
+    }
+    return item.message || "";
+  },
 };
 if (typeof module !== "undefined") module.exports = TeamCore;
 
@@ -119,6 +212,7 @@ if (typeof document !== "undefined") (function () {
   var clerkStopped = false;
   var clerkSent = "";       // 正在保存的那份选择：保存成功后以它为准，不以输入框当前内容为准
   var clerkCheckFor = "";   // 正在检测的那份选择：改了就不再要这次的结果
+  var upgradeItems = [], resolvedUpgrades = {};
   document.querySelectorAll(".member").forEach(function (m) {
     var role = m.getAttribute("data-role");
     if (role && role !== "clerk") rows[role] = m;
@@ -516,6 +610,33 @@ if (typeof document !== "undefined") (function () {
     else sum.textContent = "";
 
     $("sameWarn").hidden = !(installed && t.developer === t.reviewer);
+    refreshUpgradeBanner();
+  }
+
+  function refreshUpgradeBanner() {
+    var banner = $("upgradeBanner"), text = $("upgradeText"), btn = $("recheckUpgraded");
+    if (!banner || !text || !btn) return;
+    var st = TeamCore.upgradeState({
+      items: upgradeItems, resolved: resolvedUpgrades, team: team(),
+      active: activeRoles(), results: results, pending: pending
+    });
+    resolvedUpgrades = st.resolved;
+    if (!st.visible.length) {
+      banner.hidden = true;
+      text.innerHTML = "";
+      return;
+    }
+    banner.hidden = false;
+    text.innerHTML = "";
+    st.visible.forEach(function (entry) {
+      var line = document.createElement("div");
+      line.className = "upgrade-line";
+      line.textContent = TeamCore.upgradeLineText(entry, ROLE);
+      text.appendChild(line);
+    });
+    btn.disabled = st.checking || !st.toCheckRoles.length;
+    btn.textContent = st.checking ? "检测中…" : "重新检测受影响岗位";
+    btn.setAttribute("aria-label", st.checking ? "受影响岗位检测中" : ("重新检测：" + st.toCheckRoles.map(function (r) { return ROLE[r]; }).join("、")));
   }
 
   // 改了选择：只清这几行的结果；还在路上的检测结果也不再要（它测的是改之前的选择）
@@ -547,13 +668,14 @@ if (typeof document !== "undefined") (function () {
     refresh();
   }
 
-  function watch(run, id, roles, started) {
+  function watch(run, id, roles, started, guard) {
     var limit = (checkTimeout + 30) * 1000;
     var timer = setInterval(function () {
-      if (!waitingOn(id, roles).length) { clearInterval(timer); return; }
+      if (!waitingOn(id, roles).length) { clearInterval(timer); if (guard) clearTimeout(guard); return; }
       // 到时间一定给结果（③：agy 检测曾一直停在“检测中”）
       if (Date.now() - started > limit) {
         clearInterval(timer);
+        if (guard) clearTimeout(guard);
         giveUp(id, roles, "超过 " + Math.round(limit / 60000) + " 分钟还没有结果，算没通：可能卡住了。再点一次“检测”，或换一家、换个模型");
         return;
       }
@@ -561,14 +683,19 @@ if (typeof document !== "undefined") (function () {
         d.results.forEach(function (r) {
           if (pending[r.role] === id) { delete pending[r.role]; apply(r); }
         });
-        if (d.done) { clearInterval(timer); giveUp(id, roles, "这次检测没出结果，再点一次“检测生效”"); }
+        if (d.done) { clearInterval(timer); if (guard) clearTimeout(guard); giveUp(id, roles, "这次检测没出结果，再点一次“检测生效”"); }
         refresh();
       }).catch(function () { /* 下一次再取 */ });
     }, 700);
   }
 
   function check(role) {
-    var t = team(), roles = TeamCore.rolesSharingTool(t, role, activeRoles(), rolePicks()), id = ++runSeq;
+    checkRoles(TeamCore.rolesSharingTool(team(), role, activeRoles(), rolePicks()));
+  }
+
+  function checkRoles(roles) {
+    if (!roles || !roles.length) return;
+    var t = team(), id = ++runSeq;
     roles.forEach(function (r) {
       delete results[r];
       pending[r] = id;
@@ -580,9 +707,8 @@ if (typeof document !== "undefined") (function () {
       giveUp(id, roles, "超过 " + Math.round((checkTimeout + 30) / 60) + " 分钟还没有结果，算没通：可能卡住了。再点一次“检测”，或换一家、换个模型");
     }, (checkTimeout + 30) * 1000);
     post("/api/team/check", { team: t, models: currentModels, role_models: rolePicks(), roles: roles })
-      .then(function (d) { watch(d.run, id, roles, started); })
-      .catch(function (err) { giveUp(id, roles, err.message); })
-      .then(function () { if (!waitingOn(id, roles).length) clearTimeout(guard); });
+      .then(function (d) { watch(d.run, id, roles, started, guard); })
+      .catch(function (err) { clearTimeout(guard); giveUp(id, roles, err.message); });
   }
 
   function reset() {
@@ -723,6 +849,13 @@ if (typeof document !== "undefined") (function () {
   ALL_ROLES.forEach(function (r) {
     rows[r].querySelector(".check-one").addEventListener("click", function () { check(r); });
   });
+  $("recheckUpgraded").addEventListener("click", function () {
+    var st = TeamCore.upgradeState({
+      items: upgradeItems, resolved: resolvedUpgrades, team: team(),
+      active: activeRoles(), results: results, pending: pending
+    });
+    if (st.toCheckRoles.length) checkRoles(st.toCheckRoles);
+  });
   // 团队有改动却存不了：说清楚是谁没测通，问要不要不保存就回去（②：以前悄悄丢掉）
   function leaveWithoutTeam() {
     if (!teamChanged()) { done(); return; }
@@ -760,10 +893,8 @@ if (typeof document !== "undefined") (function () {
       $("workers").hidden = !installed;
       $("noGit").hidden = installed;
       if (d.problem) { $("problem").hidden = false; $("problem").textContent = "原来的配置有问题，已换成默认值：" + d.problem; }
-      else if (d.upgraded && d.upgraded.length) {   // 工具升级了：提醒重新检测（第四轮 55）
-        $("problem").hidden = false;
-        $("problem").textContent = d.upgraded.join("；");
-      }
+      upgradeItems = TeamCore.normalizeUpgrades(d.upgraded_items, d.upgraded);
+      resolvedUpgrades = {};
       fill("tester", d.options.worker, d.team.tester);
       fill("developer", d.options.worker, d.team.developer);
       fill("reviewer", d.options.reviewer, d.team.reviewer);

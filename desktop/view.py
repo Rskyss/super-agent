@@ -10,7 +10,7 @@ import os
 import re
 import time
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from collab.config import ConfigError, load_team
 from collab.flow import card_title, read_flow, summarize, text_of, working_now
@@ -128,6 +128,98 @@ def set_archived(project_dir, card_id: str, on: bool) -> None:
         return
     if mark.exists():
         mark.unlink()
+
+
+_WALK_CARD_ID = re.compile(r"^CARD-\d{3,}$")
+
+
+def resolve_walk_image(project, card_id, kind, rel):
+    """把卡片里记下的相对图片路径换成真实路径；不安全的路径一律返回 None。
+
+    这个函数同时给卡片视图和只读看图接口用，保证两边的安全边界一样：
+    截图只认本卡“走查截图”目录里的 png；设计图只认主项目或本卡副本里的 png，
+    并且文件本身经软链接解析后也不能落进 .git / .collab。
+    """
+    try:
+        project_text = str(project or "").strip()
+        if not project_text:
+            return None
+    except (TypeError, ValueError):
+        return None
+    card = str(card_id or "").strip()
+    if not _WALK_CARD_ID.fullmatch(card) or kind not in ("shot", "design"):
+        return None
+    text = str(rel or "").strip()
+    if not text or text.startswith("/") or "\\" in text:
+        return None
+    try:
+        if Path(text).is_absolute():
+            return None
+    except (OSError, ValueError):
+        return None
+    raw_parts = text.split("/")
+    if not raw_parts or any(part in ("", ".", "..") for part in raw_parts):
+        return None
+    parts = PurePosixPath(text).parts
+    suffix = PurePosixPath(text).suffix.lower()
+    if not parts or not (suffix == ".png" or (kind == "design" and suffix in (".jpg", ".jpeg", ".webp"))):
+        return None   # 设计图多收 jpg、webp（第三批复查第 2 轮：施工单里的原型图不全是 png）
+
+    try:
+        if not Path(project_text).is_dir():
+            return None
+        proj_real = Path(project_text).resolve()
+    except (OSError, ValueError, RuntimeError):
+        return None
+    collab_dir = proj_real / ".collab"
+    cards_dir = collab_dir / "cards"
+    cdir = cards_dir / card
+    for folder in (collab_dir, cards_dir, cdir):
+        if folder.is_symlink() or not folder.is_dir():
+            return None
+    if not (cdir / "状态.json").is_file():
+        return None
+
+    if kind == "shot":
+        if parts[0] != "走查截图" or len(parts) < 2:
+            return None
+        shots_dir = cdir / "走查截图"
+        if shots_dir.is_symlink() or not shots_dir.is_dir():
+            return None
+        try:
+            shots_real = shots_dir.resolve()
+            if shots_real != (cdir.resolve() / "走查截图"):
+                return None
+            target = cdir.joinpath(*parts).resolve()
+            target.relative_to(shots_real)
+        except (OSError, ValueError, RuntimeError):
+            return None
+        if target == shots_real or not target.is_file() or target.suffix.lower() != ".png":
+            return None
+        return target
+
+    if parts[0].lower() in (".git", ".collab"):
+        return None
+    roots = []
+    wt_base = proj_real.parent / f"{proj_real.name}-worktrees"
+    wt_dir = wt_base / card
+    if wt_base.is_dir() and not wt_base.is_symlink() and wt_dir.is_dir() and not wt_dir.is_symlink():
+        try:
+            roots.append(wt_dir.resolve())
+        except (OSError, ValueError, RuntimeError):
+            pass
+    roots.append(proj_real)
+    for root_real in roots:
+        try:
+            cand = root_real.joinpath(*parts).resolve()
+            rel_resolved = cand.relative_to(root_real)
+        except (OSError, ValueError, RuntimeError):
+            continue
+        if len(rel_resolved.parts) < 1 or rel_resolved.parts[0].lower() in (".git", ".collab"):
+            continue
+        if cand.is_file() and cand.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp"):
+            return cand   # 设计图：真实文件的后缀也要是图片（链接指过去的也一样）
+    return None
 
 
 def list_cards(project_dir) -> list:
@@ -428,7 +520,7 @@ def _add_models(stations, events, project=None) -> None:
     """右上角“工具 · 模型（强度）”（㉗ ㊳）：开跑时记下的各岗模型、写方案时记下的模型；老卡没有就只写工具。
     每个岗位优先用最后一次派活记下的实际模型（复查降档后要跟着变）；没有就回退到“开跑”记录。
     写方案那一站固定是 Codex：优先用写方案记录里的模型，没有就用固定的低档设置。"""
-    models, dispatched, plan_model = {}, {}, ""
+    models, dispatched, plan_model, plan_src = {}, {}, "", ""
     for e in events:
         if e.get("kind") == "开跑" and isinstance(e.get("models"), dict):
             models.update({k: v for k, v in e["models"].items() if v})
@@ -436,7 +528,15 @@ def _add_models(stations, events, project=None) -> None:
             dispatched[e["dst"]] = e["model"]
         if e.get("kind") == "写方案" and e.get("model"):
             plan_model = str(e["model"])
+        if e.get("kind") == "方案":
+            plan_src = str(e.get("src") or "")
+        elif e.get("kind") == "写方案":
+            plan_src = ""   # 每次开写方案先清掉：程序生成后又让 Codex 重写时，重写那一轮按 Codex 显示（复查第 1 轮 14）
     for s in stations:
+        if s["key"] == "disp" and plan_src == "程序":
+            # 照施工单直接生成的方案没有模型参与（外部项目观察 ①：标成 Codex · GPT 让人看错谁干的活）
+            s["who"], s["face"], s["model"] = "程序", "程", "照施工单生成"
+            continue
         if s["key"] == "disp":
             label = plan_model or (_plan_model_label(project) if project is not None else "")
         else:
@@ -557,6 +657,44 @@ def _resolve_reply_tokens(reply: dict, dispatches: dict, cdir: Path):
     return {"ok": False, "reason": "这一步没有用量记录，也找不到实时输出"}
 
 
+_WORK_END_KINDS = ("停下", "转人工", "结束")
+_NOT_WORK_KINDS = ("开工", "接手", "追加要求", "同步", "起草", "接受", "合并")
+
+
+def _work_seconds(events, running: bool, now=None):
+    """本卡干活总耗时（秒）：每次“开跑”到它后面第一条停下/转人工/结束；停卡、等人点按钮的时间不算（外部项目试跑 ⑪）。
+    最后一段还没结束：正在跑就算到现在，进程已经没了就算到最后一条记录。从没开跑过返回 None。"""
+    total, start, last = 0.0, None, None
+    seen = False
+    for e in events:
+        when = _when(e)
+        if when is None:
+            continue
+        t = when.timestamp()
+        kind = e.get("kind")
+        if kind == "开跑":
+            if start is not None and last is not None:
+                total += max(0.0, last - start)   # 上一段没记停下就又开跑：算到它最后一条记录
+            start, last, seen = t, t, True
+            continue
+        if start is None:
+            continue
+        if kind in _NOT_WORK_KINDS:
+            # 人在操作的记录（重开记的“开工”、接手、追加要求、起草……）出现时，上一段没记停下就断了：
+            # 算到它最后一条干活记录，等人的时间不算（复查第 1 轮第 9 条、第 2 轮第 9 条）
+            total += max(0.0, last - start)
+            start = None
+            continue
+        last = t
+        if kind in _WORK_END_KINDS:
+            total += max(0.0, t - start)
+            start = None
+    if start is not None:
+        end = now if running and now is not None else last
+        total += max(0.0, (end or start) - start)
+    return int(round(total)) if seen else None
+
+
 def _add_tokens(stations, events, cdir: Path, resolved_replies=None, active_dispatch_idx=_UNSET) -> dict:
     """把各站位的用量加起来，另算交接资料、其他回复和辅助会话；只加 tokens 字段，不改原有字段。"""
     dispatches = _dispatches_by_seq(events)
@@ -565,6 +703,18 @@ def _add_tokens(stations, events, cdir: Path, resolved_replies=None, active_disp
     station_total = 0
     children = 0
     card_missing = 0
+    fresh = 0   # 没走缓存的读入 + 写出（外部项目观察 ㉓：8000 万里 96% 是重复读缓存，合计看着吓人）
+
+    fresh_known = True   # 有一轮缺读入/缓存/写出明细（老记录）就算不出，整项不显示，免得少算多算（复查第 1 轮 10）
+
+    def add_fresh(tok):
+        nonlocal fresh, fresh_known
+        if not (isinstance(tok, dict) and tok.get("ok")):
+            return
+        if not all(tok.get(k) is not None for k in ("input", "cached", "output")):   # 空值也算不出（复查第 2 轮 B3）
+            fresh_known = False
+            return
+        fresh += max(0, _token_num(tok.get("input")) - _token_num(tok.get("cached"))) + _token_num(tok.get("output"))
 
     def reply_tokens(e):
         seq = e.get("seq")
@@ -591,6 +741,8 @@ def _add_tokens(stations, events, cdir: Path, resolved_replies=None, active_disp
         if merged is not None:
             if merged.get("ok"):
                 station_total += _token_num(merged.get("total"))
+                for one in non_pending:   # 一轮一轮算，合并后缺的字段会被当成 0
+                    add_fresh(one)
             card_missing += _token_num(merged.get("missing"))
             take_children(non_pending)
         station = next((s for s in stations if s.get("key") == key), None)
@@ -643,11 +795,15 @@ def _add_tokens(stations, events, cdir: Path, resolved_replies=None, active_disp
             continue
         if tok.get("ok"):
             other += _token_num(tok.get("total")) + _token_num(tok.get("children"))
+            add_fresh(tok)
+            fresh += _token_num(tok.get("children"))
         elif not tok.get("pending"):
             card_missing += 1
 
     other += children
     result = {"total": station_total + other, "other": other}
+    if fresh_known and fresh + children > 0:
+        result["fresh"] = fresh + children   # 小帮手的用量拆不出缓存，整笔算进新消耗（宁可多算）
     if card_missing > 0:
         result["missing"] = card_missing
     return result
@@ -679,7 +835,8 @@ def _insert_takeover_station(stations, event):
     """有“接手”记录时，在复查和确认之间加一格（CARD-020；只认接手命令记下的）。"""
     detail = (f"改了 {_count(event.get('changed'))} 处 · Codex 复查 {_count(event.get('reviews'))} 轮"
               f" · {_count(event.get('later'))} 条记进以后再修")
-    station = {"key": "takeover", "role": "Claude 接手", "who": "Claude", "face": "Cl",
+    who = str(event.get("src") or "Claude")   # 接手记录写的是谁就显示谁（观察 ⑬：外部项目是 Gemini 接手）
+    station = {"key": "takeover", "role": f"{who} 接手", "who": who, "face": who[:2],
                "state": "done", "detail": detail, "live": False, "elapsed": None, "quiet": None}
     index = next((i for i, s in enumerate(stations) if s["key"] == "accept"), len(stations))
     stations.insert(index, station)
@@ -771,6 +928,43 @@ def _chat_view(base: dict, chat: dict, tools: dict, reviewer_on: bool, dispatche
                 now={"text": _plain(now_text), "tone": tone})
 
 
+def _walk_shots(project: Path, card_id: str, cdir: Path, events: list) -> list:
+    """这次交活最后一次通过的走查截图；只在文件仍存在且没越界时返回。"""
+    since = 0
+    for e in events:
+        if (e.get("kind") == "回复" and e.get("src") == "开发员") or e.get("kind") == "追加要求":
+            seq = e.get("seq")
+            if isinstance(seq, int) and not isinstance(seq, bool) and seq > since:
+                since = seq
+    walk = None
+    for e in events:
+        seq = e.get("seq")
+        if not isinstance(seq, int) or isinstance(seq, bool) or seq <= since:
+            continue
+        if e.get("kind") == "页面检查" and e.get("walk") is True:
+            walk = e
+    if not walk or walk.get("result") != PASS:
+        return []
+    shots = walk.get("shots")
+    if not isinstance(shots, list) or not shots:
+        return []
+    out = []
+    for item in shots:
+        if not isinstance(item, dict):
+            continue
+        step = str(item.get("步骤") or "").strip()
+        if not step:
+            continue
+        shot = str(item.get("截图") or "").strip()
+        if resolve_walk_image(str(project), card_id, "shot", shot) is None:
+            continue
+        design = str(item.get("设计图") or "").strip()
+        if design and resolve_walk_image(str(project), card_id, "design", design) is None:
+            design = ""
+        out.append({"step": step, "shot": shot, "design": design})
+    return out
+
+
 def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session=None) -> dict:
     project = Path(project_dir)
     now = now or datetime.now()
@@ -790,7 +984,7 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
     chat = chat_session.live_summary(now) if chat_session is not None else None
     base = {"installed": installed, "project": project.name, "card": None, "cards": [], "handoffs": [],
             "back": False, "stale": False, "elapsed": 0, "tokens": {"total": 0, "other": 0},
-            "stations": _stations(tools, team_reviewer_on, dispatcher)}
+            "stations": _stations(tools, team_reviewer_on, dispatcher), "walk_shots": []}
     for s in base["stations"]:
         _set(base["stations"], s["key"], "idle")
     if not installed:
@@ -847,6 +1041,7 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
     dispatches = _dispatches_by_seq(events)
     resolved_replies = {}
     tokens = _add_tokens(stations, events, cdir, resolved_replies=resolved_replies, active_dispatch_idx=active_idx)
+    tokens_fresh = tokens.pop("fresh", None)   # 单独一项给右栏（㉓），合计那份照旧只有 total/other/missing
     card_test_cmd = _card_test_command(cdir)
     phase = _plain_phase(card_phase(str(project), card_id))
     finished_at = None
@@ -856,10 +1051,11 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
         if merged_records:
             when = _when(merged_records[-1])
             finished_at = when.timestamp() if when is not None else None
+    running = bool(state in ("开发中", "待测试", "测试中") and last_run_pid is not None and not interrupted_run)
     view = dict(base, card={"id": card_id, "title": _title(cdir, card_id), "state": state,
                             "rework": card.rework, "round": rnd, "phase": phase},
-                stations=stations, handoffs=_handoffs(events), tokens=tokens,
-                finished_at=finished_at)
+                stations=stations, handoffs=_handoffs(events), tokens=tokens, tokens_fresh=tokens_fresh,
+                finished_at=finished_at, work_seconds=_work_seconds(events, running, time.time()))
 
     if not events:
         _fallback(stations, state)
@@ -916,9 +1112,13 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
         _set(stations, "disp", *disp.get(state, ("done", "方案已定，后面有人卡住会叫你")))
 
     quiet = None
+    # 轮数按最后一次“改要求”之后算（外部项目观察 ㉑：右栏“第 10 轮”是整张卡从头累计，看着像失控；
+    # 退回次数、停卡上限都按这一口径），整张卡累计放鼠标提示
+    revise_seq = max((int(e.get("seq") or 0) for e in events if e.get("kind") == "追加要求"), default=0)
     for role, key in ROLE_KEYS.items():
         idle_text = {"test": "等开工", "dev": "等测试写完", "rev": "等测试通过" if reviewer_on else "这次不复查"}[key]
         history = []
+        before_revise = sum(1 for r in reply_list[role] if int(r.get("seq") or 0) <= revise_seq)
         for reply in reply_list[role]:
             seq = reply.get("seq")
             resolved = (resolved_replies[seq] if seq in resolved_replies
@@ -940,7 +1140,7 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
         if open_ev and open_ev.get("dst") == role:
             if interrupted_run:
                 _set(stations, key, "wait", "上次在这里中断，可以点“接着跑”继续", live=False,
-                     history=history, spent=spent, rounds=len(history) + 1)
+                     history=history, spent=spent, rounds=len(history) + 1 - before_revise, earlier=before_revise)
             else:
                 started = _when(open_ev)
                 quiet = _quiet_seconds(project, card_id, cdir, open_ev, now)
@@ -949,7 +1149,7 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
                 _set(stations, key, "active", live_line or open_ev.get("summary", ""), live=True,
                      elapsed=int((now - started).total_seconds()) if started else None,
                      quiet=int(quiet) if quiet is not None else None,
-                     history=history, spent=spent, rounds=len(history) + 1)
+                     history=history, spent=spent, rounds=len(history) + 1 - before_revise, earlier=before_revise)
         elif role in replies:
             r = replies[role]
             failed = not r.get("ok", True) or bool(re.match(r"结论[：:]\s*不通过", r.get("summary", "")))
@@ -971,7 +1171,7 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
                     failed = True
                     detail = stopped_after.get("summary") or "复查未放行"
             _set(stations, key, "fail" if failed else "done", detail,
-                 history=history, spent=spent, rounds=len(history))
+                 history=history, spent=spent, rounds=len(history) - before_revise, earlier=before_revise)
         else:
             _set(stations, key, "idle", idle_text)
 
@@ -1060,7 +1260,7 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
                 _set(stations, key, "idle", f"{words}（上一轮结果在“交接”里）")
     for st in stations:   # 最终没开始的环节不能残留轮数、用时、明细
         if st.get("key") in ROLE_KEYS.values() and st.get("state") == "idle":
-            for field in ("history", "spent", "rounds"):
+            for field in ("history", "spent", "rounds", "earlier"):
                 st.pop(field, None)
 
     # Claude 接手（CARD-020）：最新接手在最后一次复查结论之后、复查原来是红叉，才改成绿勾并写明；
@@ -1072,7 +1272,7 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
         if (rev_st is not None and rev_st.get("state") == "fail"
                 and int(takeovers[-1].get("seq") or 0) > last_conclusion):
             rev_st["state"] = "done"
-            rev_st["detail"] = (rev_st.get("detail") or "") + "，已由 Claude 接手修好"
+            rev_st["detail"] = (rev_st.get("detail") or "") + f"，已由 {takeovers[-1].get('src') or 'Claude'} 接手修好"
 
     if disp_busy_after:
         _set(stations, "accept", "idle", "等最终核验完")
@@ -1187,7 +1387,7 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
         view["live"] = True
         view["quiet"] = disp_st.get("quiet")
         view["worker_elapsed"] = disp_st.get("elapsed")
-    if code in ("review", "merge_failed"):
+    if code in ("review", "merge_failed", "look_pending"):
         start = {}
         start_path = cdir / "开工.json"
         if start_path.is_file():
@@ -1218,4 +1418,15 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
         root = Path(project)
         copy_there = (root.parent / f"{root.name}-worktrees" / card_id).is_dir()
         view["accept"] = {"result": result, "how": how, "can_preview": bool(cmd and url), "copy_there": copy_there}
+    from collab.look import last_look, look_info
+    look = look_info(cdir)
+    if look["required"]:   # 第三批 ③：施工单要求对照的图和原话；图能打开的给出路径（只读看图接口按“设计图”认）
+        images = []
+        for rel in look["images"]:
+            images.append({"path": rel, "name": PurePosixPath(rel).name,
+                           "exists": resolve_walk_image(project, card_id, "design", rel) is not None})
+        seen = last_look(events)
+        view["look"] = {"line": look["line"], "images": images,
+                        "done": bool(seen), "choice": seen.get("choice", ""), "note": seen.get("note", "")}
+    view["walk_shots"] = _walk_shots(project, card_id, cdir, events)
     return view

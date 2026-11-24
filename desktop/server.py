@@ -31,7 +31,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:  # 直接用 python3 desktop/server.py 启动时也能找到 collab
     sys.path.insert(0, str(ROOT))
 
-from collab.check import DEFAULT_TIMEOUT as CHECK_TIMEOUT, check_team, version_changes  # noqa: E402
+from collab.check import DEFAULT_TIMEOUT as CHECK_TIMEOUT, check_team, version_changes_detail  # noqa: E402
 from collab.cli import cmd_approve, cmd_confirm_profile  # noqa: E402
 from collab.dispatch import save_paths  # noqa: E402
 from collab.config import (  # noqa: E402
@@ -69,7 +69,7 @@ from desktop.clerk.desk import ClerkDesk  # noqa: E402
 from desktop.clerk.providers import PROVIDERS, account_for, find as find_provider  # noqa: E402
 from desktop.clerk.revision import prepare_revision  # noqa: E402
 from desktop.clerk.tasks import (  # noqa: E402
-    StopWrongCard, TaskBusy, TaskWatcher, apply_revise, launch, running, stop_construction,
+    StopFailed, StopWrongCard, TaskBusy, TaskWatcher, apply_revise, launch, running, stop_construction,
     end_drafting as _end_drafting,
 )
 from desktop.preview import PreviewHub  # noqa: E402
@@ -84,7 +84,7 @@ from desktop.dsh_dispatcher import (  # noqa: E402
     validate_card_id,
 )
 from desktop.shell_path import adopt_terminal_path, merged_path, terminal_path  # noqa: E402
-from desktop.view import card_view, event_text, list_cards, set_archived  # noqa: E402
+from desktop.view import card_view, event_text, list_cards, resolve_walk_image, set_archived  # noqa: E402
 
 _TOOLS = [{"value": "codex", "label": "Codex"}, {"value": "cursor", "label": "Cursor"}, {"value": "agy", "label": "agy"}]
 _WORKER_TOOLS = _TOOLS + [{"value": "qwen", "label": "千问"}, {"value": "tencent", "label": "腾讯云"}]  # 千问（临时，用户 11-13）
@@ -216,7 +216,11 @@ class Handler(BaseHTTPRequestHandler):
             return
         card = Card.load(state_path)
         if card.state == "需Claude介入" and action in ("discard", "accept_issues", "resume"):   # 继续改在 apply_revise 里停
-            end_drafting(project, card_id, cdir)
+            try:
+                end_drafting(project, card_id, cdir)
+            except StopFailed as exc:
+                self._card_action_error(str(exc))
+                return
 
         if action == "accept":
             if running(project, "merge") is not None:
@@ -230,6 +234,20 @@ class Handler(BaseHTTPRequestHandler):
             except (TaskBusy, OSError):
                 self._card_action_error("另一张卡正在放进项目，等它结束再试")
                 return
+            self._json({"ok": True})
+            return
+
+        if action in ("look_ok", "look_diff"):   # 第三批 ③：看过页面才放行，记下谁、什么时候、选了哪个、写了什么
+            if action not in actions:
+                self._card_action_error("现在不能做这个操作，请先看我说的阶段。")
+                return
+            note = (text or "").strip()
+            if action == "look_diff" and not note:
+                self._card_action_error("请写一句哪里和图不一样")
+                return
+            flow_record(cdir, "看页面", src="你", dst="程序",
+                        choice="一致" if action == "look_ok" else "有出入", note=note[:2000],
+                        summary="看过页面，和图一致" if action == "look_ok" else f"看过页面，有出入：{note[:200]}")
             self._json({"ok": True})
             return
 
@@ -371,7 +389,7 @@ class Handler(BaseHTTPRequestHandler):
         if action == "stop":
             try:
                 stop_construction(project, card_id)
-            except StopWrongCard as exc:
+            except (StopWrongCard, StopFailed) as exc:
                 self._card_action_error(str(exc))
                 return
             flow_record(cdir, "停下", src="你", dst="程序", summary="施工已停下")
@@ -1569,11 +1587,13 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 problem = ""
             try:
-                upgraded = version_changes(project, team)   # 工具升级后提醒重新检测（第四轮 55）
+                upgraded_items = version_changes_detail(project, team)   # 工具升级后提醒重新检测（第四轮 55）
+                upgraded = [item["message"] for item in upgraded_items]
             except Exception:  # noqa: BLE001
+                upgraded_items = []
                 upgraded = []
             self._json({"team": team, "models": models, "role_models": role_models, "problem": problem,
-                        "upgraded": upgraded,
+                        "upgraded": upgraded, "upgraded_items": upgraded_items,
                         "git": (Path(project) / ".git").exists(),
                         "installed": (Path(project) / ".collab" / "cards").is_dir(), "options": _TEAM_OPTIONS,
                         "model_options": load_model_options(), "check_timeout": CHECK_TIMEOUT})
@@ -1656,6 +1676,30 @@ class Handler(BaseHTTPRequestHandler):
 
     def _clerk_get(self, path: str, query: dict) -> None:
         desk, project = self.server.desk, query.get("project", "")
+        # 只读看图：必须在建积木库目录之前处理，哪怕项目/积木库不存在也绝不创建任何目录
+        if path == "/api/clerk/card/image":
+            card_id = query.get("card", "")
+            kind = query.get("kind", "")
+            rel = str(query.get("path") or "").strip()
+            if not project or not Path(project).is_dir():
+                self._json({"error": "项目文件夹不存在"}, 400)
+                return
+            if not card_id or not _CARD_ID.fullmatch(card_id):
+                self._json({"error": "卡片编号不对"}, 400)
+                return
+            if kind not in ("shot", "design"):
+                self._json({"error": "看图类型不对"}, 400)
+                return
+            if not rel:
+                self._json({"error": "需要图片路径"}, 400)
+                return
+            target = resolve_walk_image(project, card_id, kind, rel)
+            if target is None:
+                self._json({"error": "没有这张图"}, 404)
+                return
+            kind_type = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp"}
+            self._send(200, target.read_bytes(), kind_type.get(target.suffix.lower(), "image/png"))
+            return
         if blocks_tools.is_blocks_home(project):
             Path(project).mkdir(parents=True, exist_ok=True)
         if path == "/api/clerk/list":
@@ -1927,6 +1971,14 @@ class Handler(BaseHTTPRequestHandler):
                 except RuntimeError as exc:
                     self._card_action_error(str(exc))
                     return
+                try:   # 第三批 ⑳：改动比原施工单大很多时，确认前提醒一句（只提醒，不拦）
+                    from collab.tasks import redesign_note
+                    note = redesign_note(project, card_id, [str(f) for f in files][:20],
+                                         prepared.get("criteria_changes") if isinstance(prepared, dict) else None)
+                except Exception:  # noqa: BLE001 — 提醒算不出不影响修改
+                    note = ""
+                if note and isinstance(prepared, dict):
+                    prepared = dict(prepared, redesign=note)
                 self._json(prepared)
                 return
             self._do_card_action(

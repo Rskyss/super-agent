@@ -909,6 +909,13 @@ def _publish_revise_box_locked(
         data["criteria_changes"] = list(criteria_changes)
     if summary:
         data["summary"] = str(summary)
+    try:   # 第三批 ⑳：行政确认框也提醒“像是重新设计”（只提醒，不拦）
+        from collab.tasks import redesign_note
+        note = redesign_note(conv.project, card_id, None, criteria_changes)
+    except Exception:  # noqa: BLE001
+        note = ""
+    if note:
+        data["redesign"] = note
     _save(conv.project, data)
     _append_proposal_line(conv, pid)
     conv.emit(event_from_proposal(data))
@@ -1271,6 +1278,8 @@ def event_from_proposal(data: dict) -> dict:
             base["criteria_base"] = data["criteria_base"]
         if "criteria_changes" in data:
             base["criteria_changes"] = data["criteria_changes"]
+        if data.get("redesign"):
+            base["redesign"] = data["redesign"]
     elif kind == "team":
         base["role"] = data.get("role") or ""
         base["tool"] = data.get("tool") or ""
@@ -1318,6 +1327,30 @@ class StopWrongCard(Exception):
     """后台记录不是这张卡：不能从这里停。"""
 
 
+class StopFailed(Exception):
+    """发了停止信号，进程还活着：不能记成“已停下”（外部项目观察 ㉖）。"""
+
+
+_STOP_FAILED_WORDS = "发了停止信号，后台那个进程还在跑，没停住；过一会儿再试，或在终端里把它停掉"   # 复查第 2 轮 B4：卡住时没有“停下”按钮
+
+
+def _send_stop(pid: int, sig) -> bool:
+    """先按进程组发（窗口开的卡自带进程组，连同它叫起的工具一起停）；不是组长（终端里起的卡）就只发给它本身。
+    进程已经没了返回 False。"""
+    try:
+        os.killpg(pid, sig)
+        return True
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+    try:
+        os.kill(pid, sig)
+        return True
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return False
+
+
 _stop_lock = threading.Lock()
 _stopping = set()
 
@@ -1334,8 +1367,25 @@ def _read_backend_raw(project: str, kind: str) -> Optional[Dict[str, Any]]:
 
 
 def stop_construction(project: str, card_id: str) -> None:
-    """只停这张卡。正在停时第二次直接成功。工具不响应则强停，总等待上限 8 秒。"""
+    """只停这张卡。正在停时第二次等第一次停完再看结果（复查第 2 轮 3：原来直接报成功）。工具不响应则强停，总等待上限 8 秒。"""
     key = f"{project}\0{card_id}"
+    with _stop_lock:
+        busy = key in _stopping
+    if busy:
+        deadline = time.time() + 12
+        while time.time() < deadline:
+            with _stop_lock:
+                if key not in _stopping:
+                    break
+            time.sleep(0.05)
+        rec = _read_backend_raw(project, "run")
+        if rec is not None and str(rec.get("card") or "") == str(card_id):
+            try:
+                if process_is_alive(int(rec["pid"]), rec.get("started")):
+                    raise StopFailed(_STOP_FAILED_WORDS)
+            except (TypeError, ValueError, KeyError):
+                pass
+        return
     with _stop_lock:
         if key in _stopping:
             return
@@ -1349,31 +1399,25 @@ def stop_construction(project: str, card_id: str) -> None:
         except (TypeError, ValueError, KeyError):
             return
         started = rec.get("started")
-        try:
-            os.killpg(pid, signal.SIGTERM)
-        except ProcessLookupError:
+        if not process_is_alive(pid, started):
             return
-        except OSError:
-            try:
-                os.kill(pid, signal.SIGTERM)
-            except OSError:
-                return
+        _send_stop(pid, signal.SIGTERM)   # 组找不到不再当成“已经停了”（㉖：终端起的卡按组停不掉，还记成已停下）
         deadline = time.time() + 8
         while time.time() < deadline:
             if not process_is_alive(pid, started):
                 break
             time.sleep(0.05)
         if process_is_alive(pid, started):
-            try:
-                os.killpg(pid, signal.SIGKILL)
-            except OSError:
-                try:
-                    os.kill(pid, signal.SIGKILL)
-                except OSError:
-                    pass
+            _send_stop(pid, signal.SIGKILL)
+        try:   # 主进程退了、同组的子工具还在（复查第 1 轮 1）：窗口开的卡自带进程组，整组补一刀；不是组长的没有这个组
+            os.killpg(pid, signal.SIGKILL)
+        except OSError:
+            pass
         kill_deadline = time.time() + 2
         while time.time() < kill_deadline and process_is_alive(pid, started):
             time.sleep(0.05)
+        if process_is_alive(pid, started):
+            raise StopFailed(_STOP_FAILED_WORDS)
     finally:
         with _stop_lock:
             _stopping.discard(key)
@@ -1418,11 +1462,48 @@ def end_drafting(project: str, card_id: str) -> bool:
         stop_construction(project, card_id)
     except StopWrongCard:
         return False
+    # StopFailed 不吞：起草没停住时，放弃、接受、继续改都不能接着做（复查第 1 轮 4），由调用方报“没停住”
     cdir = Path(project) / ".collab" / "cards" / card_id
     drafts = [e for e in _flow_events(cdir) if e.get("kind") == "起草"]
     if drafts and drafts[-1].get("phase") == "开始":
         flow_record(cdir, "起草", src="程序", dst="你", phase="没成", summary="起草被你的操作打断了")
     return True
+
+
+RULE_NOT_CHOSEN = "规则选项还没挑：删掉不要的选项，只留一个（或自己写一句规则）再发"
+
+
+def _check_rule_chosen(project, card_id, words: str) -> None:
+    """第三批 ⑱：停在“需要定规则”时，把起草的几套选项原样整份发出去，等于没定规则（复查第 2 轮 5）。"""
+    from collab.flow import read_flow
+    events = read_flow(Path(project) / ".collab" / "cards" / str(card_id))
+    stop = next((e for e in reversed(events) if e.get("kind") == "转人工"), None)
+    if not stop or stop.get("cause") != "需要定规则":
+        return
+    since = max((int(e.get("seq") or 0) for e in events if e.get("kind") == "追加要求"), default=0)
+    first = min((int(e.get("seq") or 0) for e in events if e.get("kind") == "转人工"
+                 and e.get("cause") == "需要定规则" and int(e.get("seq") or 0) > since), default=0)
+    drafts = [e for e in events if e.get("kind") == "起草" and e.get("phase") == "好了"
+              and int(e.get("seq") or 0) > first]   # 硬接着跑又停一次也认最早那份草稿（第二次确认复查）
+    if not drafts:
+        return
+    from collab.flow import text_of
+    draft = (text_of(Path(project) / ".collab" / "cards" / str(card_id), drafts[-1]) or drafts[-1].get("text") or "")
+    norm = lambda t: "".join(str(t or "").split())
+    if draft and norm(words) == norm(draft):
+        raise RuntimeError(RULE_NOT_CHOSEN)
+
+
+def _note_redesign(project, card_id, files, criteria_changes) -> None:
+    """第三批 ⑳：这次修改像是重新设计，用户仍确认（右栏按钮、行政确认框都走 apply_revise）→ 卡片里留一笔。"""
+    try:
+        from collab.tasks import redesign_note
+        note = redesign_note(project, card_id, files, criteria_changes)
+    except Exception:  # noqa: BLE001 — 提醒算不出不影响修改
+        note = ""
+    if note:
+        flow_record(Path(project) / ".collab" / "cards" / str(card_id), "提醒", src="程序", dst="你",
+                    summary="提醒过这次修改像是重新设计，用户仍按这次的修改继续", text=note)
 
 
 def apply_revise(project: str, card_id: str, text: str, files=None,
@@ -1444,6 +1525,7 @@ def apply_revise(project: str, card_id: str, text: str, files=None,
             queue_revision(project, card_id, words, criteria_base=criteria_base, criteria_changes=criteria_changes)
         except TaskError as exc:
             raise RuntimeError(str(exc)) from exc
+        _note_redesign(project, card_id, None, criteria_changes)   # 施工中排队的修改也留一笔（复查第 2 轮 7）
         return "已确认，这一轮跑完生效"
     # 直接生效这一段（判断阶段、核对验收标准基线、记追加要求、开工）整段加卡片生效锁，
     # 和停下后的自动生效、调度员停顿点共用一把，免得同时写同一份文件互相覆盖（复查第 3 轮严重）
@@ -1460,6 +1542,7 @@ def apply_revise(project: str, card_id: str, text: str, files=None,
         if "revise" not in (phase.get("actions") or []):
             raise RuntimeError("现在不能修改")
         if phase.get("code") in ("plan_ready", "plan_waiting", "plan_failed", "planning"):
+            _note_redesign(project, card_id, files, criteria_changes)   # 批准方案前改要求也留一笔（复查第 3 轮新 5）
             try:
                 revise_card(project, card_id, words, files=files,
                             criteria_base=criteria_base, criteria_changes=criteria_changes,
@@ -1472,7 +1555,11 @@ def apply_revise(project: str, card_id: str, text: str, files=None,
                 pass
             return
         if phase.get("code") == "blocked":
-            end_drafting(project, card_id)   # 停下后还在起草的先停掉（按钮、行政确认都走这里，第四轮复查第 2 轮）
+            _check_rule_chosen(project, card_id, words)
+            try:
+                end_drafting(project, card_id)   # 停下后还在起草的先停掉（按钮、行政确认都走这里，第四轮复查第 2 轮）
+            except StopFailed as exc:
+                raise RuntimeError(str(exc)) from exc
         if running(project, "run") is not None:
             raise RuntimeError("已有一张卡在施工，等它做完再改")
         if running(project, "merge") is not None or merge_unfinished(project):
@@ -1487,6 +1574,7 @@ def apply_revise(project: str, card_id: str, text: str, files=None,
         if not command:
             raise RuntimeError("这张卡没有测试命令，没法接着改。可以点“放弃这个需求”，再提一张新卡。")
         sync_copy(project, card_id)  # 同步不成会抛错，这时什么都没改
+        _note_redesign(project, card_id, files, criteria_changes)   # 要在新文件写进允许范围之前算（复查第 2 轮 7）
         try:
             revise_card(project, card_id, words, files=files,
                         criteria_base=criteria_base, criteria_changes=criteria_changes,
@@ -1529,7 +1617,14 @@ def _flush_queued_locked(project: str, card_id: str, cdir: Path) -> bool:
     if "revise" not in (phase.get("actions") or []):
         return False
     if phase.get("code") == "blocked":
-        end_drafting(project, card_id)
+        from collab.flow import read_flow
+        stop_ev = next((e for e in reversed(read_flow(cdir)) if e.get("kind") == "转人工"), None)
+        if stop_ev and stop_ev.get("cause") == "需要定规则":
+            return False   # 等人定规则：排着的无关修改不能让卡自己开工（第三批复查第 3 轮新 1），等规则写进“继续改”一起生效
+        try:
+            end_drafting(project, card_id)
+        except StopFailed:
+            return False   # 起草没停住：排着的修改先不取，下次再试
     command = ""
     start = cdir / "开工.json"
     if start.is_file():

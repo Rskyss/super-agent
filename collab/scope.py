@@ -58,7 +58,9 @@ def _matches(path: str, pattern: str) -> bool:
     pattern = (pattern or "").replace("\\", "/").strip()
     if not pattern:
         return False
-    if any(ch in pattern for ch in "*?["):
+    # 只带方括号、不带 * ? 的按真文件名认：Next.js 的 app/[id]/page.tsx 这类路径到处都是（外部项目试跑 ㉕，
+    # 当成通配符会漏提交、放进项目失败）
+    if any(ch in pattern for ch in "*?"):
         if fnmatch.fnmatch(path, pattern):
             return True
     else:
@@ -69,7 +71,7 @@ def _matches(path: str, pattern: str) -> bool:
     # 不当文件夹前缀用——以括号结尾的真文件夹名（“docs/v1.0（施工单）”）只按原样匹配，不会被截短放宽（Codex 复查 11-20）
     cut = _NOTE.sub("", pattern)
     if cut != pattern and cut:
-        if any(ch in cut for ch in "*?["):
+        if any(ch in cut for ch in "*?"):
             return fnmatch.fnmatch(path, cut)
         return path == cut
     return False

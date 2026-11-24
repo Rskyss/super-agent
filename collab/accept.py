@@ -6,7 +6,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from collab.flow import read_flow, record
-from collab.fullrun import FullRunner, applicable, zero_tests
+from collab.fullrun import applicable, runner_for, zero_tests
 from collab.judge import FAIL, PASS, STALE, TIMEOUT, Verdict
 from collab.ledger import ledger_add
 from collab.phase import _blocked_detail, _last_stop, _stop_text, is_review_stop
@@ -77,10 +77,12 @@ def accept_remaining(project, card_id: str, runner=None) -> dict:
         return _fail_record(cdir, "找不到改好的版本，没法跑全部测试")
 
     try:
-        if not applicable(worktree):
+        runner = runner or runner_for(project_path)
+        check = getattr(runner, "applicable", None)
+        if not (check(worktree) if callable(check) else applicable(worktree)):
             verdict = Verdict(PASS, 0, "")
         else:
-            verdict = (runner or FullRunner()).run(worktree)
+            verdict = runner.run(worktree)
     except Exception as exc:  # noqa: BLE001 — 准备或运行意外出错都要留下可见失败记录
         return _fail_record(cdir, _OTHER_FAIL_REASON, str(exc))
 

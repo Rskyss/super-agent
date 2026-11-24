@@ -420,6 +420,8 @@ if (typeof document !== "undefined") (function () {
   var names = { codex: "Codex", claude: "Claude" }, faces = { codex: "Cx", claude: "Cl" };
   var clerkMode = params.get("clerk") === "1";   // 聊天找行政人员：走 API，不连 Codex
   var butlerMode = clerkMode && params.get("butler") === "1";  // 积木库窗口里：同一套聊天，名字叫积木库管家
+  var shellMode = params.get("shell") === "1";   // 在 Mac 外壳窗口里打开：查看大图铺满整窗
+  var shellPage = params.get("shell_page") || "";  // 外壳为本次加载分配的页面批次号，拦截刷新前旧页面迟到的看图通知
   var model = new ChatCore.Model(), drawn = [];
   var $ = function (id) { return document.getElementById(id); };
   var list = $("msgs");
@@ -1296,6 +1298,17 @@ if (typeof document !== "undefined") (function () {
             el.querySelector("h3").textContent = "继续改？";
             var rowsEl = el.querySelector(".rows");
             var changes = Array.isArray(b.criteria_changes) ? b.criteria_changes : [];
+            if (b.redesign) {   // 第三批 ⑳：像是重新设计时先提醒一句
+              var warnRow = document.createElement("div");
+              var warnLbl = document.createElement("span");
+              warnLbl.textContent = "提醒";
+              var warnVal = document.createElement("p");
+              warnVal.style.whiteSpace = "pre-wrap";
+              warnVal.textContent = String(b.redesign);
+              warnRow.appendChild(warnLbl);
+              warnRow.appendChild(warnVal);
+              rowsEl.appendChild(warnRow);
+            }
             if (changes.length > 0 && b.summary) {
               var critRow = document.createElement("div");
               var critLbl = document.createElement("span");
@@ -1712,12 +1725,17 @@ if (typeof document !== "undefined") (function () {
   }
   function syncNowFold(line) {
     if (!line) return;
-    line.classList.toggle("fold", nowFold);
-    line.classList.toggle("open", !nowFold);
-    // 判断“一行放不放得下”必须按收起时的高度算：展开后文字区已经长高，再拿它比会把多行全文误判成一行（CARD-020 复查退回）
-    if (!nowFold) { line.classList.remove("open"); line.classList.add("fold"); }
+    var cls = line.classList;
+    if (cls) {
+      cls.toggle("fold", nowFold);
+      cls.toggle("open", !nowFold);
+      // 判断“一行放不放得下”必须按收起时的高度算：展开后文字区已经长高，再拿它比会把多行全文误判成一行（CARD-020 复查退回）
+      if (!nowFold) { cls.remove("open"); cls.add("fold"); }
+    } else {
+      line.className = nowFold ? "fold" : "open";   // 极简模拟页没有 classList
+    }
     var fits = line.scrollHeight <= line.clientHeight + 1;
-    if (!nowFold) { line.classList.remove("fold"); line.classList.add("open"); }
+    if (!nowFold && cls) { cls.remove("fold"); cls.add("open"); }
     var show = !line.hidden && !!line.textContent && !fits;
     nowFoldButtons().forEach(function (btn) {
       if (!btn) return;
@@ -1758,6 +1776,7 @@ if (typeof document !== "undefined") (function () {
     if (box) { box.hidden = true; box.textContent = ""; }
     var foldBtn = document.getElementById("cardInfoFold");
     if (foldBtn) foldBtn.hidden = true;
+    resetWalk(head);
     nowFoldButtons().forEach(function (btn) { if (btn) btn.hidden = true; });
     nowFold = true;
     var nowLine = document.getElementById("cardNow");
@@ -1767,6 +1786,213 @@ if (typeof document !== "undefined") (function () {
       nowLine.className = "";   // 收起/展开的标记一起清掉（直接赋值：简陋的模拟页没有 classList，CARD-020 全量测试）
     }
     if (window.__cardPhaseTimer) clearInterval(window.__cardPhaseTimer);
+  }
+
+  // 卡片原文下的“走查截图”（卡 B）：默认展开，可收起，点图看大图，3 秒刷新不重置查看状态
+  var walkFold = false, lastWalkKey = "", walkLightUrl = "", walkLightbox = null, walkEscBound = false;
+
+  function walkImageUrl(cardId, kind, path) {
+    return "/api/clerk/card/image?" + new URLSearchParams({
+      project: project, card: cardId, kind: kind, path: path, token: token
+    }).toString();
+  }
+
+  function ensureWalkBox(head, box) {
+    var walk = document.getElementById("cardWalk");
+    if (walk) return walk;
+    walk = document.createElement("section");
+    walk.id = "cardWalk";
+    walk.hidden = true;
+    var headRow = document.createElement("div");
+    headRow.className = "walk-head";
+    var title = document.createElement("span");
+    title.id = "cardWalkTitle";
+    var foldBtn = document.createElement("button");
+    foldBtn.type = "button";
+    foldBtn.id = "cardWalkFold";
+    foldBtn.textContent = "收起截图";
+    foldBtn.addEventListener("click", function () {
+      walkFold = !walkFold;
+      applyWalkFold();
+    });
+    headRow.appendChild(title);
+    headRow.appendChild(foldBtn);
+    var list = document.createElement("div");
+    list.id = "cardWalkList";
+    walk.appendChild(headRow);
+    walk.appendChild(list);
+    var anchor = document.getElementById("cardInfoFold") || box;
+    if (anchor && anchor.parentNode) anchor.parentNode.insertBefore(walk, anchor.nextSibling);
+    return walk;
+  }
+
+  function applyWalkFold() {
+    var list = document.getElementById("cardWalkList");
+    var btn = document.getElementById("cardWalkFold");
+    if (list) {
+      list.hidden = walkFold;
+      if (list.classList) list.classList.toggle("fold", walkFold);
+      else list.className = walkFold ? "fold" : "";
+    }
+    if (btn) btn.textContent = walkFold ? "展开截图" : "收起截图";
+  }
+
+  function resetWalk(head) {
+    var walk = document.getElementById("cardWalk");
+    if (walk) walk.hidden = true;
+    var list = document.getElementById("cardWalkList");
+    if (list) {
+      list.textContent = "";
+      list.hidden = false;
+      if (list.classList) list.classList.remove("fold");
+      else list.className = "";
+    }
+    var title = document.getElementById("cardWalkTitle");
+    if (title) title.textContent = "";
+    var chatHead = head && head.parentNode;
+    if (chatHead && chatHead.classList) chatHead.classList.remove("has-walk");
+    walkFold = false;
+    lastWalkKey = "";
+    closeWalkLightbox();
+  }
+
+  function closeWalkLightbox() {
+    walkLightUrl = "";
+    if (!walkLightbox) return;
+    walkLightbox.hidden = true;
+    var img = document.getElementById("walkLightboxImg");
+    if (img) img.src = "";
+  }
+
+  function ensureWalkLightbox(head) {
+    if (walkLightbox) return walkLightbox;
+    var lb = document.createElement("div");
+    lb.id = "walkLightbox";
+    lb.className = "walk-lightbox";
+    lb.hidden = true;
+    var card = document.createElement("div");
+    card.className = "walk-lightbox-card";
+    var title = document.createElement("div");
+    title.id = "walkLightboxTitle";
+    var img = document.createElement("img");
+    img.id = "walkLightboxImg";
+    img.setAttribute("alt", "走查大图");
+    var close = document.createElement("button");
+    close.type = "button";
+    close.id = "walkLightboxClose";
+    close.textContent = "关闭";
+    close.addEventListener("click", function (e) {
+      if (e && e.stopPropagation) e.stopPropagation();
+      closeWalkLightbox();
+    });
+    card.appendChild(title);
+    card.appendChild(img);
+    card.appendChild(close);
+    card.addEventListener("click", function (e) { if (e && e.stopPropagation) e.stopPropagation(); });
+    lb.appendChild(card);
+    lb.addEventListener("click", function (e) { if (!e || e.target === lb) closeWalkLightbox(); });
+    var mount = (typeof document !== "undefined" && document.body) || (head && head.parentNode);
+    if (mount && mount.appendChild) mount.appendChild(lb);
+    if (document.addEventListener && !walkEscBound) {
+      walkEscBound = true;
+      document.addEventListener("keydown", function (e) {
+        if (e && e.key === "Escape" && walkLightbox && !walkLightbox.hidden) closeWalkLightbox();
+      });
+    }
+    walkLightbox = lb;
+    return lb;
+  }
+
+  function openWalkLightbox(head, url, titleText) {
+    var lb = ensureWalkLightbox(head);
+    var title = document.getElementById("walkLightboxTitle");
+    var img = document.getElementById("walkLightboxImg");
+    if (title) title.textContent = titleText;
+    if (img) img.src = url;
+    walkLightUrl = url;
+    if (lb) lb.hidden = false;
+  }
+
+  function renderWalkShots(shots, cardId, head) {
+    var walk = document.getElementById("cardWalk");
+    if (!walk) return;
+    var list = document.getElementById("cardWalkList");
+    var title = document.getElementById("cardWalkTitle");
+    var chatHead = head && head.parentNode;
+    if (!Array.isArray(shots) || !shots.length) {
+      if (list) list.textContent = "";
+      if (title) title.textContent = "";
+      walk.hidden = true;
+      if (chatHead && chatHead.classList) chatHead.classList.remove("has-walk");
+      lastWalkKey = "";
+      closeWalkLightbox();
+      return;
+    }
+    var key = String(cardId) + "|" + JSON.stringify(shots);
+    if (key === lastWalkKey) return;   // 数据没变：保留收起状态、滚动位置和正在看的大图
+    lastWalkKey = key;
+    if (list) list.textContent = "";
+    if (title) title.textContent = "走查截图（" + shots.length + " 张）";
+    walk.hidden = false;
+    if (chatHead && chatHead.classList) chatHead.classList.add("has-walk");
+    var urls = [];
+    var gallery = [];
+    shots.forEach(function (item, index) {
+      if (!item || typeof item !== "object") return;
+      var step = String(item.step || "");
+      var row = document.createElement("div");
+      row.className = "walk-row";
+      var stepEl = document.createElement("div");
+      stepEl.className = "walk-step";
+      stepEl.textContent = "第 " + (index + 1) + " 步：" + step;
+      row.appendChild(stepEl);
+      var pair = document.createElement("div");
+      pair.className = "walk-pair";
+      function addColumn(label, kind, path) {
+        if (!path) return;
+        var col = document.createElement("div");
+        col.className = "walk-col";
+        var tag = document.createElement("span");
+        tag.className = "walk-label";
+        tag.textContent = label;
+        var btn = document.createElement("button");
+        btn.setAttribute("type", "button");
+        btn.className = "walk-thumb";
+        var img = document.createElement("img");
+        img.className = "walk-img";
+        img.setAttribute("alt", step + " " + label);
+        var url = walkImageUrl(cardId, kind, path);
+        img.src = url;
+        btn.appendChild(img);
+        var itemTitle = "第 " + (index + 1) + " 步：" + step + " · " + label;
+        var itemIdx = gallery.length;
+        urls.push(url);
+        gallery.push({ kind: kind, path: path, title: itemTitle });
+        btn.addEventListener("click", function () {
+          if (shellMode) {
+            tell("superagent://walk-image?project=" + encodeURIComponent(project)
+              + "&card=" + encodeURIComponent(cardId)
+              + "&kind=" + encodeURIComponent(kind)
+              + "&path=" + encodeURIComponent(path)
+              + "&title=" + encodeURIComponent(itemTitle)
+              + "&index=" + itemIdx
+              + "&page=" + encodeURIComponent(shellPage)
+              + "&items=" + encodeURIComponent(JSON.stringify(gallery)));
+            return;
+          }
+          openWalkLightbox(head, url, itemTitle);
+        });
+        col.appendChild(tag);
+        col.appendChild(btn);
+        pair.appendChild(col);
+      }
+      addColumn("本次截图", "shot", item.shot);
+      addColumn("设计图", "design", item.design);
+      row.appendChild(pair);
+      if (list) list.appendChild(row);
+    });
+    applyWalkFold();
+    if (walkLightUrl && urls.indexOf(walkLightUrl) < 0) closeWalkLightbox();
   }
 
   window.SuperAgentChat = {
@@ -1827,6 +2053,8 @@ if (typeof document !== "undefined") (function () {
         });
         cardFold(box, true);   // 切卡回到收起
       }
+      ensureWalkBox(head, box);
+      resetWalk(head);   // 切卡先清掉上一张卡的截图和大图，等新卡接口回来再画
       if (!viewingCard) mainDraft = $("input").value;   // 主对话没发的字先放一边，看完卡回来还在
       viewingCard = true;
       if (info.conversation) clerkOpen(info.conversation);
@@ -1860,6 +2088,7 @@ if (typeof document !== "undefined") (function () {
             nowLine.textContent = line;
             nowLine.className = "now-" + ((v.now && v.now.tone) || "idle") + (nowFold ? " fold" : " open");
             syncNowFold(nowLine);
+            renderWalkShots(v.walk_shots, forCard, head);
           }).catch(function () {}).then(function () { if (myOpen === nowOpen) nowBusy = false; });
       }
       showNow();

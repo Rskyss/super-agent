@@ -404,6 +404,41 @@ def clean_models(models: dict) -> dict:
     return clean
 
 
+BACKUP_DEV_KEY = "backup_developer"
+DEFAULT_BACKUP_DEV = "codex"
+
+
+def load_backup_dev(project_dir) -> str:
+    """备份写代码的（第三批 ⑱：同一处连续两次没改对就换它）；没配用 Codex，配错了也按 Codex。"""
+    try:
+        value = _read(project_dir).get(BACKUP_DEV_KEY)
+    except ConfigError:
+        value = None
+    return value if isinstance(value, str) and value in WORKERS else DEFAULT_BACKUP_DEV
+
+
+FULL_TEST_KEY = "full_test_command"
+
+
+def load_full_test(project_dir) -> str:
+    """项目配的“全部测试命令”（第三批 ⑯：网页项目也跑全部测试）；没配返回空。"""
+    value = _read(project_dir).get(FULL_TEST_KEY)
+    return value.strip() if isinstance(value, str) else ""
+
+
+def save_full_test(project_dir, command: str) -> None:
+    """存“全部测试命令”，空就清掉；其他设置原样保留。"""
+    data = _read(project_dir)
+    command = (command or "").strip()
+    if command:
+        data[FULL_TEST_KEY] = command
+    else:
+        data.pop(FULL_TEST_KEY, None)
+    path = _config_path(project_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
 def save_models(project_dir, models: dict) -> None:
     """把各家工具选定的模型与思考档位存进 .collab/配置.json，其他设置原样保留。"""
     clean = clean_models(models)

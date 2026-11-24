@@ -3,6 +3,12 @@
 .cfg > * { max-width: 1040px; }
 h1 { margin: 0 0 20px; font-size: var(--fs-2xl); font-weight: 600; letter-spacing: -.01em; }
 .problem { color: var(--bad); margin: 0 0 12px; }
+.upgrade-banner { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin: 0 0 14px; padding: 10px 14px; border-radius: var(--r-lg); background: var(--bad-soft); box-shadow: inset 0 0 0 1px var(--hair-2); }
+.upgrade-banner[hidden] { display: none; }
+.upgrade-text { flex: 1 1 280px; min-width: 0; color: var(--bad); font-size: var(--fs-base); display: flex; flex-direction: column; gap: 4px; }
+.upgrade-btn { flex: none; height: 30px; padding: 0 12px; font-size: var(--fs-base); white-space: nowrap; color: var(--text); background: var(--bg-raised); box-shadow: inset 0 0 0 1px var(--hair-2); border-radius: var(--r-md); }
+.upgrade-btn:hover:not(:disabled) { background: var(--surface-2); }
+.upgrade-btn:disabled { color: var(--faint); box-shadow: inset 0 0 0 1px var(--hair); }
 
 /* 每个角色一行：角色 | 工具 | 模型 | 思考强度 | 状态 | 检测 */
 .thead, .member, .clerk-member { display: grid; grid-template-columns: 60px 118px minmax(140px, 1fr) 164px minmax(110px, 1fr) 56px; column-gap: 10px; padding-left: 14px; padding-right: 14px; }

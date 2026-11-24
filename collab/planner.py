@@ -290,6 +290,40 @@ def _first_paragraph(lines):
     return "\n".join(paragraph)
 
 
+def _walk_command_from_sections(sections: list) -> str:
+    """只在标题含“验收”的那一节里找“- 走查命令：”，取这一行第一对反引号里的命令。"""
+    for line in _section_body(sections, "验收") or []:
+        stripped = line.strip()
+        if stripped.startswith("- 走查命令："):
+            quoted = re.search(r"`([^`\n]+)`", stripped)
+            return quoted.group(1).strip() if quoted else ""
+    return ""
+
+
+def _order_walk_command(project, rel: str) -> str:
+    try:
+        text = (Path(project) / rel).read_text(encoding="utf-8")
+    except (OSError, ValueError):
+        return ""
+    return _walk_command_from_sections(_order_sections(text))
+
+
+def _order_look(project, rel: str) -> dict:
+    """施工单“验收”一节的“走查”那一行要不要人看页面（第三批 ③）；照施工单生成和 AI 写方案两条路都用这一份。"""
+    from collab.look import look_images, needs_look_line
+    try:
+        text = (Path(project) / rel).read_text(encoding="utf-8")
+    except (OSError, ValueError):
+        return {}
+    lines = [re.sub(r"^-\s*\*\*(走查[^*]*?)\*\*", r"- \1", ln.strip())
+             for ln in (_section_body(_order_sections(text), "验收") or [])]   # 只去掉“走查”两个字上的加粗，路径里的 ** 不动（确认复查）
+    accept = [ln[2:].strip() for ln in lines if ln.startswith("- 走查") and not ln.startswith("- 走查命令")]
+    walk_text = accept[0].split("：", 1)[-1].strip() if accept else ""
+    if not needs_look_line(walk_text):
+        return {}
+    return {"look_required": True, "look_images": look_images(walk_text, project, rel), "look_line": walk_text}
+
+
 def _plan_from_order(project, rel: str):
     """按施工单的固定格式摘出方案内容；摘要、允许路径或验收命令缺一项就返回 None。"""
     try:
@@ -312,6 +346,7 @@ def _plan_from_order(project, rel: str):
                 allowed.append(path)
     command = re.search(r"验收命令：.*?`([^`\n]+)`", text)
     test_command = command.group(1).strip() if command else ""
+    walk_command = _walk_command_from_sections(sections)
     if not summary or not allowed or not test_command:
         return None
     steps = []
@@ -320,14 +355,30 @@ def _plan_from_order(project, rel: str):
         if stripped.startswith("### ") and stripped[3:].strip():
             steps.append(stripped[3:].strip())
     not_do = _first_paragraph(_section_body(sections, "不做什么")) or "照施工单"
+    # 外部项目观察 ②：“你会看到什么结果”原来照抄“要做什么”，“做完后怎么看结果”写“方案里没写”。
+    # 施工单有“验收”一节就把它的验收命令、走查两行带进来；没有才退回老样子
+    accept = [re.sub(r"^\*\*(走查[^*]*?)\*\*", r"\1", ln.strip()[2:].strip()) for ln in (_section_body(sections, "验收") or [])
+              if ln.strip().startswith("- ") and ("验收命令" in ln or "走查" in ln)]   # “**走查：**”加粗也取正文（收尾确认复查 A2）
+    walk_line = next((a for a in accept if a.startswith("走查") and not a.startswith("走查命令")), "")
+    check_line = next((a for a in accept if a.startswith("验收命令")), "")
+    result = summary
+    if check_line:   # 写实际会跑的那条（和存进开工.json 的同一条，复查第 3 轮 B4）
+        result = f"{summary}\n\n验收时程序会跑：`{test_command}`"
+    look = _order_look(project, rel)   # 第三批 ③：要求放进项目前看页面的，复查通过后停在“等看页面”
     return {
+        "look_required": bool(look),
+        "look_images": look.get("look_images", []),
+        "look_line": look.get("look_line", ""),
         "summary": summary,
         "steps": steps or ["照施工单第三节做"],
-        "result": summary,
+        "result": result,
+        "view_how": (walk_line.split("：", 1)[-1].strip() if walk_line else "") or (
+            f"见施工单「验收」一节（{rel}）" if accept else ""),
         "not_do": not_do,
         "questions": [],
         "allowed": allowed,
         "test_command": test_command,
+        "walk_command": walk_command,
     }
 
 
@@ -389,8 +440,17 @@ def plan_card(project: str, card_id: str) -> int:
                     break
                 (card_dir / "方案.md").write_text(plan_md, encoding="utf-8")
                 req_path.write_text(_replace_allowed_section(requirement, allowed), encoding="utf-8")
+                start = {"test_command": data["test_command"]}
+                if data.get("walk_command"):
+                    start["walk_command"] = data["walk_command"]
+                if data.get("view_how"):
+                    start["view_how"] = data["view_how"]   # 待验收时右栏“怎么看”读这里（复查第 3 轮 B5）
+                if data.get("look_required"):
+                    start["look_required"] = True
+                    start["look_images"] = data.get("look_images") or []
+                    start["look_line"] = data.get("look_line") or ""
                 (card_dir / "开工.json").write_text(
-                    json.dumps({"test_command": data["test_command"]}, ensure_ascii=False, indent=2),
+                    json.dumps(start, ensure_ascii=False, indent=2),
                     encoding="utf-8",
                 )
                 flow_record(
@@ -452,6 +512,11 @@ def plan_card(project: str, card_id: str) -> int:
         (card_dir / "方案.md").write_text(plan_md, encoding="utf-8")
         req_path.write_text(_replace_allowed_section(requirement, allowed), encoding="utf-8")
         start = {"test_command": str(data.get("test_command") or "").strip()}
+        for rel in existing_orders(project, requirement)[:1]:
+            walk_command = _order_walk_command(project, rel)
+            if walk_command:
+                start["walk_command"] = walk_command
+            start.update(_order_look(project, rel))   # AI 写方案也守住施工单的“先看页面”（第三批复查第 1 轮 1）
         how, cmd, url = _clean_view_fields(data)
         if how:
             start["view_how"] = how

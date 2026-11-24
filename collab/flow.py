@@ -125,6 +125,16 @@ def reply_summary(step: str, text: str, ok: bool) -> str:
         tail = body.rsplit(marker, 1)[1].strip().splitlines()
         return marker + (tail[0].strip() if tail else "")
     lines = [ln.strip() for ln in body.splitlines() if ln.strip()]
+    if step == "起草" and lines:
+        # 起草“继续改”：第一段是共同原因，末尾总是“只改这一部分……过了就交”的套话（外部项目观察 ㉙）；
+        # 跳过标题行（# 共同原因、**继续改**），取第一句正文（复查第 1 轮 15）
+        rule = re.compile(r"[-=]{3,}")
+        raw = [ln.strip() for ln in body.splitlines()]
+        body_lines = [ln for i, ln in enumerate(raw)
+                      if ln and not ln.startswith("#") and not re.fullmatch(r"\*\*[^*]+\*\*", ln)
+                      and not rule.fullmatch(ln)
+                      and not (i + 1 < len(raw) and rule.fullmatch(raw[i + 1]))]   # 紧挨着下一行是横线的才是标题（复查第 2 轮 15）
+        return summarize((body_lines or lines)[0])
     return lines[-1] if lines else "（没有回复文字）"
 
 

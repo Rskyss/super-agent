@@ -23,7 +23,7 @@ from collab.planner import is_local_url
 
 __all__ = ["PreviewHub", "is_local_url"]
 
-_OPEN_STAGES = ("review", "merge_failed")
+_OPEN_STAGES = ("review", "merge_failed", "look_pending")   # 等看页面时最要用预览（第三批复查第 2 轮 1）
 _RECORD = "预览进程.json"
 _NO_PROXY = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # 本机地址不能走代理
 

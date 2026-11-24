@@ -158,8 +158,21 @@ def _snapshot(root) -> dict:
     return snap
 
 
+# 第三批复查：只按名字拦，连接串里的密码漏网；只放白名单，又把项目测试自己要的设置拦掉（确认复查 2 + 全部测试查出）。
+# 定成两条简单规矩：名字像密钥的不带；任何“账号:密码@”的地址去掉账号密码。其余照带（和人自己跑测试时一样）。
+_SECRET_NAME = re.compile(r"KEY|TOKEN|SECRET|PASSW|CREDENTIAL", re.I)
+_USERINFO = re.compile(r"([a-zA-Z][\w+.-]*://)[^/@\s:]*:[^/@\s]*@")   # 只去“账号:密码@”；ssh://git@ 这种只有用户名的不动
+_QUERY_SECRET = re.compile(r"([?&](?:password|passwd|pass|pwd|secret|token|key|apikey|api_key)=)[^&#\s]*", re.I)
+
+
+def _no_userinfo(value: str) -> str:
+    return _QUERY_SECRET.sub(r"\1", _USERINFO.sub(r"\1", value or ""))   # 地址里 ?password=… 也清掉（收尾确认复查 C1）
+
+
 def safe_env(folder: Path) -> dict:
-    env = {k: v for k, v in os.environ.items() if k != "SUPERAGENT_QWEN_KEY"}
+    """测试副本里的环境：真 AI 工具找不到；名字像密钥的不带，地址里的账号密码去掉（第三批复查第 1～3 轮、确认复查）。"""
+    env = {k: _no_userinfo(v) for k, v in os.environ.items()
+           if k != "SUPERAGENT_QWEN_KEY" and not _SECRET_NAME.search(k)}
     env.update(PATH=_safe_bin(folder), SUPERAGENT_NO_HANDOVER="1", SUPERAGENT_NO_FULL="1",
                SUPERAGENT_NO_PROGRESS="1", SUPERAGENT_NO_DRAFT="1", PYTHONDONTWRITEBYTECODE="1")
     return env
@@ -575,6 +588,96 @@ class FullRunner:
             shutil.rmtree(tmp, ignore_errors=True)
 
 
+_PROJECT_TOOLS = ("node", "npm", "npx", "pnpm", "yarn", "bun", "deno", "go", "cargo", "make")
+
+
+def _command_env(folder: Path) -> dict:
+    """项目自己配的全部测试命令用的环境：和 Python 全量一样藏起真 AI 工具，只多放几样常用的项目工具
+    （网页项目要 pnpm、npm 这些）。只链接这几个名字，不把它们所在的整个目录放进来（那里常常也装着 codex）。"""
+    env = safe_env(folder)
+    for name in _PROJECT_TOOLS:
+        real = shutil.which(name)
+        if real and not (folder / name).exists():
+            os.symlink(os.path.abspath(real), folder / name)
+    return env
+
+
+def _link_node_modules(src: Path, copy: Path) -> None:
+    """副本里不复制 node_modules（几百兆），直接链接到施工副本那一份（它本身多半也链接到项目里）。"""
+    real = Path(src) / "node_modules"
+    if real.exists() and not (copy / "node_modules").exists():
+        os.symlink(os.path.realpath(real), copy / "node_modules")
+
+
+class CommandRunner:
+    """第三批 ⑯：项目在配置里写了“全部测试命令”就用它（网页项目也有全部测试兜底）。
+    认不出是哪一项没过，所以“改之前过不过”按整条命令比：base_all 在改之前的版本上再跑一次。"""
+
+    def __init__(self, command: str, timeout: int = FULL_TIMEOUT):
+        self.command = command
+        self.timeout = timeout
+
+    def applicable(self, worktree) -> bool:
+        return True
+
+    def _run_in(self, src, stop, check_stale: bool) -> Verdict:
+        tmp = Path(tempfile.mkdtemp(prefix="collab-full-cmd-"))
+        try:
+            before = _snapshot(src) if check_stale else None
+            copy = tmp / "copy"
+            copy_tree(src, copy, stop)
+            if (stop is not None and stop.is_set()) or _EXITING["on"]:
+                return Verdict(STOPPED, None, "")
+            _link_node_modules(Path(src), copy)
+            verdict = run_command(["/bin/bash", "-o", "pipefail", "-c", self.command], copy, _command_env(tmp / "bin"),
+                                  self.timeout, stop)
+            if verdict.result == STOPPED or (stop is not None and stop.is_set()) or _EXITING["on"]:
+                return Verdict(STOPPED, None, "")
+            if check_stale and _snapshot(src) != before:
+                return Verdict(STALE, None, "跑的时候代码变了，这次结果作废，要重新跑一遍全部测试")
+            return verdict
+        except subprocess.CalledProcessError as exc:
+            if (stop is not None and stop.is_set()) or _EXITING["on"]:
+                return Verdict(STOPPED, None, "")
+            return Verdict(ENV_ERROR, None, f"复制副本没成：{exc}")
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def run(self, worktree, stop=None) -> Verdict:
+        return self._run_in(worktree, stop, check_stale=True)
+
+    def base_all(self, worktree, stop=None) -> Verdict:
+        """在改之前的版本（施工副本的 HEAD）上跑同一条命令。"""
+        tmp = Path(tempfile.mkdtemp(prefix="collab-full-cmd-base-"))
+        head = tmp / "head"
+        try:
+            code, _ = _quick(["git", "worktree", "add", "-q", "--detach", str(head), "HEAD"], cwd=str(worktree),
+                             stop=stop)
+            if code != 0:
+                return Verdict(ENV_ERROR, None, "改之前的版本取不出来")
+            _link_node_modules(Path(worktree), head)
+            return self._run_in(head, stop, check_stale=False)
+        except subprocess.CalledProcessError as exc:
+            return Verdict(ENV_ERROR, None, f"改之前的版本准备没成：{exc}")
+        finally:
+            for cmd in (["git", "worktree", "remove", "--force", str(head)], ["git", "worktree", "prune"]):
+                try:
+                    _quick(cmd, cwd=str(worktree))
+                except subprocess.CalledProcessError:
+                    pass
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
+def runner_for(project):
+    """这个项目用哪种全部测试：配了“全部测试命令”用它，没配用 Python 那一套（不是 Python 项目会跳过）。"""
+    from collab.config import ConfigError, load_full_test
+    try:
+        command = load_full_test(project)
+    except ConfigError:
+        command = ""
+    return CommandRunner(command) if command else FullRunner()
+
+
 def summary_count(output: str):
     """unittest 汇总里让它判失败的项数（失败、出错、意外通过）；没有汇总返回 None。
     全量按文件分开跑时末尾有一个总汇总，只认最后那个（1-9）。"""
@@ -586,8 +689,14 @@ def summary_count(output: str):
 
 def zero_tests(output: str) -> bool:
     """末尾总汇总显示实际只跑了 0 项（例如只有一个空测试文件），不能当通过放行。"""
-    counts = re.findall(r"^\s*Ran (\d+) tests?\b", output or "", re.M)
-    return bool(counts) and int(counts[-1]) == 0
+    text = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", output or "")   # 去掉颜色码再认（确认复查）
+    counts = re.findall(r"^\s*Ran (\d+) tests?\b", text, re.M)
+    if counts:
+        return int(counts[-1]) == 0
+    node = re.findall(r"^\s*(?:ℹ|#) tests (\d+)\s*$", text, re.M)   # node --test / tsx --test 的汇总（复查第 3 轮新 3）
+    if node:
+        return int(node[-1]) == 0
+    return bool(re.search(r"^=+ no tests ran\b|^collected 0 items\b", text, re.M | re.I))   # pytest
 
 
 class _Either:
