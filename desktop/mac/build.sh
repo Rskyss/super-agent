@@ -1,7 +1,7 @@
 #!/bin/bash
 # 生成“开发助手”（原“超级助手”，11-17 改名冻结）Mac 应用：编译窗口 → 画图标 → 装进应用包 → 本机签名。
 # 用法：bash desktop/mac/build.sh            生成到 desktop/mac/build/开发助手.app
-#       bash desktop/mac/build.sh --install  另外放一份到 ~/Applications（启动台、聚焦搜索里能找到）
+#       bash desktop/mac/build.sh --install  装到 ~/Applications（启动台、聚焦搜索里能找到），编译出来的那份装完就删，本机只留一个
 # 第一次运行会从 GitHub 下载终端组件 SwiftTerm（固定 1.99.0 版），需要联网，之后就不用了。
 set -euo pipefail
 
@@ -60,6 +60,7 @@ if [ "${1:-}" = "--install" ]; then
   bash "$HERE/remove_app.sh" "$HOME/Applications/超级助手.app"   # 改名前的旧应用，免得搜索里出现两个
   bash "$HERE/remove_app.sh" "$HOME/Applications/开发助手.app"
   cp -R "$APP" "$HOME/Applications/"
+  bash "$HERE/remove_app.sh" "$APP"   # 编译出来的那份不留：搜索里会多一个，点错就打开旧的（用户 11-25）
   echo "完成：$HOME/Applications/开发助手.app"
 else
   echo "完成：$APP"

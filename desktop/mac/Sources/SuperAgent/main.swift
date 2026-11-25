@@ -26,6 +26,7 @@
 //   --snapshot-delay <秒>       截图前等多久，默认 8 秒
 //   --say <话>                  截图前在聊天里说这句话
 //   --walk <文件>               按顺序点左栏、切换、收起、改窗口大小，把每一步的结果写进文件，然后退出
+//   --walk-columns              跟着 --walk 一起用：走一遍左栏收起展开和两条分隔线拖动
 //   --walk-clerk --clerk-key-file <文件>  走一遍行政聊天，不碰用户的钥匙串
 //   --walk-work                 只走“调度员干活时切终端、去设置再回来”这几步
 //   --walk-clerk-row --walk-other <另一个项目> --clerk-key-dir <文件夹>  真实地走设置页第一行：会发几句很短的话，花很少额度。密钥读这个文件夹，不碰钥匙串
@@ -59,19 +60,11 @@ let textColor = NSColor(srgbRed: 0xec / 255.0, green: 0xed / 255.0, blue: 0xef /
 let dimColor = NSColor(srgbRed: 0xa0 / 255.0, green: 0xa4 / 255.0, blue: 0xad / 255.0, alpha: 1)
 
 let topBarHeight: CGFloat = 38
-let navWidthRange: ClosedRange<CGFloat> = 220...340
-let rightWidthRange: ClosedRange<CGFloat> = 320...520
-let centerMinWidth: CGFloat = 440
 let threeColumnWidth: CGFloat = 1000  // 窗口比这窄时右栏自动收起
 let navWidthKey = "navWidth"
 let rightWidthKey = "rightWidth"
 let rightOpenKey = "rightOpen"
-
-/// 三段之间的细线用统一配色
-final class ThreeColumnSplit: NSSplitView {
-    override var dividerColor: NSColor { NSColor.white.withAlphaComponent(0.07) }
-    override var dividerThickness: CGFloat { 1 }
-}
+let navOpenKey = "navOpen"
 
 /// 顶部细栏：拖它就是拖窗口
 final class TopBar: NSView {
@@ -606,10 +599,11 @@ struct Dispatcher {
 }
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, NSMenuItemValidation, NSWindowDelegate,
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, NSWindowDelegate,
     WKNavigationDelegate, WKUIDelegate, LocalProcessTerminalViewDelegate {
     var window: NSWindow!
-    var split: NSSplitView!
+    var split: ThreeColumnSplit!
+    var columns: ThreeColumns!
     var navWeb: WKWebView!               // 左栏页面
     var navBox: NSVisualEffectView!      // 左栏：系统半透明材质，从窗口顶部贯通到底
     var leftBox: NSView!                 // 中间：顶部细栏 + 下面的内容
@@ -617,6 +611,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
     var rightBox: NSView!                // 右栏：顶部留给拖动，下面是页面
     var segment: ViewSwitch!
     var backToChat: NSButton!
+    var backToChatLeading: NSLayoutConstraint!
+    var navToggle: NSButton!
+    var navShow: NSButton!
     var rightToggle: NSButton!
     var term: LocalProcessTerminalView?  // 终端视图时才有
     var chatWeb: WKWebView!              // 聊天视图
@@ -635,8 +632,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
     var walkOverlayCard: String?
     var walkKeyMonitor: Any?
     var rightWanted = true               // 点开卡片时右栏开不开；没选卡片时右栏根本不存在
-    var navWidth: CGFloat = 264
-    var rightWidth: CGFloat = 372
+    var navWanted = true                 // 左栏开不开；整个应用记一份
     var chatKept = false  // 去设置时聊天没断开
     var leaveConfirmed = false  // 这次去终端已经问过了
     var selfTest: Bool { isSelfTestRun() }  // 自测不改用户的记忆
@@ -960,7 +956,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
     // MARK: 窗口
 
     func buildWindow() {
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1280, height: 800),
+        // 走查要把左线拖到 360、右线拖到离右边 500，窗口得同时放下两边和中间最窄的 440
+        let walkColumnsWidth: CGFloat = 1400
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0,
+                                              width: CommandLine.arguments.contains("--walk-columns") ? walkColumnsWidth : 1280,
+                                              height: 800),
                           styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
                           backing: .buffered, defer: false)
         window.minSize = NSSize(width: 760, height: 480)
@@ -973,15 +973,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
         window.setFrameAutosaveName(selfTest ? "SuperAgentSelfTest" : "SuperAgentMainWindow")
 
         let defaults = UserDefaults.standard
-        if let saved = defaults.object(forKey: navWidthKey) as? Double { navWidth = CGFloat(saved) }
-        if let saved = defaults.object(forKey: rightWidthKey) as? Double { rightWidth = CGFloat(saved) }
+        var storedNavWidth: CGFloat = 264
+        var storedRightWidth: CGFloat = 372
+        if let saved = defaults.object(forKey: navWidthKey) as? Double { storedNavWidth = CGFloat(saved) }
+        if let saved = defaults.object(forKey: rightWidthKey) as? Double { storedRightWidth = CGFloat(saved) }
         if let saved = defaults.object(forKey: rightOpenKey) as? Bool { rightWanted = saved }
-
-        split = ThreeColumnSplit()
-        split.isVertical = true
-        split.dividerStyle = .thin
-        split.delegate = self
-        split.translatesAutoresizingMaskIntoConstraints = false
+        if let saved = defaults.object(forKey: navOpenKey) as? Bool { navWanted = saved }
 
         navWeb = makeWeb(message: "", background: "transparent")
         navWeb.navigationDelegate = self
@@ -995,6 +992,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
         navTop.layer?.backgroundColor = NSColor(srgbRed: 0x13 / 255.0, green: 0x14 / 255.0, blue: 0x17 / 255.0, alpha: 0.72).cgColor
         pin(navTop, in: navBox, height: topBarHeight)
 
+        navToggle = NSButton(image: NSImage(systemSymbolName: "sidebar.left", accessibilityDescription: "收起左栏")
+                             ?? NSImage(), target: self, action: #selector(toggleNav(_:)))
+        navToggle.translatesAutoresizingMaskIntoConstraints = false
+        navToggle.isBordered = false
+        navToggle.wantsLayer = true
+        navToggle.layer?.cornerRadius = 6
+        navToggle.contentTintColor = dimColor
+        navToggle.toolTip = "收起左栏"
+        navTop.addSubview(navToggle)
+        NSLayoutConstraint.activate([
+            navToggle.trailingAnchor.constraint(equalTo: navTop.trailingAnchor, constant: -8),
+            navToggle.centerYAnchor.constraint(equalTo: navTop.centerYAnchor, constant: 2),
+            navToggle.widthAnchor.constraint(equalToConstant: 28),
+            navToggle.heightAnchor.constraint(equalToConstant: 26),
+        ])
+
         buildLeft()
         web = makeWeb(message: "正在启动…")
         web.uiDelegate = self
@@ -1004,11 +1017,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
         rightBox.layer?.backgroundColor = panelBackground.cgColor
         pin(web, in: rightBox)   // 右栏的“流程 / 交接”和中间顶部细栏同一高度
 
-        // 三段的位置由 layoutColumns 算，不交给系统按比例分
-        split.arrangesAllSubviews = false
-        split.addSubview(navBox)
-        split.addSubview(leftBox)
-        split.addSubview(rightBox)
+        // 三段的位置由 ThreeColumns 算，不交给系统按比例分
+        columns = ThreeColumns(nav: navBox, center: leftBox, right: rightBox,
+                               navWidth: storedNavWidth, rightWidth: storedRightWidth)
+        split = columns.split
+        split.translatesAutoresizingMaskIntoConstraints = false
+        columns.onUserDrag = { [weak self] in
+            guard let self = self, !self.selfTest else { return }
+            UserDefaults.standard.set(Double(self.columns.navWidth), forKey: navWidthKey)
+            UserDefaults.standard.set(Double(self.columns.rightWidth), forKey: rightWidthKey)
+        }
 
         let root = NSView()
         root.addSubview(split)
@@ -1024,6 +1042,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
 
         rightBox.isHidden = true
         syncRight()
+        syncNavColumn()
         window.delegate = self   // 界面建好才开始听：恢复窗口大小时系统会立刻发通知
         closeMenuMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
             guard let self = self, event.window === self.window else { return event }
@@ -1063,6 +1082,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
         backToChat.isHidden = true
         bar.addSubview(backToChat)
 
+        navShow = NSButton(image: NSImage(systemSymbolName: "sidebar.left", accessibilityDescription: "展开左栏")
+                           ?? NSImage(), target: self, action: #selector(toggleNav(_:)))
+        navShow.translatesAutoresizingMaskIntoConstraints = false
+        navShow.isBordered = false
+        navShow.wantsLayer = true
+        navShow.layer?.cornerRadius = 6
+        navShow.contentTintColor = dimColor
+        navShow.toolTip = "展开左栏"
+        navShow.isHidden = true
+        bar.addSubview(navShow)
+
         rightToggle = NSButton(image: NSImage(systemSymbolName: "sidebar.right", accessibilityDescription: "收起或展开右栏")
                                ?? NSImage(), target: self, action: #selector(toggleRight(_:)))
         rightToggle.translatesAutoresizingMaskIntoConstraints = false
@@ -1072,11 +1102,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
         rightToggle.toolTip = "收起或展开右栏"
         bar.addSubview(rightToggle)
 
+        backToChatLeading = backToChat.leadingAnchor.constraint(equalTo: bar.leadingAnchor, constant: 16)
         NSLayoutConstraint.activate([
             segment.leadingAnchor.constraint(equalTo: bar.leadingAnchor, constant: 16),
             segment.centerYAnchor.constraint(equalTo: bar.centerYAnchor, constant: 2),
-            backToChat.leadingAnchor.constraint(equalTo: bar.leadingAnchor, constant: 16),
+            backToChatLeading,
             backToChat.centerYAnchor.constraint(equalTo: bar.centerYAnchor, constant: 2),
+            navShow.leadingAnchor.constraint(equalTo: bar.leadingAnchor, constant: 78),
+            navShow.centerYAnchor.constraint(equalTo: bar.centerYAnchor, constant: 2),
+            navShow.widthAnchor.constraint(equalToConstant: 28),
+            navShow.heightAnchor.constraint(equalToConstant: 26),
             rightToggle.trailingAnchor.constraint(equalTo: bar.trailingAnchor, constant: -10),
             rightToggle.centerYAnchor.constraint(equalTo: bar.centerYAnchor, constant: 2),
             rightToggle.widthAnchor.constraint(equalToConstant: 28),
@@ -1097,23 +1132,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
         layoutColumns()
     }
 
-    /// 按记住的宽度摆三段，只有中间伸缩。放不下时先让右栏、再让左栏，都不低于下限
+    /// 三栏的摆放只交给 ThreeColumns 一处
     func layoutColumns() {
-        let line = split.dividerThickness, height = split.bounds.height
-        let show = !rightBox.isHidden
-        let total = split.bounds.width - line * (show ? 2 : 1)
-        var nav = min(navWidth, total - centerMinWidth), right = rightWidth
-        if show, nav + right + centerMinWidth > total {
-            right = max(rightWidthRange.lowerBound, total - nav - centerMinWidth)
-            nav = max(navWidthRange.lowerBound, total - right - centerMinWidth)
-        }
-        if !show { right = 0 }
-        navBox.frame = NSRect(x: 0, y: 0, width: nav, height: height)
-        leftBox.frame = NSRect(x: nav + line, y: 0, width: total - nav - right, height: height)
-        if show { rightBox.frame = NSRect(x: split.bounds.width - right, y: 0, width: right, height: height) }
+        guard columns != nil else { return }
+        columns.layout()
     }
-
-    func splitView(_ splitView: NSSplitView, resizeSubviewsWithOldSize oldSize: NSSize) { layoutColumns() }
 
     func setRightWanted(_ wanted: Bool) {
         rightWanted = wanted
@@ -1133,6 +1156,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
     }
 
     @objc func toggleRight(_ sender: Any?) { setRightWanted(rightBox.isHidden) }
+
+    /// 左栏收不收起：整个应用记一份，重开还是上次的样子
+    func setNavWanted(_ wanted: Bool) {
+        navWanted = wanted
+        if !selfTest { UserDefaults.standard.set(wanted, forKey: navOpenKey) }
+        if !wanted {
+            navWeb?.evaluateJavaScript("window.SuperAgentNav && window.SuperAgentNav.closeProjectMenu()", completionHandler: nil)
+        }
+        syncNavColumn()
+    }
+
+    /// 左栏开没开跟着按钮和“返回聊天”的位置变，再让三栏重新摆一次
+    func syncNavColumn() {
+        guard navBox != nil else { return }
+        navBox.isHidden = !navWanted
+        navToggle.isHidden = !navWanted
+        navShow.isHidden = navWanted
+        backToChatLeading.constant = navWanted ? 16 : 114
+        layoutColumns()
+    }
+
+    @objc func toggleNav(_ sender: Any?) { setNavWanted(!navWanted) }
 
     func windowDidResize(_ notification: Notification) {
         guard (notification.object as? NSWindow) === window else { return }
@@ -1286,30 +1331,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
             view.leadingAnchor.constraint(equalTo: leftContent.leadingAnchor),
             view.trailingAnchor.constraint(equalTo: leftContent.trailingAnchor),
         ])
-    }
-
-    // 三段都有上下限，谁都不会被拖没
-    func splitView(_ splitView: NSSplitView, constrainMinCoordinate proposedMinimumPosition: CGFloat,
-                   ofSubviewAt dividerIndex: Int) -> CGFloat {
-        if dividerIndex == 0 { return navWidthRange.lowerBound }
-        let widest = splitView.bounds.width - rightWidthRange.upperBound - splitView.dividerThickness
-        return max(navBox.frame.maxX + splitView.dividerThickness + centerMinWidth, widest)
-    }
-
-    func splitView(_ splitView: NSSplitView, constrainMaxCoordinate proposedMaximumPosition: CGFloat,
-                   ofSubviewAt dividerIndex: Int) -> CGFloat {
-        if dividerIndex == 0 { return navWidthRange.upperBound }
-        return splitView.bounds.width - rightWidthRange.lowerBound - splitView.dividerThickness
-    }
-
-    /// 记住用户拖出来的宽度。只有拖分隔线时才带这个键，窗口自己排版时不算
-    func splitViewDidResizeSubviews(_ notification: Notification) {
-        guard navBox != nil, notification.userInfo?["NSSplitViewDividerIndex"] != nil else { return }
-        navWidth = navBox.frame.width
-        if !rightBox.isHidden { rightWidth = rightBox.frame.width }
-        guard !selfTest else { return }
-        UserDefaults.standard.set(Double(navWidth), forKey: navWidthKey)
-        UserDefaults.standard.set(Double(rightWidth), forKey: rightWidthKey)
     }
 
     // MARK: 左边：聊天 / 终端
@@ -2521,6 +2542,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
                                        ("开始新对话", #selector(newChat(_:)), "n"),
                                        ("打开终端（高级）", #selector(showTerminalView(_:)), "2")]))
         main.addItem(submenu("面板", [("刷新右栏", #selector(reloadPanel(_:)), "R"),
+                                       ("收起或展开左栏", #selector(toggleNav(_:)), "b"),
                                        ("收起或展开右栏", #selector(toggleRight(_:)), "\\")]))
         main.addItem(submenu("窗口", [("最小化", #selector(NSWindow.performMiniaturize(_:)), "m"), ("项目窗口", #selector(showProjectWindow(_:)), "")]))
         NSApp.mainMenu = main
@@ -2710,6 +2732,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
             let line = "\(name)：中间=\(leftView) 选中=\(selectedCard ?? "主对话") 右栏=\(rightBox.isHidden ? "收起" : "展开")"
                 + " 宽=\(Int(window.frame.width)) 三段=\(Int(navBox.frame.width)),\(Int(leftBox.frame.width)),\(Int(rightBox.frame.width))"
                 + " 切换=\(segment.selectedSegment)"
+                + " 左栏=\(navBox.isHidden ? "收起" : "展开")"
+                + " 收起按钮=\(navToggle.isHidden ? "藏" : "显") 展开按钮=\(navShow.isHidden ? "藏" : "显")"
+                + " 返回聊天左=\(Int(backToChat.frame.minX))"
+                + " 记宽=\(Int(columns.navWidth)),\(Int(columns.rightWidth))"
             log += line + "\n"
         }
         func nav(_ script: String) { navWeb.evaluateJavaScript(script, completionHandler: nil) }
@@ -2994,7 +3020,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSplitViewDelegate, N
         let againSteps: [(String, () -> Void)] = [nap, ("删当前后再说一句", { say("只回复两个字：明白") })] + Array(repeating: nap, count: 12) + [("看再说一句", { listView("5b删当前后再说一句") })]
         let listSteps = (CommandLine.arguments.contains("--walk-list-codex") ? talkSteps + deleteSteps + againSteps : [nap, nap] + deleteSteps) + archiveSteps
         let lookSteps2: [(String, () -> Void)] = [nap, nap, ("看对话", { listView("重开后对话") }), ("去卡片标签", { nav("document.getElementById('tabCards').click()") }), ("看卡片", { listView("重开后卡片") })]
+        func navLine() -> CGFloat { columns.nav.frame.maxX + 0.5 }
+        func rightLine() -> CGFloat { columns.right.frame.minX - 0.5 }
+        func mouseEvent(_ type: NSEvent.EventType, _ x: CGFloat) -> NSEvent {
+            let inWindow = split.convert(NSPoint(x: x, y: split.bounds.midY), to: nil)
+            return NSEvent.mouseEvent(with: type, location: inWindow, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                      windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1)!
+        }
+        func dragDivider(_ from: CGFloat, _ to: CGFloat) {
+            for k in 1...5 {
+                NSApp.postEvent(mouseEvent(.leftMouseDragged, from + (to - from) * CGFloat(k) / 5), atStart: false)
+            }
+            NSApp.postEvent(mouseEvent(.leftMouseUp, to), atStart: false)
+            split.mouseDown(with: mouseEvent(.leftMouseDown, from))
+        }
+        let columnSteps: [(String, () -> Void)] = [
+            ("打开", {}),
+            ("窗口放到1400", { resize(1400) }),
+            ("点卡片", { nav("var c=document.querySelector('#cards [data-id]');if(c)c.click()") }),
+            ("左线拖到360", { dragDivider(navLine(), 360) }),
+            ("右线拖到离右边500", { dragDivider(rightLine(), self.split.bounds.width - 501) }),
+            ("收起左栏", { self.navToggle.performClick(nil) }),
+            ("收起时右线拖到离右边400", { dragDivider(rightLine(), self.split.bounds.width - 401) }),
+            ("去设置页", { nav("document.getElementById('gear').click()") }),
+            ("回来点卡片", { nav("var c=document.querySelector('#cards [data-id]');if(c)c.click()") }),
+            ("展开左栏", { self.navShow.performClick(nil) }),
+            ("窗口缩到900", { resize(900) }),
+            ("窗口放到1280", { resize(1280) }),
+            ("菜单收起", { self.toggleNav(nil) }),
+            ("菜单展开", { self.toggleNav(nil) }),
+        ]
         let steps = CommandLine.arguments.contains("--walk-list-look") ? lookSteps2
+            : CommandLine.arguments.contains("--walk-columns") ? columnSteps
             : CommandLine.arguments.contains("--walk-list") || CommandLine.arguments.contains("--walk-list-codex") ? listSteps
             : CommandLine.arguments.contains("--walk-accept") ? acceptSteps
             : CommandLine.arguments.contains("--walk-view") ? viewSteps
