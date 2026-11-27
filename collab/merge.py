@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+from contextlib import nullcontext
+import os
 import subprocess
 from pathlib import Path
 
@@ -55,7 +57,7 @@ def _fail(project: Path, card_id: str, reason: str, detail: str = "") -> None:
 
 
 def _keep(path: str, allowed, tester: set) -> bool:
-    path = path.replace("\\", "/").strip()
+    path = path.replace("\\", "/")   # 不去首尾空格：git 给的就是真实文件名（“ [id]”和“[id]”是两个目录，复查第 5 轮）
     if not path or path in (".", ".."):
         return False
     parts = [p for p in path.split("/") if p]
@@ -101,10 +103,34 @@ def _stage(worktree: Path, files: list) -> None:
     """把这些文件放进提交。已经删掉的文件走另一条路，上次放过一次也不会报错。"""
     here = [name for name in files if (worktree / name).exists() or (worktree / name).is_symlink()]
     gone = [name for name in files if name not in here]
+    # 文件名按字面认：app/x/[id]/page.tsx 里的方括号不是通配符（卡 C′）
     if here:
-        _git(worktree, "add", "--", *here)
+        _git(worktree, "add", "--", *_literal(here))
     if gone:
-        _git(worktree, "rm", "-q", "--cached", "--ignore-unmatch", "--", *gone)
+        _git(worktree, "rm", "-q", "--cached", "--ignore-unmatch", "--", *_literal(gone))
+
+
+def _git_bool(value: str) -> bool:
+    """按 git 自己的真假规则认环境变量（true/yes/on、非 0 整数、0x1、1k……都算真），认不出算假（卡 C′ 复查第 3、4 轮）。"""
+    text = str(value or "").strip()
+    if text.lower() in ("", "0", "false", "no", "off"):
+        return False
+    if text.lower() in ("1", "true", "yes", "on"):
+        return True
+    try:
+        done = subprocess.run(["git", "-c", f"collab.literal={text}", "config", "--type=bool", "collab.literal"],
+                              capture_output=True, text=True, timeout=10, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return done.returncode == 0 and done.stdout.strip() == "true"
+
+
+def _literal(files) -> list:
+    """给 git 的具体文件名都按字面认（:(literal) 前缀）：方括号、星号不当通配符，项目自己的钩子照样看得到文件名。
+    git 已经整个开了字面模式（GIT_LITERAL_PATHSPECS=1）时前缀反而会被当成文件名的一部分，这时原样给。"""
+    if _git_bool(os.environ.get("GIT_LITERAL_PATHSPECS", "")):
+        return [str(name) for name in files]
+    return [f":(literal){name}" for name in files]
 
 
 def _identity_args(project: Path) -> list:
@@ -251,11 +277,11 @@ def _commit_work(project: Path, worktree: Path, cdir: Path, card_id: str, base: 
     files = sorted((set(files) | set(archive_files)) & pending)
     # 归档生成的记录已经选进提交，不算用户漏选的文件。
     omitted = sorted({name for name in pending
-                      if name not in files and _keep(name, [name], set())})
+                      if name not in files and _keep(name, None, {name})})   # 只看是不是缓存、依赖、敏感文件，不拿名字配自己（复查第 6 轮）
     if files:
         _stage(worktree, files)
         done = _git(worktree, *_identity_args(project), "commit", "-qm", f"{card_id}：{_title(cdir, card_id)}",
-                    "--only", "--", *files,
+                    "--only", "--", *_literal(files),
                     check=False)
         if done.returncode != 0:
             raise _Stop("提交没成功：项目的提交检查没过，详情在这张卡的记录里",
@@ -409,6 +435,7 @@ def merge_card(project, card_id: str) -> dict:
         return {"ok": False, "reason": LOOK_FIRST}
     try:
         _merge(project, card_id)
+        _drop_waiting(project, card_id)
         return {"ok": True, "reason": ""}
     except _Stop as exc:
         _fail(project, card_id, exc.reason, exc.detail)
@@ -417,6 +444,27 @@ def merge_card(project, card_id: str) -> dict:
         reason = "没能放进项目"
         _fail(project, card_id, reason, str(exc))
         return {"ok": False, "reason": reason}
+
+
+def _drop_waiting(project: Path, card_id: str) -> None:
+    """放进项目了：撤掉已知没过名单里“等这张卡”的条目（卡 B2）；撤不掉不影响已经放进去的结果。"""
+    try:
+        from collab.known_fail import drop_card
+        drop_card(project, card_id)
+    except Exception as exc:  # noqa: BLE001 — 撤不掉也不影响合并；这几条按“卡已放进项目”自动不再生效，留一笔提醒手动撤
+        from collab.known_fail import LedgerMissed
+        if isinstance(exc, LedgerMissed):
+            try:
+                record(_card_dir(project, card_id), "提醒", src="程序", dst="你", summary=str(exc))
+            except Exception:  # noqa: BLE001
+                pass
+            return
+        try:
+            record(_card_dir(project, card_id), "提醒", src="程序", dst="你",
+                   summary=f"已知没过名单里等这张卡的条目没撤掉（{exc}），已自动不再生效；"
+                           f"有空用 collab known-fail remove 撤掉")
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def _merge(project: Path, card_id: str) -> None:
@@ -460,8 +508,12 @@ def _merge(project: Path, card_id: str) -> None:
     if verdict.result != PASS:
         _roll_back(project, cdir, verdict.output or "")
 
-    card.transition("已合并")
-    card.save(state_path)
+    from collab.known_fail import _locked as _list_lock, _path as _known_path
+    listed = _known_path(project)
+    # 卡变“已合并”会让等它的名单条目失效：和人工接受核对名单、写状态用同一把名单锁，两边不会交叉（卡 B2′ 复查第 5 轮）
+    with (_list_lock(project) if (listed.exists() or listed.is_symlink()) else nullcontext()):
+        card.transition("已合并")
+        card.save(state_path)
     details = _load_progress(cdir) or {}
     _clear_progress(cdir)
     render_board(project / ".collab")

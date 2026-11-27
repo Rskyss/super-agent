@@ -94,9 +94,15 @@ def _clean_scope_files(files) -> list:
     for raw in files or []:
         rel = str(raw or "").strip().replace("\\", "/")
         parts = [p for p in rel.split("/") if p not in ("", ".")]
-        bad_char = (any(c in "*?[]" or ord(c) < 32 or c in "\x7f\x85\u2028\u2029" or (c.isspace() and c != " ")
-                        for c in rel) or rel.startswith(("-", "#")) or len(rel) > 200)  # 各种换行都挡（第 2 轮第 4 条）
-        if not rel or bad_char or rel.startswith("/") or ".." in parts or not parts or parts[0] == ".collab":
+        norm = "/".join(parts)   # 先规范成最终要存的名字（去掉 ./ 和结尾的 /.），再查各条规矩（卡 C′ 复查第 3、4 轮）
+        # 方括号放行（app/x/[id]/page.tsx，卡 C′）；* ? 仍然不许
+        bad_char = (any(c in "*?" or ord(c) < 32 or c in "\x7f\x85\u2028\u2029" or (c.isspace() and c != " ")
+                        for c in rel) or norm.startswith(("-", "#")) or len(rel) > 200)  # 各种换行都挡（第 2 轮第 4 条）
+        from collab.scope import _NOTE
+        noted = bool(_NOTE.search(norm))   # 结尾带“(说明)”会被允许范围当备注截掉，放行的就成了前面的短名字（卡 C′）
+        spaced = any(p != p.strip() for p in parts)   # 某一段首尾带空格：写进卡片再读回会被吞掉，变成另一个文件（复查第 5 轮）
+        if not rel or bad_char or noted or spaced or rel.startswith("/") or ".." in parts or not parts \
+                or parts[0] == ".collab":
             raise TaskError(f"“{raw}”不是项目里的文件路径：写成相对项目的路径，比如 collab/abilities_run.py")
         rel = "/".join(parts)
         if rel not in out:

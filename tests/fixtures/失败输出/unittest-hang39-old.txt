@@ -1,0 +1,22 @@
+F.F
+======================================================================
+FAIL: test_anchor (test_review.T)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/项目/ut/tests/test_review.py", line 4, in test_anchor
+    self.fail("读缓存\nUNEXPECTED SUCCESS: cached (")
+AssertionError: 读缓存
+UNEXPECTED SUCCESS: cached (
+
+======================================================================
+FAIL: test_old (test_review.T)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/项目/ut/tests/test_review.py", line 8, in test_old
+    self.assertEqual(1, 2)
+AssertionError: 1 != 2
+
+----------------------------------------------------------------------
+Ran 3 tests in 0.000s
+
+FAILED (failures=2)

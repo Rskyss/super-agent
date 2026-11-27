@@ -50,7 +50,28 @@ rsync -a --delete "$ROOT/agents" "$APP/Contents/Resources/super-agent/"   # 规�
 rsync -a --exclude '__pycache__' --exclude 'mac' "$ROOT/desktop" "$APP/Contents/Resources/super-agent/"
 
 echo "5/5 本机签名…"
-codesign --force --deep --sign - "$APP"
+# 固定签名（11-27 用户要）：用本机钥匙串里的“Apple Development”证书签，重装后 macOS 仍认得是同一个程序，
+# 录屏等权限不用重新给。可用 SUPERAGENT_SIGN_ID 指定别的证书；找不到证书就退回临时签名（每次重装都要重新给权限）。
+# 查证书出错（钥匙串打不开等）不让脚本中途退出，照样退回临时签名（复查第 1 轮）
+# 用 <<< 和变量截取代替管道：输出很长时不会因为管道提前关闭让脚本退出（复查第 3 轮）
+SIGN_NOTE="没找到“Apple Development”证书（装了证书的话，可能是钥匙串没解锁）"
+if [ -n "${SUPERAGENT_SIGN_ID:-}" ]; then
+  SIGN_ID="$SUPERAGENT_SIGN_ID"
+elif IDS="$(security find-identity -v -p codesigning 2>&1)"; then
+  SIGN_ID="$(awk '/"Apple Development:/ {print $2; exit}' <<< "$IDS")"
+else
+  SIGN_ID=""
+  SIGN_NOTE="查钥匙串里的证书出错（${IDS%%$'\n'*}）"
+fi
+if [ -n "$SIGN_ID" ]; then
+  if ! codesign --force --deep --sign "$SIGN_ID" "$APP"; then
+    echo "  用证书 ${SIGN_ID} 签名失败（证书不在、或钥匙串没允许）。检查 SUPERAGENT_SIGN_ID，或在钥匙串弹窗里点“始终允许”后重跑。" >&2
+    exit 1
+  fi
+else
+  echo "  ${SIGN_NOTE}，改用临时签名：重装后录屏权限要重新给。"
+  codesign --force --deep --sign - "$APP"
+fi
 
 if [ "${1:-}" = "--install" ]; then
   mkdir -p "$HOME/Applications"

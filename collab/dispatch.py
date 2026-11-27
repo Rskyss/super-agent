@@ -324,11 +324,17 @@ def is_test_path(rel: str) -> bool:
     return any(p in _TEST_DIRS for p in parts[:-1]) or bool(_TEST_NAME.match(parts[-1]))
 
 
+def _lit(path) -> str:
+    """给 git 的一个路径按字面认（卡 C′：方括号不是通配符）。"""
+    from collab.merge import _literal
+    return _literal([str(path)])[0]
+
+
 def _in_product_folder(worktree, rel: str) -> bool:
     """新文件放在一个本来就有被管理文件的文件夹里（比如 src/），算产品代码，不算测试。"""
     folder = Path(rel).parent
     while str(folder) not in ("", "."):  # 往上找：src/newpkg/x.py 的 src/ 里有产品代码也算（复查第 2 轮）
-        out = subprocess.run(["git", "ls-files", "--", str(folder)], cwd=str(worktree), capture_output=True,
+        out = subprocess.run(["git", "ls-files", "--", _lit(folder)], cwd=str(worktree), capture_output=True,
                              text=True).stdout
         if out.strip():
             return True
@@ -337,7 +343,7 @@ def _in_product_folder(worktree, rel: str) -> bool:
 
 
 def _tracked(worktree, rel: str) -> bool:
-    return subprocess.run(["git", "ls-files", "--error-unmatch", "--", rel], cwd=str(worktree),
+    return subprocess.run(["git", "ls-files", "--error-unmatch", "--", _lit(rel)], cwd=str(worktree),
                           capture_output=True).returncode == 0
 
 
@@ -364,12 +370,12 @@ def _undo_tester_changes(cdir: Path, worktree, paths: list, before: dict, revert
         if rel in before and saved.is_file():
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(saved, dest)
-            subprocess.run(["git", "reset", "-q", "--", rel], cwd=str(root), capture_output=True)  # 它 git add 过也拿掉
+            subprocess.run(["git", "reset", "-q", "--", _lit(rel)], cwd=str(root), capture_output=True)  # 它 git add 过也拿掉
         elif rel in before and before.get(rel) is None:
             # 派活前这个文件就是被删掉的（开发员删的），它又建回来：照旧删掉（流程修理复查第 1 轮）
             if dest.is_file() or dest.is_symlink():
                 dest.unlink()
-            subprocess.run(["git", "reset", "-q", "--", rel], cwd=str(root), capture_output=True)
+            subprocess.run(["git", "reset", "-q", "--", _lit(rel)], cwd=str(root), capture_output=True)
         else:
             fresh_only.append(rel)
     if fresh_only:
@@ -2160,6 +2166,7 @@ _TS_MISSING = re.compile(r"\bTS(2305|2307|2614|2694|2724)\b")
 _CASE_FAILED = re.compile(r"ℹ fail [1-9]|^\s*✖ |^FAIL: |^ERROR: (?!.*unittest\.loader\._FailedTest)|\b[1-9]\d* failed\b"
                           r"|^not ok \d+", re.M)
 _TS_ANY = re.compile(r"\berror TS\d+")
+from collab.fullrun import UT_FAIL_START as _UT_FAIL_START   # unittest 失败块开头，认法只在 fullrun 写一份（卡 B1）
 # Python 产品缺东西：导入失败、属性没有（加载器包一层的“Failed to import test module”不算）
 _PY_MISSING = re.compile(r"^(ImportError|ModuleNotFoundError|AttributeError): (?!Failed to import test module)", re.M)
 
@@ -2351,8 +2358,8 @@ def _red_check_one(cdir: Path, step: str, test_command, judge_fn, worktree, repl
         summary = RED_CHECK_GREEN
     elif verdict.result == FAIL:
         summary = RED_CHECK_RED
-        from collab.progress import failing_names
-        names = failing_names(verdict.output)
+        from collab import fullrun
+        names = fullrun.failing_methods(verdict.output)
         # 只有完全有把握才写名单：拆得开、每段跑完、没有一导入就报错的占位项、认出了名字（D2 复查第 3 轮）
         if sure and names and "unittest.loader._FailedTest" not in (verdict.output or ""):
             try:
@@ -2533,23 +2540,6 @@ def _old_tests_command(olds: list) -> list:
     return ["/bin/bash", "-c", "; ".join(parts)]
 
 
-def _failing(output: str):
-    """unittest 输出里没过的那几项（FAIL:/ERROR: 行）和总数（FAILED (failures=N, errors=M)）。认不出返回 (None, None)。"""
-    names = set(re.findall(r"^(?:FAIL|ERROR): (\S+ \([^)]*\))", output or "", re.M))
-    m = re.search(r"FAILED \(([^)]*)\)", output or "")
-    total = sum(int(n) for n in re.findall(r"(?:failures|errors)=(\d+)", m.group(1))) if m else None
-    return (names or None), total
-
-
-def _more_failures(now_out: str, base_out: str) -> bool:
-    """这次比改之前多坏了：多出没过的项，或没过的总数变多。两边都认不出时不怪这次（照旧算改之前就不过）。"""
-    now_names, now_total = _failing(now_out)
-    base_names, base_total = _failing(base_out)
-    if now_names is not None and base_names is not None and now_names - base_names:
-        return True
-    return now_total is not None and base_total is not None and now_total > base_total
-
-
 def _broken_by_change(worktree, olds: list, judge_fn) -> list:
     """一批老测试没过时，逐个看是谁被这次改坏了（第三批复查第 2 轮：整批比会把新改坏的一起放过）：
     现在不过、而在改之前（施工副本提交上的样子）不是“没过”的 → 算这次改坏的（改之前超时、环境出错不算本来就不过）。
@@ -2569,7 +2559,8 @@ def _broken_by_change(worktree, olds: list, judge_fn) -> list:
         for o in now_bad:
             base = judge_fn(_old_tests_command([o]), cwd=tmp, timeout=_TEST_TIMEOUT)
             # 改之前过、超时、环境出错 → 算这次改坏的；改之前也没过 → 看这次是不是多坏了几项（同一文件里新改坏的，第 3 轮第 1 条）
-            if base.result != FAIL or _more_failures(now[o].output, base.output):
+            from collab import fullrun
+            if base.result != FAIL or fullrun.more_failures(now[o].output, base.output):
                 culprits.append(o)
         return culprits
     except Exception:  # noqa: BLE001
@@ -3176,6 +3167,7 @@ class _FullSlot:
         self.result = None
         self.last_actual = None
         self.skipped = False
+        self.tree = None   # 卡 B2′：第一遍开跑前施工副本的样子（登记了名单才记）
 
     def start(self):
         import threading
@@ -3194,6 +3186,10 @@ class _FullSlot:
         self.event = threading.Event()
         self.result = None
         self.last_actual = None
+        from collab.known_fail import _path as _known_path
+        listed = _known_path(Path(self.cdir).parents[2])
+        self.tree = fullrun._snapshot(self.worktree) if (listed.exists() or listed.is_symlink()) else None
+        self.listed_at_start = self.tree is not None
         command = getattr(self.runner, "command", "")
         record(self.cdir, "全量", src="程序", phase="开始",
                summary=(f"复查的同时，程序在一份副本里跑项目配的全部测试命令：{command}" if command else
@@ -3232,7 +3228,13 @@ class _FullSlot:
                    summary="全部测试只跑了 0 项（没有实际运行任何测试）", text=(now.output or "")[-20000:])
             return bad_zero, "全部测试只跑了 0 项（没有实际运行任何测试），需要你看看"
         self.last_actual = now
+        if now.result == PASS and self._list_appeared(now) is not None:
+            return self._list_appeared(now)
         if now.result == PASS:
+            broken = list_broken(Path(self.cdir).parents[2]) if self.tree is not None else ""
+            if broken:   # 名单读不懂：哪怕全过也停下，先修好名单（卡 B2′ 复查第 2 轮）
+                record(self.cdir, "全量", src="程序", phase="结果", result=PASS, summary=f"全部测试都过了，但已知没过名单读不懂：{broken}")
+                return now, f"已知没过名单读不懂（{broken}），先修好名单，需要你看看"
             record(self.cdir, "全量", src="程序", phase="结果", result=PASS, summary="全部测试都过了")
             return Verdict(PASS, 0, ""), ""
         if now.result != FAIL:
@@ -3240,6 +3242,18 @@ class _FullSlot:
             record(self.cdir, "全量", src="程序", phase="结果", result=now.result,
                    summary=f"全部测试{what}", text=now.output[-20000:])
             return now, f"全部测试{what}，需要你看看"
+        appeared = self._list_appeared(now)
+        if appeared is not None:
+            return appeared
+        # 开跑时没有名单就固定走老规矩，不进“拿掉文件再跑”（复查第 5 轮：中途冒出的名单不能用）
+        decided = self._without_waiting(now) if getattr(self, "listed_at_start", False) else None   # 卡 B2′
+        if decided is not None:
+            return decided
+        if self.tree is not None and fullrun._snapshot(self.worktree) != self.tree:
+            # 跑的时候（包括两遍之间）代码变了：第一遍的失败不能再拿去和改之前比（复查第 3 轮）
+            record(self.cdir, "全量", src="程序", phase="结果", result=now.result,
+                   summary="全部测试跑的时候代码变了，这次结果作废", text=(now.output or "")[-20000:])
+            return now, "全部测试跑的时候代码变了，这次结果作废，要重新跑一遍全部测试"
         if getattr(self.runner, "command", ""):
             return self._finish_command(now, judge_round)
         files = fullrun.failing_files(now.output, self.worktree)
@@ -3301,6 +3315,31 @@ class _FullSlot:
                        f"要改代码让它们也过，不要改老测试；跑法：python3 -m unittest discover -s tests -p 文件名）：\n"
                        f"{listing}\n\n{_short_test_note(self.cdir, now.output)}"), ""
 
+    def _list_appeared(self, now):
+        """开跑时没有名单、交结果时却有了：这组结果作废（第一遍过没过都一样，复查第 4、5 轮）。没有这种情况返回 None。"""
+        from collab.known_fail import _path as _known_path
+        appeared = _known_path(Path(self.cdir).parents[2])
+        if getattr(self, "listed_at_start", False) or not (appeared.exists() or appeared.is_symlink()):
+            return None
+        record(self.cdir, "全量", src="程序", phase="结果", result=now.result,
+               summary="全部测试跑的时候才登记了已知没过名单，这次结果作废", text=(now.output or "")[-20000:])
+        return now, "全部测试跑的时候才登记了已知没过名单，这次结果作废，要重新跑一遍全部测试"
+
+    def _without_waiting(self, now):
+        """全部测试没过、项目登记了已知没过名单（卡 B2′）：在副本里拿掉名单里等卡的测试文件，原样再跑一遍。
+        拿掉后全过（不是 0 项）→ 放行；名单读不懂 → 停下；别的（拿掉后还有没过、跑不成、没登记）→ None，照老规矩。"""
+        verdict, note, _files = rerun_without_waiting(Path(self.cdir).parents[2], self.runner, self.worktree,
+                                                      self.event, tree=self.tree)
+        if verdict is None or verdict == "stale":
+            return None   # 作废的交给下面统一说“代码变了”
+        tail = (now.output or "")[-20000:]
+        if verdict == "broken":
+            record(self.cdir, "全量", src="程序", phase="结果", result=FAIL,
+                   summary=f"全部测试没过，已知没过名单读不懂：{note}", text=tail)
+            return now, f"全部测试没过，已知没过名单读不懂（{note}），先修好名单，需要你看看"
+        record(self.cdir, "全量", src="程序", phase="结果", result=FAIL, summary=f"全部测试里{note}", text=tail)
+        return Verdict(PASS, 0, ""), ""
+
     def _finish_command(self, now, judge_round: int):
         """项目配的全部测试命令没过（第三批 ⑯）：认不出是哪一项，就在改之前的版本上再跑一次整条命令比。
         改之前过 → 这次改坏了，退回写代码的并附输出；改之前也不过 → 不算写代码的错，停下；改之前跑不成 → 停下。"""
@@ -3324,6 +3363,62 @@ class _FullSlot:
         return Verdict(FAIL, now.returncode,
                        f"本卡测试过了，但项目的全部测试没过，改之前它是过的（这次改动把原来的功能改坏了，"
                        f"要改代码让它也过，不要改老测试）。全部测试命令：{command}\n没过的那段输出（末尾）：\n{tail}"), ""
+
+
+def _list_files(project, worktree) -> tuple:
+    """名单里还生效、副本里确实有的等卡测试文件（普通文件）：(文件列表, 条目)；名单读不懂抛 Broken。"""
+    from collab import known_fail
+    entries = known_fail.load(project)
+    root = Path(worktree)
+    files = sorted({e["file"] for e in entries
+                    if (root / e["file"]).is_file() and not (root / e["file"]).is_symlink()})
+    return files, entries
+
+
+def rerun_without_waiting(project, runner, worktree, stop=None, tree=None) -> tuple:
+    """卡 B2′：拿掉已知没过名单里等卡的测试文件再跑一遍全部测试。返回
+    ("pass", 说明) 拿掉后全过；("broken", 原因) 名单读不懂；(None, "") 照老规矩。
+    放行要同时满足：名单里每个文件都真的拿掉了；第二遍过了、而且认得出实际跑了几项、不是 0 项；
+    两遍之间（tree 是第一遍开跑前施工副本的样子）代码没变；跑完再读名单还是这几个文件。"""
+    from collab import fullrun, known_fail
+    try:
+        files, entries = _list_files(project, worktree)
+    except known_fail.Broken as exc:
+        return "broken", str(exc), []
+    if not files:
+        return None, "", []
+    if tree is not None and fullrun._snapshot(worktree) != tree:
+        return "stale", "", []   # 第一遍跑完、第二遍开跑前代码就变了：这组结果作废（复查第 3 轮）
+    try:
+        again = runner.run(worktree, stop, without=files)
+    except TypeError:
+        return None, "", []   # 不支持拿掉文件的跑法（测试替身等）：照老规矩
+    if sorted(getattr(runner, "last_removed", None) or []) != files:
+        return None, "", []   # 有的文件副本里没拿掉（没复制进去、不是普通文件）
+    if tree is not None and fullrun._snapshot(worktree) != tree:
+        return "stale", "", []   # 两遍之间改了代码：两个版本的结果不能拼起来用，也不能再拿第一遍的失败去比（复查第 3 轮）
+    executed = fullrun.executed_count(again.output, merged=not getattr(runner, "command", ""))
+    if again.result != PASS or not executed:
+        return None, "", []
+    try:
+        files_now, entries_now = _list_files(project, worktree)
+    except known_fail.Broken as exc:
+        return "broken", str(exc), []
+    if files_now != files:
+        return None, "", []   # 跑的时候名单变了（撤了、加了）：照老规矩
+    cards = "、".join(dict.fromkeys(e.get("card") or "" for e in entries_now if e["file"] in files))
+    return "pass", (f"拿掉名单里 {len(files)} 个等卡的测试文件（等 {cards}）后，全部测试都过（实际跑了 {executed} 项），"
+                    "不算这次改坏"), files
+
+
+def list_broken(project) -> str:
+    """名单读不懂的原因；没登记或读得懂返回空。"""
+    from collab import known_fail
+    try:
+        known_fail.load(project)
+    except known_fail.Broken as exc:
+        return str(exc)
+    return ""
 
 
 _SUMMARY_LIMIT = 4000
@@ -3367,11 +3462,11 @@ def _short_test_output(output: str) -> str:
     都认不出就留最后 60 行；完整输出照旧写进 测试结果.md 和流转记录。"""
     text = str(output or "")
     lines = text.splitlines()
-    if any(re.match(r"^(FAIL|ERROR): ", line) for line in lines):
+    if any(_UT_FAIL_START.match(line) for line in lines):
         blocks = []
         in_listing = False
         for line in lines:
-            if re.match(r"^(?:FAIL|ERROR): ", line) or re.match(r"^=+\s*$", line):
+            if _UT_FAIL_START.match(line) or re.match(r"^=+\s*$", line):
                 break   # 失败块之外（之前）只留程序写的小结和紧跟在后面的失败测试文件清单，不带出普通日志
             if line.startswith("本卡测试"):
                 blocks.append([line])
@@ -3383,14 +3478,14 @@ def _short_test_output(output: str) -> str:
         index = 0
         while index < len(lines):
             title = lines[index]
-            if not re.match(r"^(FAIL|ERROR): ", title):
+            if not _UT_FAIL_START.match(title):
                 index += 1
                 continue
             index += 1
             tail = []
             while index < len(lines):
                 line = lines[index]
-                if (re.match(r"^(FAIL|ERROR): ", line) or re.match(r"^=+\s*$", line)
+                if (_UT_FAIL_START.match(line) or re.match(r"^=+\s*$", line)
                         or re.match(r"^Ran \d+ tests?", line) or line.startswith("FAILED (")):
                     break
                 if line.strip() and not re.match(r"^-+\s*$", line.strip()):

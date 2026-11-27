@@ -80,15 +80,17 @@ def revert_paths(worktree, paths) -> None:
             continue
         in_head = subprocess.run(["git", "cat-file", "-e", f"HEAD:{rel}"], cwd=root,
                                  capture_output=True).returncode == 0
-        staged = subprocess.run(["git", "ls-files", "--error-unmatch", "--", rel], cwd=root,
+        from collab.merge import _literal
+        lit = _literal([rel])[0]   # 路径按字面认：方括号不是通配符（卡 C′）
+        staged = subprocess.run(["git", "ls-files", "--error-unmatch", "--", lit], cwd=root,
                                 capture_output=True).returncode == 0
         target = root / rel
         if in_head:
             # 连暂存区一起恢复：只 checkout 工作区的话，被 git add 过的改动会原样留着（流程修理复查第 1 轮）
-            subprocess.run(["git", "checkout", "HEAD", "--", rel], cwd=root, capture_output=True)
-            continue
+            subprocess.run(["git", "checkout", "HEAD", "--", lit], cwd=root, capture_output=True)
+            continue   # 没撤成由调用方撤完再查一遍范围时发现（“范围外的改动撤销失败”），这里不抛错打断跑卡
         if staged:
-            subprocess.run(["git", "rm", "-q", "--cached", "-r", "--", rel], cwd=root, capture_output=True)
+            subprocess.run(["git", "rm", "-q", "--cached", "-r", "--", lit], cwd=root, capture_output=True)
         if target.is_dir() and not target.is_symlink():
             shutil.rmtree(target, ignore_errors=True)
         elif target.exists() or target.is_symlink():

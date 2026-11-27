@@ -340,7 +340,8 @@ class ReviewRound3(unittest.TestCase):
     """第三批 Codex 复查第 3 轮。"""
 
     def test_more_failures_in_same_file(self):
-        from collab.dispatch import _more_failures
+        # 跑卡卡点修理卡 B：失败项解析合进 fullrun 一处，_more_failures 搬成 fullrun.more_failures（判断口径不变）
+        from collab.fullrun import more_failures as _more_failures
         base = "FAIL: test_a (t.T)\n----\nFAILED (failures=1)"
         now = "FAIL: test_a (t.T)\nFAIL: test_b (t.T)\n----\nFAILED (failures=2)"
         self.assertTrue(_more_failures(now, base))

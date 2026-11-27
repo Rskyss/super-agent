@@ -1,0 +1,21 @@
+Eu.
+======================================================================
+ERROR: test_b (test_old.T)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/项目/ut/tests/test_old.py", line 8, in test_b
+    raise RuntimeError("坏了")
+RuntimeError: 坏了
+
+======================================================================
+FAIL: test_a (test_old.T) (x=2)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/项目/ut/tests/test_old.py", line 6, in test_a
+    self.assertEqual(x, 1)
+AssertionError: 2 != 1
+
+----------------------------------------------------------------------
+Ran 4 tests in 0.000s
+
+FAILED (failures=1, errors=1, unexpected successes=1)

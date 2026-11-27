@@ -104,6 +104,8 @@ python3 collab run <P> CARD-xxx --test-command "npm test" --session-jsonl auto
   - 停下时的判断：最后一轮有【测试的问题】就说“测试本身写错了”；位置（文件:行）相同也算同一问题；退回次数用完时，有【测试的问题】且这次开工还没改过测试，就先交写测试的改一次、写代码的再改一次。
   - 相关老测试：本卡测试过了，再跑 tests/ 下用到这次改动的 .py 文件的老测试（本卡测试不算，最多 40 个文件），记“老测试”；不过就记一条判定没过、当测试没过退回写代码的（说明是哪项）。只认 Python 项目，挑漏的靠最后全量兜底。
   - “继续改”框下多一栏“还要改这些文件”：写了就加进任务卡片的“允许改动的范围”，流转记“追加范围”；绝对路径、..、.collab 一律退回。
+  - 照施工单直接生成方案（卡 A、C′）：施工单缺“要做什么 / 允许改哪些文件 / 验收命令”、还有没填完的、读不了，或允许范围写得不对（方括号路径混用 * ?、名字后面带“(说明)”等），都不开工，右栏写“方案没写成：施工单名 缺：……。补好后点“重写方案””，不再悄悄换 AI 写方案。
+  - 方括号路径（卡 C′）：补要求、方案里可以写 `app/x/[id]/page.tsx` 这类动态路由文件，交给 git 时按字面认，不会带上旁边的 `app/x/i/page.tsx`。
   - 行政：按施工单路径建卡时把路径原样写进卡片、不先读文件；出框后只说“点确认就建卡，之后调度员写方案给你批”。
   - 已知取舍：Cursor 沙箱在部分位置建不了 .git（Operation not permitted），设置里没有可靠开关；交代里让它别为此绕路，程序交活后会完整跑本卡测试。
 - **千问（临时，用户 2026-11-13 加）**：团队设置里写测试、写代码、复查都能选“千问”（不当调度员）。实际是 Codex 的壳，模型来源换成千问 Token Plan（`https://token-plan.maas.qianwenaiapi.com/compatible-mode/v1`，responses 接法），模型在下拉里换（默认 deepseek-v4.1-flash）。密钥放本机 `~/.config/super-agent/qwen-token-plan.key`（只有自己能读，不在项目里），派活时放进环境变量交给 Codex，命令行里看不到；没放密钥时“检测”直接说“千问还没配密钥”。接千问时关掉 Codex 给自家模型的附加功能（`features.multi_agent/apps/computer_use/plugins/browser_use/in_app_browser=false`）：它们会打包成部分千问模型不认的工具格式，Qwen4 Max Preview 因此整条请求被拒（11-13 抓包查明）；检测输出里有“Invalid request parameters”时说“这个模型不接受这样的请求”，不再误报没登录。关掉这些附加功能也解决了 DeepSeek 反复压缩：Codex 不认识第三方模型时会把它们的说明全文每次塞进请求（实测第一次 20 万 token，关掉后 1.2 万）。派活同样关插件、按 Codex 的格式认最后回复和实时输出。
@@ -207,5 +209,6 @@ python3 collab run <P> CARD-xxx --test-command "npm test" --session-jsonl auto
 | `watch <P> CARD-xxx [--once]` | 实时查看进度 |
 | `status <P>` | 任务板 |
 | `archive <P> CARD-xxx --feature 功能名` | 归档到 docs/功能名/ |
+| `known-fail add <P> --file 测试文件 --card CARD-yyy --why 原因` / `known-fail remove <P> --file 测试文件` / `known-fail list <P>` | 已知没过名单（11-27 卡 B2′）：登记“等另一张卡才会过”的整个验收测试文件。全量没过时，程序在副本里拿掉这些文件、用同一条命令再跑一遍：全过、实际跑了至少 1 项、两遍之间代码和名单都没变，才放行；人工“接受剩下的问题”同样。等的卡放进项目后条目自动撤掉。名单读不懂就停下。已知限制见 docs/跑卡卡点修理/卡B2缩小版设计.md |
 
 模型配置在 `.collab/配置.json` 里按项目覆盖（cursor、codex、codex_effort、agy）。

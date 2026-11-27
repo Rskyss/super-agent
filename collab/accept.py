@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import fcntl
 from contextlib import contextmanager
+from contextlib import nullcontext
 from pathlib import Path
 
 from collab.flow import read_flow, record
@@ -57,6 +58,24 @@ def record_stopped(project, card_id: str, signum=None) -> None:
         pass
 
 
+def _raw_broken(project) -> str:
+    """已拿着名单共享锁时读名单（不能再去拿一次锁）：读不懂返回原因。"""
+    from collab import known_fail
+    try:
+        known_fail._read_all(project)
+    except known_fail.Broken as exc:
+        return str(exc)
+    return ""
+
+
+def _raw_files(project, worktree) -> list:
+    from collab import known_fail
+    entries = [i for i in known_fail._read_all(project)
+               if not (i["kind"] == "等卡" and known_fail._card_done(project, i["card"]))]
+    root = Path(worktree)
+    return sorted({e["file"] for e in entries if (root / e["file"]).is_file() and not (root / e["file"]).is_symlink()})
+
+
 def accept_remaining(project, card_id: str, runner=None) -> dict:
     """复查不通过转人工后，先跑全部测试，全过才把卡片转成待验收。"""
     project_path = Path(project)
@@ -76,20 +95,41 @@ def accept_remaining(project, card_id: str, runner=None) -> dict:
     if not worktree.is_dir():
         return _fail_record(cdir, "找不到改好的版本，没法跑全部测试")
 
+    tree = None
     try:
         runner = runner or runner_for(project_path)
         check = getattr(runner, "applicable", None)
         if not (check(worktree) if callable(check) else applicable(worktree)):
             verdict = Verdict(PASS, 0, "")
         else:
+            from collab.fullrun import _snapshot
+            from collab.known_fail import _path as _known_path
+            listed = _known_path(project_path)
+            # 卡 B2′：登记了名单才记第一遍开跑前的样子（没登记的项目不多扫一遍）
+            tree = _snapshot(worktree) if (listed.exists() or listed.is_symlink()) else None
             verdict = runner.run(worktree)
     except Exception as exc:  # noqa: BLE001 — 准备或运行意外出错都要留下可见失败记录
         return _fail_record(cdir, _OTHER_FAIL_REASON, str(exc))
 
-    if verdict.result != PASS:
+    waiting_note, waiting_files = "", []
+    if verdict.result == FAIL:   # 卡 B2′：拿掉名单里等卡的测试文件后全过，照样接受
+        from collab.dispatch import _list_files, rerun_without_waiting
+        kind, note, used = rerun_without_waiting(project_path, runner, worktree, tree=tree)
+        if kind == "broken":
+            return _fail_record(cdir, f"已知没过名单读不懂（{note}），先修好名单再接受", verdict.output or "")
+        if kind == "stale":
+            return _fail_record(cdir, "全部测试跑的时候代码变了，这次结果作废，再点一次接受", verdict.output or "")
+        if kind == "pass":
+            waiting_note = note
+            waiting_files = used   # 这次真的拿掉的那几个文件，写状态前核对名单还是它们
+    if verdict.result != PASS and not waiting_note:
         reason = _FAIL_REASONS.get(verdict.result, _OTHER_FAIL_REASON)
         return _fail_record(cdir, reason, verdict.output or "")
-    if zero_tests(verdict.output):
+    from collab.dispatch import list_broken
+    broken = list_broken(project_path)
+    if broken:   # 写待验收前再读一次名单：读不懂就挡（复查第 2 轮）
+        return _fail_record(cdir, f"已知没过名单读不懂（{broken}），先修好名单再接受", verdict.output or "")
+    if not waiting_note and zero_tests(verdict.output):
         return _fail_record(cdir, _ZERO_TEST_REASON, verdict.output or "")
 
     try:
@@ -99,11 +139,28 @@ def accept_remaining(project, card_id: str, runner=None) -> dict:
             if (fresh.state != "需Claude介入" or not is_review_stop(fresh_stop)
                     or fresh_stop.get("seq") != stop.get("seq")):
                 return {"ok": False, "reason": "这张卡现在不能这样做。"}
-            fresh.transition("待验收")
-            fresh.save(state_path)
+            from collab.known_fail import _locked as _list_lock, _path as _known_path
+            listed_now = _known_path(project_path)
+            has_list = listed_now.exists() or listed_now.is_symlink()
+            if has_list and tree is None:   # 开跑时没名单、现在有了：过没过都作废（复查第 5 轮）
+                return _fail_record(cdir, "全部测试跑的时候才登记了已知没过名单，这次结果作废，再点一次接受", "")
+            # 拿到状态锁后，核对和写“待验收”都在名单的共享锁里做：撤单要等状态写完（复查第 4 轮）
+            with (_list_lock(project_path, shared=True) if has_list else nullcontext()):
+                if waiting_note or tree is not None:   # 写待验收前再核对：代码没变、名单没变坏没撤（复查第 3 轮）
+                    from collab.dispatch import _list_files, list_broken
+                    from collab.fullrun import _snapshot
+                    if tree is not None and _snapshot(worktree) != tree:
+                        return _fail_record(cdir, "全部测试跑完后代码又变了，这次结果作废，再点一次接受", "")
+                    if _raw_broken(project_path):
+                        return _fail_record(cdir, "已知没过名单读不懂，先修好名单再接受", "")
+                    if waiting_note and _raw_files(project_path, worktree) != waiting_files:
+                        return _fail_record(cdir, "接受的时候已知没过名单变了，这次结果作废，再点一次接受", "")
+                fresh.transition("待验收")
+                fresh.save(state_path)
     except (InvalidTransition, OSError, ValueError):
         return {"ok": False, "reason": "这张卡现在不能这样做。"}
-    record(cdir, "接受", src="你", dst="程序", summary="接受剩下的问题，进入待确认", text=issues)
+    record(cdir, "接受", src="你", dst="程序",
+           summary="接受剩下的问题，进入待确认" + (f"（全部测试{waiting_note}）" if waiting_note else ""), text=issues)
     record(
         cdir,
         "结束",

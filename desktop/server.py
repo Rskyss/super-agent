@@ -52,7 +52,7 @@ from collab.config import (  # noqa: E402
 )
 from collab.flow import card_title, read_flow, record as flow_record  # noqa: E402
 from collab.ledger import ledger_add  # noqa: E402
-from collab.merge import (_Stop, _git, _identity_args, merge_unfinished, remove_copy,
+from collab.merge import (_Stop, _git, _identity_args, _literal, merge_unfinished, remove_copy,
                           undo_interrupted)  # noqa: E402
 from collab.phase import card_phase  # noqa: E402
 from collab.scope import read_allowed  # noqa: E402
@@ -117,7 +117,7 @@ def _staged_entries(project, paths) -> tuple:
     暂存的删除在 ls-files 里没有条目，单独记一份，不然失败后会退回上次提交的样子。
     按字节读：文本模式会把文件名里的回车换成换行，还原时就对不上原来的文件了。
     """
-    proc = _git(project, "-c", "core.quotepath=off", "ls-files", "-s", "-z", "--", *paths, text=False)
+    proc = _git(project, "-c", "core.quotepath=off", "ls-files", "-s", "-z", "--", *_literal(paths), text=False)
     entries = []
     for item in proc.stdout.decode("utf-8", "surrogateescape").split("\0"):
         meta, _, name = item.partition("\t")
@@ -125,7 +125,7 @@ def _staged_entries(project, paths) -> tuple:
         if name and len(parts) == 3 and parts[2] == "0":
             entries.append((parts[0], parts[1], name))
     gone = _git(project, "-c", "core.quotepath=off", "diff", "--cached", "--name-only", "--no-renames",
-                "--diff-filter=D", "-z", "--", *paths, text=False)
+                "--diff-filter=D", "-z", "--", *_literal(paths), text=False)
     deleted = sorted({name for name in gone.stdout.decode("utf-8", "surrogateescape").split("\0") if name})
     return entries, deleted
 
@@ -133,11 +133,11 @@ def _staged_entries(project, paths) -> tuple:
 def _restore_index(project, paths, staged) -> None:
     """把暂存区退回保存前的样子：先撤掉这次暂存，再放回用户原先特意暂存的版本和删除。"""
     entries, deleted = staged
-    _git(project, "reset", "-q", "--", *paths, check=False)
+    _git(project, "reset", "-q", "--", *_literal(paths), check=False)
     for mode, sha, name in entries:
         _git(project, "update-index", "--add", "--cacheinfo", f"{mode},{sha},{name}", check=False)
     for name in deleted:
-        _git(project, "update-index", "--force-remove", "--", name, check=False)
+        _git(project, "update-index", "--force-remove", "--", name, check=False)   # update-index 不认通配，原样给
 
 
 def end_drafting(project: str, card_id: str, cdir: Path = None) -> bool:
@@ -1784,9 +1784,9 @@ class Handler(BaseHTTPRequestHandler):
             staged = None
             try:
                 staged = _staged_entries(project, paths)
-                _git(project, "add", "-A", "--", *files)
+                _git(project, "add", "-A", "--", *_literal(files))   # 路径按字面认（卡 C′）
                 _git(project, *_identity_args(Path(project)), "commit", "-qm",
-                     f"开工前先存：{card_id} {title}", "--only", "--", *paths)
+                     f"开工前先存：{card_id} {title}", "--only", "--", *_literal(paths))
             except (OSError, _Stop) as exc:
                 reason = (exc.detail or exc.reason) if isinstance(exc, _Stop) else str(exc)
                 if staged is not None:  # 还没看清暂存区就先别动它

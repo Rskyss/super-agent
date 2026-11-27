@@ -315,12 +315,56 @@ def run_command(cmd, cwd, env, timeout, stop=None, log=None) -> Verdict:
     return Verdict(ENV_ERROR if proc.returncode in (126, 127) else FAIL, proc.returncode, text)
 
 
-_FAIL_LINE = re.compile(r"^(?:FAIL|ERROR): (\S+) \(([^)]*)\)(.*)$", re.M)
+# 认 unittest“哪几项没过”只在这里写一份（跑卡卡点修理卡 B1：原来 fullrun、dispatch、progress 各认各的，
+# 合到这里后各入口的结果和合并前一字不差——旧口径里的毛病也原样保留，修毛病不在本卡）。
+_UT_LINE = re.compile(r"^(?:FAIL|ERROR): (\S+) \(([^)]*)\)(.*)$", re.M)
+# unittest 一条失败块的开头（截取输出、摘要日志时用；和上面同一处定义）
+UT_FAIL_START = re.compile(r"^(?:FAIL|ERROR): ", re.M)
 
 
-def failing_names(output: str) -> list:
-    """没过的每一项（含子测试参数，同一项坏几次就算几次）：["test_a (test_old.T) (x=1)", …]。"""
-    return [f"{m.group(1)} ({m.group(2)}){m.group(3).rstrip()}" for m in _FAIL_LINE.finditer(output or "")]
+def _ut_failed(text: str) -> list:
+    """FAIL / ERROR 行：[(原名, 括号里的位置, 子测试参数)]，同一项坏几次就几条。只认这两种（复查第 3 轮：多认
+    “意外通过”时，没收尾的一行会跨行吞掉下一条真失败）。"""
+    return _UT_LINE.findall(text or "")
+
+
+def _ut_method(name: str, where: str) -> str:
+    """统一成“模块.类.方法”：老写法 test_a (m.T) 和新写法 test_a (m.T.test_a) 认成同一个。"""
+    where = where.strip()
+    suffix = "." + name
+    base = where[:-len(suffix)] if where.endswith(suffix) else where
+    return f"{base}.{name}" if base else name
+
+
+def failed_pairs(output: str) -> set:
+    """没过的“原名 (位置)”（不带子测试参数、不统一新旧写法）：施工进度计数、相关老测试比较用（原 progress.tally、
+    dispatch._failing 的口径）。"""
+    return {f"{n} ({w})" for n, w, _p in _ut_failed(output)}
+
+
+def failing_methods(output: str) -> list:
+    """没过的方法“模块.类.方法”，同一方法几个子测试只算一次、新旧写法认成同一个（先红名单用，原 progress.failing_names）。"""
+    names = []
+    for n, w, _p in _ut_failed(output):
+        full = _ut_method(n, w)
+        if full not in names:
+            names.append(full)
+    return names
+
+
+def more_failures(now_out: str, base_out: str) -> bool:
+    """这次比改之前多坏了：多出改之前没有的失败行，或汇总里的失败总数变多；两边都认不出名字时只比总数。
+    （原 dispatch._more_failures 原样搬来，口径不变。）"""
+    def total(text):
+        m = re.search(r"FAILED \(([^)]*)\)", text or "")
+        return sum(int(n) for n in re.findall(r"(?:failures|errors)=(\d+)", m.group(1))) if m else None
+
+    # 先读总数再比名字：顺序照旧（复查第 4 轮：总数读不出来时旧版在这里就报错，外层按老规矩全列）
+    now_names, now_total = failed_pairs(now_out) or None, total(now_out)
+    base_names, base_total = failed_pairs(base_out) or None, total(base_out)
+    if now_names is not None and base_names is not None and now_names - base_names:
+        return True
+    return now_total is not None and base_total is not None and now_total > base_total
 
 
 def _test_file(test: str, where: str, root) -> str:
@@ -348,9 +392,8 @@ def _test_file(test: str, where: str, root) -> str:
 def failing_files(output: str, root=None) -> dict:
     """没过的项按测试文件分组：{tests/x.py: [项, …]}。"""
     files: dict = {}
-    for m in _FAIL_LINE.finditer(output or ""):
-        name = f"{m.group(1)} ({m.group(2)}){m.group(3).rstrip()}"
-        files.setdefault(_test_file(m.group(1), m.group(2), root), []).append(name)
+    for n, w, p in _ut_failed(output):
+        files.setdefault(_test_file(n, w, root), []).append(f"{n} ({w}){p.rstrip()}")
     return files
 
 
@@ -484,7 +527,7 @@ class FullRunner:
                     outputs.append((rel, v.output))
                 elif v.result in (FAIL, ENV_ERROR):
                     # 同一轮里已经跑完但报错的文件：从第一条报错带起，别把正常输出灌满交接
-                    cut = re.search(r"^(?:FAIL|ERROR): ", v.output, re.M)
+                    cut = UT_FAIL_START.search(v.output)
                     outputs.append((rel, v.output[cut.start():] if cut else v.output))
             room = max(0, 7600 - len(head))   # 整段留在交接最后 8000 字以内
             share = max(1, room // len(outputs)) if outputs else 0   # 每个文件都留一段，不能只有最后一份
@@ -498,7 +541,8 @@ class FullRunner:
             return Verdict(TIMEOUT, None, head + ("\n" + body if body else ""))
         return _merge(results, time.time() - t0)
 
-    def run(self, worktree, stop=None) -> Verdict:
+    def run(self, worktree, stop=None, without=()) -> Verdict:
+        """without：副本里先拿掉这些文件再跑（卡 B2′：已知没过名单登记的等卡测试文件）。"""
         tmp = Path(tempfile.mkdtemp(prefix="collab-full-"))   # 先建好再准备，准备出错也收得掉（复查第 1 轮）
         try:
             before = _snapshot(worktree)
@@ -506,7 +550,11 @@ class FullRunner:
             copy_tree(worktree, copy, stop)
             if (stop is not None and stop.is_set()) or _EXITING["on"]:
                 return Verdict(STOPPED, None, "")
-            verdict = self._run_files(copy, _test_files(copy), safe_env(tmp / "bin"), stop)
+            self.last_removed = remove_from_copy(copy, without)
+            env = safe_env(tmp / "bin")
+            if without:
+                env.update(_fresh_cache(tmp))
+            verdict = self._run_files(copy, _test_files(copy), env, stop)
             if verdict.result == STOPPED or (stop is not None and stop.is_set()) or _EXITING["on"]:
                 return Verdict(STOPPED, None, "")
             if _snapshot(worktree) != before:
@@ -620,7 +668,7 @@ class CommandRunner:
     def applicable(self, worktree) -> bool:
         return True
 
-    def _run_in(self, src, stop, check_stale: bool) -> Verdict:
+    def _run_in(self, src, stop, check_stale: bool, without=()) -> Verdict:
         tmp = Path(tempfile.mkdtemp(prefix="collab-full-cmd-"))
         try:
             before = _snapshot(src) if check_stale else None
@@ -628,9 +676,12 @@ class CommandRunner:
             copy_tree(src, copy, stop)
             if (stop is not None and stop.is_set()) or _EXITING["on"]:
                 return Verdict(STOPPED, None, "")
+            self.last_removed = remove_from_copy(copy, without)
             _link_node_modules(Path(src), copy)
-            verdict = run_command(["/bin/bash", "-o", "pipefail", "-c", self.command], copy, _command_env(tmp / "bin"),
-                                  self.timeout, stop)
+            env = _command_env(tmp / "bin")
+            if without:
+                env.update(_fresh_cache(tmp))
+            verdict = run_command(["/bin/bash", "-o", "pipefail", "-c", self.command], copy, env, self.timeout, stop)
             if verdict.result == STOPPED or (stop is not None and stop.is_set()) or _EXITING["on"]:
                 return Verdict(STOPPED, None, "")
             if check_stale and _snapshot(src) != before:
@@ -643,8 +694,9 @@ class CommandRunner:
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
-    def run(self, worktree, stop=None) -> Verdict:
-        return self._run_in(worktree, stop, check_stale=True)
+    def run(self, worktree, stop=None, without=()) -> Verdict:
+        """without：副本里先拿掉这些文件再跑（卡 B2′）。"""
+        return self._run_in(worktree, stop, check_stale=True, without=without)
 
     def base_all(self, worktree, stop=None) -> Verdict:
         """在改之前的版本（施工副本的 HEAD）上跑同一条命令。"""
@@ -666,6 +718,97 @@ class CommandRunner:
                 except subprocess.CalledProcessError:
                     pass
             shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _through_link(root: Path, rel: str) -> bool:
+    """路径中间哪一层是符号链接（目录快捷方式）：不认，免得拿掉的是别处的文件（复查第 3 轮）。"""
+    cur = Path(root)
+    for part in Path(rel).parts[:-1]:
+        cur = cur / part
+        if cur.is_symlink():
+            return True
+    return False
+
+
+def remove_from_copy(copy, files) -> list:
+    """在副本里拿掉这些文件（卡 B2′），返回真的拿掉了哪些：只认副本里面的普通文件——目录、符号链接、
+    副本里本来就没有的（被 .gitignore 挡掉没复制进来）都不算拿掉（复查第 2 轮）。"""
+    root = Path(copy).resolve()
+    removed = []
+    for rel in files or ():
+        target = Path(copy) / rel
+        if target.is_symlink() or not target.is_file() or _through_link(Path(copy), rel):
+            continue
+        try:
+            real = target.resolve()
+        except OSError:
+            continue
+        if root not in real.parents:
+            continue
+        target.unlink()
+        removed.append(rel)
+    return removed
+
+
+_UT_SUMMARY = re.compile(r"^Ran (\d+) tests? in [^\n]*\n\n(?:OK|FAILED|NO TESTS RAN)(?: \(([^)]*)\))?", re.M)
+_NODE_SUMMARY = re.compile(r"^\s*(?:ℹ|#) tests (\d+)\s*$(?P<rest>(?:\n\s*(?:ℹ|#) \w+ [\d.]+\s*$)*)", re.M)
+_PYTEST_SUMMARY = re.compile(r"^=*\s*((?:\d+ \w+(?:, )?)+) in [\d.]+s\b.*$", re.M)
+
+
+_NODE_FILE_LINE = re.compile(r"^(?:✔|✖|ok \d+ -|not ok \d+ -) (?:/\S*|\S+\.[cm]?[jt]sx?)(?: \(|\s*$)", re.M)
+
+
+def _node_count(text: str) -> int:
+    """node 的汇总相加；“只是文件加载成功”的那一行（顶格、名字是文件路径）不算测试正文（复查第 4、5 轮）。
+    TAP 一段里写了“一项都没有”（1..0）的，这一段算 0，别的段照算。"""
+    segments = re.split(r"^TAP version \d+\s*$", text, flags=re.M) if "TAP version" in text else [text]
+    total = 0
+    for seg in segments:
+        if re.search(r"^\s*1\.\.0\s*$", seg, re.M):
+            continue
+        part = 0
+        for m in _NODE_SUMMARY.finditer(seg):
+            rest = dict(re.findall(r"(?:ℹ|#) (\w+) ([\d.]+)", m.group("rest") or ""))
+            part += int(m.group(1)) - int(float(rest.get("skipped", 0))) - int(float(rest.get("todo", 0)))
+        part -= len(_NODE_FILE_LINE.findall(seg))
+        total += max(0, part)
+    return total
+
+
+def executed_count(output: str, merged: bool = False):
+    """这次实际执行了几项测试正文（跳过、待办、只标了预期失败没跑的、只是文件加载成功的都不算）；
+    一段汇总都认不出返回 None。merged=True 是程序自己逐文件跑的输出：unittest 只认末尾总汇总（不重复加）；
+    否则是项目自配的命令，几段 unittest 各算各的再相加（复查第 5 轮：不靠输出里像不像分段标题来猜）。
+    pytest 认带不带 === 的汇总行，算 passed、failed、error、xpassed。负数按 0。"""
+    text = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", output or "")
+    total, found = 0, False
+    ut = list(_UT_SUMMARY.finditer(text))
+    if ut:
+        found = True
+        for m in (ut[-1:] if merged else ut):
+            skipped = sum(int(n) for n in re.findall(r"skipped=(\d+)", m.group(2) or ""))
+            total += max(0, int(m.group(1)) - skipped)
+    if _NODE_SUMMARY.search(text):
+        found = True
+        total += _node_count(text)
+    for m in _PYTEST_SUMMARY.finditer(text):
+        parts = dict((w, int(n)) for n, w in re.findall(r"(\d+) (\w+)", m.group(1)))
+        if not any(w in parts for w in ("passed", "failed", "error", "errors", "skipped", "xfailed", "xpassed",
+                                        "deselected")):
+            continue
+        found = True
+        total += sum(parts.get(w, 0) for w in ("passed", "failed", "error", "errors", "xpassed"))
+    return total if found else None
+
+
+def _fresh_cache(tmp: Path) -> dict:
+    """拿掉文件再跑的那一遍用一份干净的缓存和临时目录：不吃第一遍留下的缓存（复查第 2 轮）。"""
+    out = {}
+    for key, name in (("XDG_CACHE_HOME", "cache"), ("TMPDIR", "tmp"), ("npm_config_cache", "npm-cache")):
+        path = Path(tmp) / name
+        path.mkdir(parents=True, exist_ok=True)
+        out[key] = str(path)
+    return out
 
 
 def runner_for(project):

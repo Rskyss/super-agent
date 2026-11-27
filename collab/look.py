@@ -15,10 +15,39 @@ _IMAGE = re.compile(r"`([^`\n]+\.(?:png|jpe?g|webp))`|((?:[\w\-.一-龥]+/)*[\w\
                     re.I)
 
 
-def needs_look_line(line: str) -> bool:
-    """施工单“验收”一节的“走查”那一行有没有要求人看页面。只写“不涉及”的不算。"""
-    text = str(line or "")
-    return any(word in text for word in LOOK_WORDS)
+_SEP = "\\s，。；、,.;（）()！!"
+# 开头明说不用。“不涉及 / 不适用”后面写什么都算；“不需要 / 无”这几个词后面要么结束，要么接走查、页面这类字，
+# 免得把“无痕窗口打开…”“不用登录，打开大屏…”当成不用看
+_SAYS_NO = re.compile(r"(?:不涉及|不适用|(?:不需要|不用|无需|不必|没有|无)(?=$|[" + _SEP + r"]|手动|人工|真人|页面|界面|走查|看|对照|原型))"
+                      r"(?:(?!但|不过|然而)[^" + _SEP + r"])*")
+_NO_WORD = re.compile(r"(?:不需要|不用|无需|不必)(?:再|手动|人工|真人)?(?:" + "|".join(LOOK_WORDS) + ")")
+
+
+def needs_look_line(line: str, default: bool = False) -> bool:
+    """施工单“走查：”后面那句话要不要人看页面。
+    开头明说不用的，后面又写了要看（“不涉及（…必须停下，打开页面看一遍）”）仍算要看。
+    default：没用上那几个词、但写了要做的事，算不算要看。"""
+    text = str(line or "").strip()
+    said_no = _SAYS_NO.match(text)
+    rest = _NO_WORD.sub("", text[said_no.end():] if said_no else text)
+    if any(word in rest for word in LOOK_WORDS):
+        return True
+    # “不需要对照原型，但放进项目前在浏览器实测”：转折后面还有要做的事（复查第 2 轮）
+    return bool(default and text and (not said_no or re.search("但|不过|然而", rest)))
+
+
+def asks_look(accept_lines, has_walk_command: bool) -> str:
+    """没用上那几个词、但“走查：”后面写了要做的事的，也算要看页面；返回那句话，不算就返回空。
+    写了走查命令的由程序自动走查，不算；“走查步骤”那种表头不算。
+    来历：11-25 train 三张施工单写“按走查步骤表检查 / 实测”，一张都没认出来，会直接进待验收。"""
+    if has_walk_command:
+        return ""
+    for line in accept_lines:
+        m = re.match(r"走查\s*[：:]\s*(.+)$", str(line or "").strip())
+        if m:
+            text = m.group(1).strip()
+            return text if needs_look_line(text, default=True) else ""
+    return ""
 
 
 def look_images(line: str, project, order_rel: str) -> list:

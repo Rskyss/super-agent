@@ -98,14 +98,15 @@ class OrderPlan(ProjectCase):
         self.assertTrue(events)
         self.assertEqual(events[-1].get("src"), "程序")
 
-    def test_order_without_allowed_files_falls_back_to_ai(self):
+    def test_order_without_allowed_files_stops(self):
+        # 跑卡卡点修理卡 A 改口径：施工单缺允许文件不再掉进 AI 写方案，写方案失败、说清缺什么（原为“照旧叫 AI 写方案”）
         self.write_order(ORDER.replace("- `collab/planner.py`\n- `tests/test_batch4_extra*.py`\n", ""))
         self.fake_plan()
         code, out = self.cli("plan", self.project, "CARD-001")
-        self.assertEqual(code, 0, out)
-        self.assertTrue(self.codex_planned(), "施工单缺少允许文件时照旧叫 AI 写方案")
-        self.assertIn("把按钮改成蓝色", (self.cdir / "方案.md").read_text(encoding="utf-8"))
-        self.assertEqual(read_allowed((self.cdir / "需求卡.md").read_text(encoding="utf-8")), ["src/app.py"])
+        self.assertNotEqual(code, 0, out)
+        self.assertFalse(self.codex_planned(), "施工单缺少允许文件时不叫 AI")
+        fails = [e for e in read_flow(self.cdir) if e.get("kind") == "方案失败"]
+        self.assertTrue(fails and "允许改哪些文件" in (fails[-1].get("summary") or ""))
 
     def test_order_needing_project_profile_falls_back_to_ai(self):
         (Path(self.project) / "docs" / "项目说明.md").unlink()

@@ -18,7 +18,7 @@ from collab.flow import record as flow_record
 from collab.rulebook import rules_for as _rules, say as _say
 from collab.state import Card
 from collab.token_usage import usage_from_text
-from collab.workspace import PROFILE_TEMPLATE, has_blanks, profile_path, render_board
+from collab.workspace import PLACEHOLDER, PLAN_TEMPLATE, PROFILE_TEMPLATE, has_blanks, profile_path, render_board
 
 _PLAN_TIMEOUT = 15 * 60
 _VIEW_KEYS = ("view_how", "view_command", "view_url")
@@ -61,7 +61,12 @@ def _bad_scope_reason(path: str) -> Optional[str]:
     if ".." in parts:
         return "不能写带 .. 的路径"
     first = parts[0] if parts else ""
-    if any(ch in first for ch in "*?["):
+    # 第一段带方括号：只有“动态路由”写法（[id]、[...slug]、[[...slug]]）、整条路径没有 * ?、结尾不带“(说明)”时
+    # 才按文件名认（卡 C′）；[.]env 这类、和通配符混用的（[id]/*.tsx 会被范围检查当通配符）照旧挡掉（复查第 6 轮）
+    from collab.scope import _NOTE
+    route_only = re.fullmatch(r"(?:[^\[\]*?]|\[\[\.\.\.[\w-]+\]\]|\[(?:\.\.\.)?[\w-]+\])*", first) is not None
+    literal_ok = route_only and not any(ch in p for ch in "*?") and not _NOTE.search(p)
+    if any(ch in first for ch in "*?") or ("[" in first and not literal_ok):
         return "第一段不能用通配符"
     if any(ch in p for ch in "*?[") and (".env" in p or ".git" in p):
         return "不能用通配符匹配敏感文件"
@@ -310,7 +315,7 @@ def _order_walk_command(project, rel: str) -> str:
 
 def _order_look(project, rel: str) -> dict:
     """施工单“验收”一节的“走查”那一行要不要人看页面（第三批 ③）；照施工单生成和 AI 写方案两条路都用这一份。"""
-    from collab.look import look_images, needs_look_line
+    from collab.look import asks_look, look_images, needs_look_line
     try:
         text = (Path(project) / rel).read_text(encoding="utf-8")
     except (OSError, ValueError):
@@ -320,18 +325,31 @@ def _order_look(project, rel: str) -> dict:
     accept = [ln[2:].strip() for ln in lines if ln.startswith("- 走查") and not ln.startswith("- 走查命令")]
     walk_text = accept[0].split("：", 1)[-1].strip() if accept else ""
     if not needs_look_line(walk_text):
+        walk_text = asks_look(accept, bool(_order_walk_command(project, rel)))
+    if not walk_text:
         return {}
     return {"look_required": True, "look_images": look_images(walk_text, project, rel), "look_line": walk_text}
 
 
-def _plan_from_order(project, rel: str):
-    """按施工单的固定格式摘出方案内容；摘要、允许路径或验收命令缺一项就返回 None。"""
-    try:
-        text = (Path(project) / rel).read_text(encoding="utf-8")
-    except (OSError, ValueError):
-        return None
-    sections = _order_sections(text)
-    summary = _first_paragraph(_section_body(sections, "要做什么"))
+_ACCEPT_COMMAND_PREFIX = "- 验收命令："
+
+
+def _order_test_command(sections: list, text: str) -> str:
+    """施工单的验收命令：有“验收”一节只认这一节里以“- 验收命令：”开头那一行的反引号命令；
+    老格式（没有“验收”一节）照旧找全文第一处。检查和照施工单生成共用这一份（卡 A）。"""
+    body = _section_body(sections, "验收")
+    if body is not None:
+        for line in body:
+            stripped = line.strip()
+            if stripped.startswith(_ACCEPT_COMMAND_PREFIX):
+                quoted = re.search(r"`([^`\n]*)`", stripped)
+                return quoted.group(1).strip() if quoted else ""
+        return ""
+    command = re.search(r"验收命令：.*?`([^`\n]+)`", text)
+    return command.group(1).strip() if command else ""
+
+
+def _order_allowed(sections: list) -> list:
     allowed = []
     for line in _section_body(sections, "允许改") or []:
         stripped = line.strip()
@@ -344,11 +362,20 @@ def _plan_from_order(project, rel: str):
             path = quoted.group(1).strip()
             if path and path not in allowed:
                 allowed.append(path)
-    command = re.search(r"验收命令：.*?`([^`\n]+)`", text)
-    test_command = command.group(1).strip() if command else ""
+    return allowed
+
+
+def _order_plan_data(project, rel: str):
+    """把施工单按固定格式摘成方案内容（缺项也照摘，交给 order_gaps 判断）；读不了返回 (None, 原因)。"""
+    try:
+        text = (Path(project) / rel).read_text(encoding="utf-8")
+    except (OSError, ValueError) as exc:
+        return None, str(exc)
+    sections = _order_sections(text)
+    summary = _first_paragraph(_section_body(sections, "要做什么")) or ""
+    allowed = _order_allowed(sections)
+    test_command = _order_test_command(sections, text)
     walk_command = _walk_command_from_sections(sections)
-    if not summary or not allowed or not test_command:
-        return None
     steps = []
     for line in _section_body(sections, "做法") or []:
         stripped = line.strip()
@@ -379,7 +406,87 @@ def _plan_from_order(project, rel: str):
         "allowed": allowed,
         "test_command": test_command,
         "walk_command": walk_command,
-    }
+    }, ""
+
+
+def _order_unfilled_fields(data: dict) -> list:
+    """方案会带出去的几处里还有空白标记的项（用来写清“没填完”是哪一项）。"""
+    fields = []
+
+    def add(field: str, text) -> None:
+        if PLACEHOLDER in str(text or "") and field not in fields:
+            fields.append(field)
+
+    add("要做什么", data.get("summary"))
+    add("允许改哪些文件", "".join(data.get("allowed") or []))
+    add("验收命令", data.get("test_command"))
+    add("走查", (data.get("walk_command") or "") + (data.get("view_how") or ""))
+    steps = data.get("steps") or []
+    if not isinstance(steps, (list, tuple)):
+        steps = [steps]
+    add("具体做法", "".join(str(step) for step in steps))
+    add("不做什么", data.get("not_do"))
+    return fields
+
+
+def _order_bad_scopes(data) -> list:
+    """施工单允许范围里过不了 AI 方案那道检查的路径（复查第 7 轮：照施工单直出也要拦 [id]/*.tsx、带说明的名字）。"""
+    return [(one, why) for one in _norm_paths(data.get("allowed")) if (why := _bad_scope_reason(one))]
+
+
+def _order_gaps_of(data, why: str) -> list:
+    if data is None:
+        return ["读不了"]
+    gaps = []
+    if not data.get("summary"):
+        gaps.append("要做什么")
+    if not data.get("allowed"):
+        gaps.append("允许改哪些文件")
+    elif _order_bad_scopes(data):
+        gaps.append("合法的允许范围")
+    if not data.get("test_command"):
+        gaps.append("验收命令")
+    if _order_unfilled_fields(data):
+        gaps.append("没填完")
+    return gaps
+
+
+def order_gaps(project, rel: str) -> list:
+    """这份施工单缺的项（没缺返回空列表）：读不了、要做什么、允许改哪些文件、验收命令、没填完。"""
+    data, why = _order_plan_data(project, rel)
+    return _order_gaps_of(data, why)
+
+
+_ORDER_GAP_HINT = {
+    "要做什么": "要做什么：补一节 `## 一、要做什么（一句话）`，标题下面第一段写清要做什么。",
+    "允许改哪些文件": "允许改哪些文件：补一节 `## 二、允许改哪些文件`，每个文件一行，写成 “- `路径`” 的样子。",
+    "验收命令": "验收命令：在“验收”一节写一行 `- 验收命令：`python3 -m unittest discover -s tests -p \"test_xxx.py\"``，"
+                "反引号里放一条完整命令。",
+}
+
+
+def _order_gap_text(rel: str, gaps: list, data, why: str) -> str:
+    lines = [f"施工单：{rel}"]
+    for gap in gaps:
+        if gap == "读不了":
+            lines.append(f"读不了：{why or '文件读不出来'}。请检查文件权限，或确认它是 UTF-8 编码。")
+        elif gap == "没填完":
+            for field in _order_unfilled_fields(data) or ["方案正文"]:
+                lines.append(f"没填完：{field} 里还有 {PLACEHOLDER}，请写清。")
+        elif gap == "合法的允许范围":
+            for one, reason in _order_bad_scopes(data):
+                lines.append(f"范围不合法：`{one}`（{reason}）。说明写在反引号外，方括号路径别和 * ? 混用。")
+        else:
+            lines.append(_ORDER_GAP_HINT[gap])
+    return "\n".join(lines)
+
+
+def _plan_from_order(project, rel: str):
+    """按施工单的固定格式摘出方案内容；摘要、允许路径或验收命令缺一项就返回 None。"""
+    data, _why = _order_plan_data(project, rel)
+    if data is None or not data["summary"] or not data["allowed"] or not data["test_command"]:
+        return None
+    return data
 
 
 def _build_prompt(card_dir: Path, requirement_text: str, need_profile: bool, project=None) -> str:
@@ -427,17 +534,21 @@ def plan_card(project: str, card_id: str) -> int:
         revised = "## 追加要求" in requirement
         if not need_profile and not revised:
             for rel in existing_orders(project, requirement)[:1]:
-                data = _plan_from_order(project, rel)
-                if data is None:
-                    continue
+                data, why = _order_plan_data(project, rel)
+                gaps = _order_gaps_of(data, why)
+                if gaps:
+                    start_path = card_dir / "开工.json"
+                    if start_path.exists():
+                        start_path.unlink()
+                    (card_dir / "方案.md").write_text(PLAN_TEMPLATE, encoding="utf-8")
+                    summary = f"{Path(rel).stem} 缺：{'、'.join(gaps)}。补好后点“重写方案”。"
+                    return _fail(card_dir, summary, text=_order_gap_text(rel, gaps, data, why))
                 allowed = _norm_paths(data.get("allowed"))
                 plan_md = _render_plan_md(data).replace(
                     "# 拆解方案\n\n",
                     f"# 拆解方案\n\n> 照施工单 {rel} 生成，没有让 AI 再写一遍。\n\n",
                     1,
                 )
-                if has_blanks(plan_md):
-                    break
                 (card_dir / "方案.md").write_text(plan_md, encoding="utf-8")
                 req_path.write_text(_replace_allowed_section(requirement, allowed), encoding="utf-8")
                 start = {"test_command": data["test_command"]}

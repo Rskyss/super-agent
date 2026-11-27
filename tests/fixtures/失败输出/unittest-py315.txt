@@ -1,0 +1,24 @@
+FEu.
+======================================================================
+ERROR: test_b (test_old.T.test_b)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/项目/ut/tests/test_old.py", line 8, in test_b
+    raise RuntimeError("坏了")
+RuntimeError: 坏了
+
+======================================================================
+FAIL: test_a (test_old.T.test_a) (x=2)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/项目/ut/tests/test_old.py", line 6, in test_a
+    self.assertEqual(x, 1)
+    ~~~~~~~~~~~~~~~~^^^^^^
+AssertionError: 2 != 1
+
+======================================================================
+UNEXPECTED SUCCESS: test_c (test_old.T.test_c)
+----------------------------------------------------------------------
+Ran 4 tests in 0.003s
+
+FAILED (failures=1, errors=1, unexpected successes=1)

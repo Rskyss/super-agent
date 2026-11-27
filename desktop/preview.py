@@ -63,6 +63,10 @@ def _ignored_in_project(project: Path, rel: str) -> bool:
         return False
 
 
+def _escape_ignore(rel: str) -> str:
+    return "".join("\\" + ch if ch in "[]*?!#\\" else ch for ch in rel)
+
+
 def _hide_from_git(copy: Path, rels: list) -> None:
     """.gitignore 的 node_modules/ 不匹配软链接，要单独告诉 git，否则会被当成改动。
     只写借的这几个路径，它们在项目里本来就被忽略，对真实项目没有影响。"""
@@ -71,7 +75,8 @@ def _hide_from_git(copy: Path, rels: list) -> None:
                               capture_output=True, text=True, timeout=5, check=True).stdout.strip()
         exclude = (copy / path).resolve()
         lines = exclude.read_text(encoding="utf-8").splitlines() if exclude.is_file() else []
-        fresh = ["/" + rel for rel in rels if "/" + rel not in lines]
+        # 按 .gitignore 写法转义通配字符：[id]/node_modules 不能匹配到 i/、d/（卡 C′ 复查第 5 轮）
+        fresh = ["/" + _escape_ignore(rel) for rel in rels if "/" + _escape_ignore(rel) not in lines]
         if fresh:
             exclude.parent.mkdir(parents=True, exist_ok=True)
             exclude.write_text("\n".join(lines + fresh) + "\n", encoding="utf-8")

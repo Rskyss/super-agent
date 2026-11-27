@@ -89,12 +89,15 @@ class SkipPlanWithOrder(ProjectCase):
         ev = [e for e in read_flow(self.cdir) if e.get("kind") == "方案"][-1]
         self.assertEqual(ev.get("src"), "程序")
 
-    def test_order_missing_test_command_falls_back_to_ai(self):
+    def test_order_missing_test_command_stops(self):
+        # 跑卡卡点修理卡 A 改口径：施工单读不全不再掉进 AI 写方案，写方案失败、说清缺什么（原为“照旧让 AI 写方案”）
         self.with_order(ORDER.replace("- 验收命令：`", "- 命令：`"))
         os.environ["FAKE_PLAN"] = json.dumps(GOOD_PLAN, ensure_ascii=False)
         code, out = self.cli("plan", self.project, "CARD-001")
-        self.assertEqual(code, 0, out)
-        self.assertTrue(self.codex_planned(), "施工单读不全就照旧让 AI 写方案")
+        self.assertNotEqual(code, 0, out)
+        self.assertFalse(self.codex_planned(), "施工单读不全不叫 AI")
+        fails = [e for e in read_flow(self.cdir) if e.get("kind") == "方案失败"]
+        self.assertTrue(fails and "验收命令" in (fails[-1].get("summary") or ""))
 
     def test_no_order_unchanged(self):
         os.environ["FAKE_PLAN"] = json.dumps(GOOD_PLAN, ensure_ascii=False)

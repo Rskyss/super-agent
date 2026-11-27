@@ -18,7 +18,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from collab.fullrun import copy_tree, run_command, safe_env
+from collab.fullrun import copy_tree, failed_pairs, failing_methods, run_command, safe_env
 from collab.judge import ENV_ERROR, FAIL, TIMEOUT
 
 PROGRESS_FILE = "进度.json"
@@ -45,7 +45,7 @@ def tally(output: str):
     if not m:
         return None
     total = int(m.group(1))
-    names = {f"{a} ({b})" for a, b in re.findall(r"^(?:FAIL|ERROR): (\S+) \(([^)]*)\)", output or "", re.M)}
+    names = failed_pairs(output)   # 认法在 fullrun 一处（卡 B1）；口径同原来：按“原名 (位置)”去重，同一方法几个子测试只算一次
     bad = re.search(r"FAILED \(([^)]*)\)", output or "")
     unexpected = re.search(r"unexpected successes=(\d+)", bad.group(1)) if bad else None
     failed = len(names) + (int(unexpected.group(1)) if unexpected else 0)
@@ -93,20 +93,6 @@ def run_segments(worktree, test_command, timeout):
         if kind in results:
             return Verdict(kind, None if kind != FAIL else 1, "\n".join(outputs))
     return Verdict(PASS, 0, "\n".join(outputs))
-
-
-def failing_names(output: str) -> list:
-    """从 unittest 输出里认出没过的测试，统一成“模块.类.方法”。
-    老版 Python 括号里是“模块.类”，3.12 起是“模块.类.方法”，两种认成同一个名字；重复行只留一次。"""
-    names = []
-    for name, where in re.findall(r"^(?:FAIL|ERROR): (\S+) \(([^)]*)\)", output or "", re.M):
-        where = where.strip()
-        suffix = "." + name
-        base = where[:-len(suffix)] if where.endswith(suffix) else where
-        full = f"{base}.{name}" if base else name
-        if full not in names:
-            names.append(full)
-    return names
 
 
 def snapshot(worktree, ignore=()) -> frozenset:
@@ -227,7 +213,7 @@ class ProgressJob:
                         return {"seq": self.seq, "step": self.step,
                                 "error": "测试跑不起来（多半是代码还没写到能导入）"}
                     if own:   # 只数开工前没过的那几项；本段失败也要接着跑后面的段
-                        names = failing_names(v.output)
+                        names = failing_methods(v.output)
                         if v.result == FAIL and not names:
                             # 这段没过却认不出是哪项：名单里剩下的不能当成过了（复查第五轮 1）
                             return {"seq": self.seq, "step": self.step,

@@ -2690,8 +2690,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             let shot = Process()   // 整个窗口截一张，能看到半透明左栏和顶部细栏
             shot.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
             shot.arguments = ["-x", "-o", "-l", String(self.window.windowNumber), folder.appendingPathComponent("window.png").path]
-            try? shot.run()
-            shot.waitUntilExit()
+            // 诊断（11-27 录屏授权不认）：系统认不认录屏权限、截图工具退出码和报错，写进 status.txt
+            // 先读完报错再等退出（报错多时不会互相等着卡住）；工具没启动就直接记原因（复查第 1 轮）
+            let shotErr = Pipe()
+            shot.standardError = shotErr
+            var shotNote = ""
+            var shotExit: Int32 = -1
+            do {
+                try shot.run()
+                let data = shotErr.fileHandleForReading.readDataToEndOfFile()
+                shot.waitUntilExit()
+                shotExit = shot.terminationStatus
+                shotNote = String(String(decoding: data, as: UTF8.self).prefix(1000)).replacingOccurrences(of: "\n", with: " ")  // 按字截，不截坏汉字
+            } catch {
+                shotNote = "截图工具没启动：\(error.localizedDescription)"
+            }
             if let term = self.term {
                 term.selectAll(nil)  // 终端里的文字存一份，截图拍不准时用文字核对
                 try? (term.getSelection() ?? "").write(to: folder.appendingPathComponent("left.txt"), atomically: true, encoding: .utf8)
@@ -2702,6 +2715,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
                 + "window=\(self.window.windowNumber)\nright=\(!self.rightBox.isHidden)\n"
                 + "widths=\(self.navBox.frame.width),\(self.leftBox.frame.width),\(self.rightBox.frame.width)\n"
                 + "hit=\(self.hitReport())\n"
+                + "screenAccess=\(CGPreflightScreenCaptureAccess())\nshotExit=\(shotExit)\nshotErr=\(shotNote)\n"
             try? status.write(to: folder.appendingPathComponent("status.txt"), atomically: true, encoding: .utf8)
             func save(_ image: NSImage?, _ name: String) {
                 if let image = image, let tiff = image.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff) {

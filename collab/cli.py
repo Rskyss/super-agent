@@ -574,7 +574,70 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("command", nargs="?", default=None, help="要跑的命令；不写就只显示现在的")
     q.add_argument("--clear", action="store_true", help="清掉，回到不配的样子")
     q.set_defaults(func=cmd_config_full_test)
+
+    p = sub.add_parser("known-fail", help="已知没过名单：提前放进项目、等别的卡来做、本来就该不过的测试（等卡），全部测试这关不算这次改坏")
+    ksub = p.add_subparsers(dest="known_item", required=True)
+    q = ksub.add_parser("add", help="登记一条")
+    q.add_argument("project")
+    q.add_argument("--file", required=True, help="测试文件，如 tests/a.test.ts")
+    q.add_argument("--kind", default="等卡", help="只有“等卡”一种（默认）")
+    q.add_argument("--card", default=None, help="等卡时写等哪张卡")
+    q.add_argument("--why", required=True, help="为什么登记")
+    q.set_defaults(func=cmd_known_fail_add)
+    q = ksub.add_parser("list", help="查看名单")
+    q.add_argument("project")
+    q.set_defaults(func=cmd_known_fail_list)
+    q = ksub.add_parser("remove", help="撤掉这个文件的条目")
+    q.add_argument("project")
+    q.add_argument("--file", required=True)
+    q.set_defaults(func=cmd_known_fail_remove)
     return parser
+
+
+def cmd_known_fail_add(args, **_):
+    from collab import known_fail
+    try:
+        known_fail.add(args.project, args.file, [], args.kind, card=args.card, why=args.why)
+    except ValueError as exc:
+        print(f"没登记：{exc}", file=sys.stderr)
+        return 1
+    print(f"已登记：{args.file}（整个文件）")
+    return 0
+
+
+def cmd_known_fail_list(args, **_):
+    from collab import known_fail
+    try:
+        items = known_fail.load(args.project)
+    except known_fail.Broken as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    if not items:
+        print("已知没过名单是空的")
+    for i in items:
+        tail = f"等 {i.get('card')}" if i["kind"] == "等卡" else "偶发"
+        print(f"- {i['file']}：{'、'.join(i.get('tests') or []) or '整个文件'}（{tail}；{i.get('by')} {i.get('at')}：{i.get('why')}）")
+    return 0
+
+
+def cmd_known_fail_remove(args, **_):
+    from collab import known_fail
+    try:
+        n = known_fail.remove(args.project, args.file)
+    except ValueError as exc:
+        print(f"没撤：{exc}", file=sys.stderr)
+        return 1
+    except known_fail.LedgerMissed as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    except OSError as exc:
+        print(f"没撤：{exc}", file=sys.stderr)
+        return 1
+    if not n:
+        print(f"名单里没有 {args.file} 这样的条目", file=sys.stderr)
+        return 1
+    print(f"已撤掉 {n} 条")
+    return 0
 
 
 def cmd_config_full_test(args, **_):
