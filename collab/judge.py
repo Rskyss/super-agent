@@ -62,11 +62,15 @@ def judge(command, cwd, timeout) -> Verdict:
                                 stdin=subprocess.DEVNULL, start_new_session=True)
     except FileNotFoundError as exc:
         return Verdict(ENV_ERROR, None, f"找不到命令：{exc}")
+    from collab import fullrun   # 登记进停工时一把收掉的进程组：不然点了停下，本卡测试还在后台跑（v0.96 复查 C 严重 1）
+    fullrun._GROUPS.add(proc.pid)
     try:
         stdout, stderr = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
         stdout = _stop_group(proc)
         return Verdict(TIMEOUT, None, (stdout or "")[-_OUTPUT_LIMIT:])
+    finally:
+        fullrun._GROUPS.discard(proc.pid)
     output = (stdout or "") + (stderr or "")
     if proc.returncode == 0:
         result = PASS

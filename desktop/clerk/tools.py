@@ -260,8 +260,9 @@ def _read_card(project: str, args: dict) -> str:
     for ev in reversed(flow):
         if ev.get("kind") == "转人工":
             reason = (ev.get("summary") or "").strip()
+            kind = str(ev.get("类别") or "").strip()   # v0.96 D2：要你定 / 程序没判出来 / 模型挂了
             if reason:
-                lines.append(f"最近一次转人工原因：{reason}")
+                lines.append(f"最近一次转人工原因：{'【' + kind + '】' if kind else ''}{reason}")
             break
     return "\n".join(lines)
 

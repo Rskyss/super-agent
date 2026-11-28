@@ -202,7 +202,9 @@ def _stop_text(project, card_id: str, event: dict) -> str:
 def _blocked_detail(events: list) -> str:
     for e in reversed(events):
         if e.get("kind") == "转人工":
-            return str(e.get("say") or e.get("summary") or "").strip()  # say：给人看的完整一句（第二轮 ㉞）
+            text = str(e.get("say") or e.get("summary") or "").strip()  # say：给人看的完整一句（第二轮 ㉞）
+            kind = str(e.get("类别") or "").strip()   # v0.96 D2：要你定 / 程序没判出来 / 模型挂了；老记录没有就不加
+            return f"【{kind}】{text}" if kind and text else text
     return ""
 
 

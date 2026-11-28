@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import fnmatch
 import os
+import json
 import re
 import shutil
 import subprocess
@@ -799,6 +800,160 @@ def executed_count(output: str, merged: bool = False):
         found = True
         total += sum(parts.get(w, 0) for w in ("passed", "failed", "error", "errors", "xpassed"))
     return total if found else None
+
+
+_NODE_FAILING_HEAD = re.compile(r"^✖ failing tests:\s*$", re.M)
+_NODE_TEST_AT = re.compile(r"^test at (.+?)(?::\d+:\d+)?\s*$")
+_NODE_TREE_LINE = re.compile(r"^( *)(▶|✖|✔|﹣|⚠) (.+?)(?: \([\d.]+m?s\))?(?: # .*)?\s*$")
+_NODE_FAIL_ITEM = re.compile(r"^✖ (.+?)(?: \([\d.]+m?s\))?\s*$")
+_TAP_SUBTEST = re.compile(r"^( *)# Subtest: (.+?)\s*$")
+_TAP_NOT_OK = re.compile(r"^( *)not ok \d+ - (.+?)(\s+#\s*(?:TODO|SKIP)\b.*)?\s*$", re.I)
+_TAP_LOCATION = re.compile(r"^\s*location: '(.+?)(?::\d+:\d+)?'\s*$")
+_PYTEST_FAILED = re.compile(r"^(?:FAILED|ERROR) (\S+?(?:\[[^\]]*\])?)(?: - .*)?$", re.M)   # 参数 id 里的“ - ”不截
+_UT_TOTAL = re.compile(r"FAILED \(([^)]*)\)")
+
+
+def _copy_relative(path: str) -> str:
+    """测试副本在临时目录里，路径每次不同：只留副本里的相对路径（…/copy/tests/x.ts → tests/x.ts）。"""
+    m = re.search(r"/(?:copy|head)/(.+)$", path)
+    return m.group(1) if m else path
+
+
+def _test_id(where: str, path) -> str:
+    """一项测试的身份：文件 + 分组路径。分组名里本身带“ > ”也不会和多层分组撞上（复查第 2 轮严重 2）。"""
+    return f"{where}::" + json.dumps(list(path), ensure_ascii=False)
+
+
+def id_words(test_id: str) -> str:
+    """给人看的写法：tests/a.ts::A > 名字（身份里的分组路径是 JSON，不好读）。"""
+    where, _, rest = str(test_id).partition("::")
+    try:
+        path = json.loads(rest)
+    except ValueError:
+        return str(test_id)
+    shown = " > ".join(str(p) for p in path) if isinstance(path, list) else rest
+    return f"{where}::{shown}" if where else shown
+
+
+def _sum_lines(pattern: str, text: str):
+    found = re.findall(pattern, text, re.M)
+    return sum(int(n) for n in found) if found else None
+
+
+def _node_spec_names(text: str, head):
+    """node / tsx 的 spec 输出：正文是一棵树（▶ 分组、缩进两格一层），末尾“✖ failing tests:”段有文件但没有分组。
+    两边按顺序对上：失败段每一项在正文里往后找同名的失败项，拿它的分组路径。对不上、重名，返回 None。"""
+    stack, fails = [], []
+    for line in text[:head.start()].splitlines():
+        m = _NODE_TREE_LINE.match(line)
+        if not m:
+            continue
+        level, mark, name = len(m.group(1)) // 2, m.group(2), m.group(3)
+        del stack[level:]
+        if mark == "▶":
+            stack.append(name)
+        elif mark == "✖":
+            fails.append(tuple(stack) + (name,))
+    entries, where = [], ""
+    for line in text[head.end():].splitlines():
+        at = _NODE_TEST_AT.match(line)
+        if at:
+            where = _copy_relative(at.group(1))
+            continue
+        item = _NODE_FAIL_ITEM.match(line)
+        if item:
+            entries.append((where, item.group(1)))
+    names, i = [], 0
+    for where, name in entries:
+        while i < len(fails) and fails[i][-1] != name:
+            i += 1
+        if i >= len(fails):
+            return None
+        names.append(_test_id(where, fails[i]))
+        i += 1
+    total = _sum_lines(r"^\s*ℹ fail (\d+)\s*$", text)
+    if total is None or len(entries) < total:
+        return None
+    return names
+
+
+def _tap_names(text: str):
+    """TAP：按缩进（四格一层）和“# Subtest:”拼出分组路径，文件取 location；TODO、SKIP 和分组本身（type: 'suite'）不算。"""
+    lines = text.splitlines()
+    stack, names = [], []
+    for k, line in enumerate(lines):
+        sub = _TAP_SUBTEST.match(line)
+        if sub:
+            level = len(sub.group(1)) // 4
+            del stack[level:]
+            stack.append(sub.group(2))
+            continue
+        m = _TAP_NOT_OK.match(line)
+        if not m or m.group(3):
+            continue
+        level, name = len(m.group(1)) // 4, m.group(2)
+        where, suite = "", False
+        for follow in lines[k + 1:k + 40]:   # 紧跟着的 YAML 块
+            if re.match(r"^\s*\.\.\.\s*$", follow):
+                break
+            if re.match(r"^\s*type: 'suite'\s*$", follow):
+                suite = True
+            loc = _TAP_LOCATION.match(follow)
+            if loc:
+                where = _copy_relative(loc.group(1))
+        if suite:
+            continue
+        names.append(_test_id(where, stack[:level] + [name]))
+    return names
+
+
+def failing_ids(output: str):
+    """没过的是哪几项（v0.96 B1：项目自配的全部测试命令也能比“改之前就不过的”）。
+    认得出 node/tsx 的 spec 和 TAP、unittest、pytest；名字带文件和分组（同名的两个测试不会认成一个），不带用时、行列号。
+    认不全就当认不出、返回 None，不当旧问题放过（复查第 1 轮）：认出的条数少于汇总里的失败数、有重名、
+    一种都认不出。认得出、一项都没失败返回空集合（调用的地方自己判断空集合配不配“没过”）。"""
+    text = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", output or "")
+    names, recognised = [], False
+    if (_sum_lines(r"^\s*(?:ℹ|#) cancelled (\d+)\s*$", text) or 0) > 0:
+        return None   # 有被取消的（比如分组的 before() 坏了，下面的测试根本没跑）：分不清，照旧停（复查第 2 轮严重 3）
+    head = _NODE_FAILING_HEAD.search(text)
+    if head:
+        found = _node_spec_names(text, head)
+        if found is None:
+            return None
+        names += found
+        recognised = True
+    elif re.search(r"^\s*# fail \d+\s*$", text, re.M):
+        found = _tap_names(text)
+        if len(found) < (_sum_lines(r"^\s*# fail (\d+)\s*$", text) or 0):
+            return None
+        names += found
+        recognised = True
+    ut = _ut_failed(text)
+    if ut or _UT_SUMMARY.search(text):
+        recognised = True
+        expected = 0
+        for m in _UT_TOTAL.finditer(text):   # “expected failures=1”是预期中的，不算（复查第 1 轮轻微）
+            expected += sum(int(n) for n in re.findall(r"(?<!expected )(?:failures|errors|unexpected successes)=(\d+)",
+                                                       m.group(1)))
+        found = [_ut_method(n, w) + p.rstrip() for n, w, p in ut]
+        if len(found) < expected:
+            return None
+        names += found
+    pytest_summary = [m for m in _PYTEST_SUMMARY.finditer(text) if re.search(r"\d+ (?:failed|errors?)\b", m.group(1))]
+    if pytest_summary:
+        recognised = True
+        found = _PYTEST_FAILED.findall(text)
+        expected = 0
+        for m in pytest_summary:
+            parts = dict((w, int(n)) for n, w in re.findall(r"(\d+) (\w+)", m.group(1)))
+            expected += parts.get("failed", 0) + parts.get("error", 0) + parts.get("errors", 0)
+        if len(found) < expected:
+            return None
+        names += found
+    if not recognised or len(set(names)) != len(names):
+        return None
+    return set(names)
 
 
 def _fresh_cache(tmp: Path) -> dict:

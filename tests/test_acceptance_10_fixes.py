@@ -266,6 +266,9 @@ class Actions(ServerCase, Base):
         write_script(self.bin / "agy", f'echo x >> "{count}"\n'
                                        f'if [ "$(wc -l < "{count}")" -gt 1 ]; then echo 结论：通过; exit 0; fi\n'
                                        'echo 网络断了\n')
+        # v0.96 D1 起复查员没给结论会先自己重派一次；这里关掉重试，守住“停下后接着跑只重新复查”这条老路
+        os.environ["SUPERAGENT_NO_RETRY"] = "1"
+        self.addCleanup(os.environ.pop, "SUPERAGENT_NO_RETRY", None)
         self.ready_card()
         self.act("approve")
         wait_until(lambda: self.state() == "需Claude介入", 25)

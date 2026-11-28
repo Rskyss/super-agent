@@ -32,7 +32,7 @@ if str(ROOT) not in sys.path:  # 直接用 python3 desktop/server.py 启动时�
     sys.path.insert(0, str(ROOT))
 
 from collab.check import DEFAULT_TIMEOUT as CHECK_TIMEOUT, check_team, version_changes_detail  # noqa: E402
-from collab.cli import cmd_approve, cmd_confirm_profile  # noqa: E402
+from collab.cli import approve_block_reason, cmd_approve, cmd_confirm_profile  # noqa: E402
 from collab.dispatch import save_paths  # noqa: E402
 from collab.config import (  # noqa: E402
     DEFAULT_MODELS,
@@ -104,6 +104,17 @@ _JOB_LIMIT = 100         # 积木库做完的后台任务最多留这么多
 def _blocks_connected(result: dict) -> bool:
     """检测通过、只是额度不足、或拿到了模型名单只是试的模型没通（用户 2026-11-11 选 A）（用户 2026-11-09 定也算接上了）"""
     return bool(result.get("ok")) or result.get("status") in ("quota", "listed")
+
+
+def _unsaved_orders(project, card_id: str, files: list) -> list:
+    """还没存的文件里，哪些是本卡引用的施工单。"""
+    from collab.planner import existing_orders
+    try:
+        need = (Path(project) / ".collab" / "cards" / card_id / "需求卡.md").read_text(encoding="utf-8")
+    except OSError:
+        return []
+    orders = set(existing_orders(project, need)) if card_id else set()
+    return [f for f in files if f in orders]
 
 
 # 和 Mac 窗口 BlocksWindow.isValidAccount 一样；tavily 和 cli:编号:名字 是沙盒接入 64 号单加的
@@ -344,6 +355,10 @@ class Handler(BaseHTTPRequestHandler):
             test_cmd = self._start_test_command(project, card_id).strip()
             if not test_cmd:
                 self._card_action_error("还没有施工用的测试命令：请先写好方案。")
+                return
+            blocked = approve_block_reason(project, card_id)   # v0.96 C1：施工单没存、没走写方案，说真实原因
+            if blocked:
+                self._card_action_error(blocked)
                 return
             ns2 = argparse.Namespace(project=project, card_id=card_id)
             code = cmd_approve(ns2)
@@ -1739,7 +1754,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"error": "卡片编号不对"}, 400)
                 return
             files = save_paths(project, card_id)[0]
-            self._json({"count": len(files), "files": files})
+            orders = _unsaved_orders(project, card_id, files)   # v0.96 C1：施工单没存时确认框不给“直接开工”
+            self._json({"count": len(files), "files": files, **({"orders": orders} if orders else {})})
         else:
             self._json({"error": "没有这个地址"}, 404)
 

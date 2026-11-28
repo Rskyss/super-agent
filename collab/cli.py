@@ -109,6 +109,41 @@ def cmd_confirm_profile(args, **_):
     return 0
 
 
+def approve_block_reason(project, card_id: str) -> str:
+    """批准前该拦的（v0.96 C1，窗口和命令行共用）：本卡引用的施工单还没存进项目；有施工单却没有开工记录
+    （手写方案直接批准、没走“写方案”，施工单缺节的检查就被绕过了，train 卡 16）。不用拦返回空。"""
+    from collab.dispatch import files_to_save
+    from collab.planner import existing_orders
+    card_dir = _collab(project) / "cards" / card_id
+    try:
+        need = (card_dir / "需求卡.md").read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    orders = existing_orders(project, need)
+    if not orders:
+        return ""
+    unsaved = [p for p in files_to_save(project, card_id) if p in orders]
+    unsaved += [p for p in orders if p not in unsaved and not _tracked(project, p)]   # 被忽略的也进不了副本（复查 C 中等 1）
+    if unsaved:
+        return (f"施工单还没存进项目：{'、'.join(unsaved)}。开工的副本里会没有它，写测试、写代码的读不到。"
+                "先把它存进项目（提交）再批准。")
+    if not (card_dir / "开工.json").is_file():
+        return ("这张卡有施工单，但没走“写方案”这一步（没有开工记录）。先写方案（窗口里点“写方案”或 collab plan），"
+                "程序会照施工单检查缺什么、记下施工用的测试命令，再批准。")
+    return ""
+
+
+def _tracked(project, rel: str) -> bool:
+    """这个文件在项目的版本记录里（开工副本从版本记录建，不在里面的副本里就没有）。读不了当作在。"""
+    import subprocess
+    try:
+        proc = subprocess.run(["git", "ls-files", "--error-unmatch", "--", rel], cwd=str(project),
+                              capture_output=True, text=True, timeout=5)
+    except (subprocess.SubprocessError, OSError):
+        return True
+    return proc.returncode == 0
+
+
 def cmd_approve(args, **_):
     """用户确认拆解方案后调用：卡片从「待对齐」进入「待派发」。"""
     collab = _collab(args.project)
@@ -128,6 +163,10 @@ def cmd_approve(args, **_):
         return 1
     if has_blanks((card_dir / "方案.md").read_text(encoding="utf-8")):
         print("方案还有空白（（待填）），请补全后再确认", file=sys.stderr)
+        return 1
+    blocked = approve_block_reason(args.project, args.card_id)
+    if blocked:
+        print(blocked, file=sys.stderr)
         return 1
     card = Card.load(state_path)
     card.transition("待派发")
@@ -225,97 +264,120 @@ def cmd_run(args, ask_fn=None, judge_fn=None, **_):
     if not state_path.exists():
         print(f"没有卡片 {args.card_id}，请先 new-card", file=sys.stderr)
         return 1
-    card = Card.load(state_path)
-    resuming = card.state in ("开发中", "待测试", "测试中")
-    resume_blocked = getattr(args, "resume_blocked", False)
-    if card.state == "需Claude介入" and resume_blocked:
-        from collab.accept import card_lock   # 和接受任务共用一把锁：旧测试结果不能盖掉这里刚存的状态（复查 54 第 2、7 条）
-        with card_lock(state_path):
-            card = Card.load(state_path)   # 等锁的时候状态可能已经被接受任务改掉，要重新看
-            if card.state == "需Claude介入":
-                card.transition("开发中")
-                card.save(state_path)
-                resuming = True
-        if resuming:
-            render_board(_collab(args.project))
-    if card.state != "待派发" and not resuming:
-        print(f"{args.card_id} 当前状态是「{card.state}」，方案确认后（待派发）才能开工", file=sys.stderr)
-        return 1
-    allowed = read_allowed((_collab(args.project) / "cards" / args.card_id / "需求卡.md")
-                           .read_text(encoding="utf-8"))
-    if not allowed:
-        print("任务卡片里还没有写明允许改动的文件范围（“## 允许改动的范围”下面列出文件）", file=sys.stderr)
-        return 1
-
-    # 用谁干活：命令里写了就用命令里的，没写就用团队配置（在动手之前确定，配置坏了就在这里停下）
-    try:
-        tools = run_tools(args.project, dev=args.dev_tool, test=args.test_tool, review=args.review_tool)
-    except ConfigError as exc:
-        print(f"团队配置有问题：{exc}", file=sys.stderr)
-        return 1
-
-    _remind_upgrades(args.project, args.card_id, tools)
-    tag = vcs.snapshot(project, f"pre-{args.card_id}-{datetime.now():%Y%m%d-%H%M%S}")
-    _backup_row(args.project, args.card_id, tag)
-
-    worktree = project.parent / f"{project.name}-worktrees" / args.card_id
-    worktree.parent.mkdir(parents=True, exist_ok=True)
-    vcs.add_worktree(project, args.card_id, worktree)
-    vcs.link_dependencies(project, worktree)
-    vcs.copy_local_settings(project, worktree)
-
-    session = None
-    if args.session_jsonl == "auto":
-        session = find_latest_session(Path.home() / ".claude" / "projects")
-        if session is None:
-            print("没找到 Claude 会话记录，本次不记录额度", file=sys.stderr)
-    elif args.session_jsonl:
-        session = Path(args.session_jsonl)
-    offset = count_lines(session) if session else 0
-
-    reviewer = tools["review"]
-    past_events = flow_read(_collab(args.project) / "cards" / args.card_id)
-    for_new_words = bool(past_events) and any(e.get("kind") == "追加要求" for e in past_events) and next(
-        e.get("kind") for e in reversed(past_events) if e.get("kind") in ("追加要求", "开跑")) == "追加要求"
-    resume_words = "按新要求继续施工" if for_new_words else "接着上次中断处继续施工"
-    run_summary = (f"{resume_words}：测试员 {tools['test']}，开发员 {tools['dev']}，复查员 {reviewer or '不复查'}"
-                   if resuming else
-                   f"开始施工：测试员 {tools['test']}，开发员 {tools['dev']}，复查员 {reviewer or '不复查'}")
-    main_pid = os.getpid()
     from collab.phase import process_start
-    started_at = process_start(main_pid)
-    _stopping = {"done": False}
+    # 先占住“正在施工”的登记、再动卡片状态：查和占在同一把锁里，被拒绝的续跑不会把转人工的卡改成“中断了”
+    # （复查 D 第 1、2 轮严重 2）。后面提前退出留下的登记，进程一退就算过期，窗口和下一次开卡都不认。
+    own_record, busy = _register_terminal_run(args.project, args.card_id, os.getpid(), process_start(os.getpid()))
+    if busy:
+        print(f"已有一张卡在施工（{busy}），等它做完再开工；这次什么都没做。", file=sys.stderr)
+        return 1
+    try:
+        card = Card.load(state_path)
+        resuming = card.state in ("开发中", "待测试", "测试中")
+        resume_blocked = getattr(args, "resume_blocked", False)
+        if card.state == "需Claude介入" and resume_blocked:
+            from collab.accept import card_lock   # 和接受任务共用一把锁：旧测试结果不能盖掉这里刚存的状态（复查 54 第 2、7 条）
+            with card_lock(state_path):
+                card = Card.load(state_path)   # 等锁的时候状态可能已经被接受任务改掉，要重新看
+                if card.state == "需Claude介入":
+                    card.transition("开发中")
+                    card.save(state_path)
+                    resuming = True
+            if resuming:
+                render_board(_collab(args.project))
+        if card.state != "待派发" and not resuming:
+            print(f"{args.card_id} 当前状态是「{card.state}」，方案确认后（待派发）才能开工", file=sys.stderr)
+            return 1
+        allowed = read_allowed((_collab(args.project) / "cards" / args.card_id / "需求卡.md")
+                               .read_text(encoding="utf-8"))
+        if not allowed:
+            print("任务卡片里还没有写明允许改动的文件范围（“## 允许改动的范围”下面列出文件）", file=sys.stderr)
+            return 1
 
-    def _on_signal(signum, frame):
-        # 第一次收到结束信号后忽略后续，确保能走完收尾
-        if _stopping["done"]:
-            return
-        _stopping["done"] = True
+        # 用谁干活：命令里写了就用命令里的，没写就用团队配置（在动手之前确定，配置坏了就在这里停下）
         try:
-            from collab.fullrun import kill_all_groups
-            kill_all_groups()   # 先一次性强停复制副本、跑全量和进度的独立进程组（第四轮复查第 2、3 轮）
-        except Exception:  # noqa: BLE001
-            pass
-        kill_current_tool_process_group()
-        raise SystemExit(128 + signum)
+            tools = run_tools(args.project, dev=args.dev_tool, test=args.test_tool, review=args.review_tool)
+        except ConfigError as exc:
+            print(f"团队配置有问题：{exc}", file=sys.stderr)
+            return 1
 
-    for sig in (signal.SIGTERM, signal.SIGINT):
-        try:
-            signal.signal(sig, _on_signal)
-        except (OSError, ValueError):
-            pass
-    role_models = run_models(args.project, {"test": tools["test"], "dev": tools["dev"], "review": reviewer})
-    flow_record(_collab(args.project) / "cards" / args.card_id, "开跑", src="调度员", dst="程序",
-                summary=run_summary,
-                tools={"测试员": tools["test"], "开发员": tools["dev"], "复查员": reviewer},
-                models={name: model_label(tool, role_models.get(name, {}))
-                        for name, tool in (("测试员", tools["test"]), ("开发员", tools["dev"]), ("复查员", reviewer))
-                        if tool},
-                pid=main_pid, started=started_at,
-                text=(f"判定命令：{test_command}\n走查：{walk_word}\n改好的版本在：{worktree}"
-                      if walk_word else
-                      f"判定命令：{test_command}\n页面检查：{page_check or '无'}\n改好的版本在：{worktree}"))
-    card, verdict = run_card(
+        _remind_upgrades(args.project, args.card_id, tools)
+        tag = vcs.snapshot(project, f"pre-{args.card_id}-{datetime.now():%Y%m%d-%H%M%S}")
+        _backup_row(args.project, args.card_id, tag)
+
+        worktree = project.parent / f"{project.name}-worktrees" / args.card_id
+        worktree.parent.mkdir(parents=True, exist_ok=True)
+        vcs.add_worktree(project, args.card_id, worktree)
+        vcs.link_dependencies(project, worktree)
+        vcs.copy_local_settings(project, worktree)
+
+        session = None
+        if args.session_jsonl == "auto":
+            session = find_latest_session(Path.home() / ".claude" / "projects")
+            if session is None:
+                print("没找到 Claude 会话记录，本次不记录额度", file=sys.stderr)
+        elif args.session_jsonl:
+            session = Path(args.session_jsonl)
+        offset = count_lines(session) if session else 0
+
+        reviewer = tools["review"]
+        past_events = flow_read(_collab(args.project) / "cards" / args.card_id)
+        for_new_words = bool(past_events) and any(e.get("kind") == "追加要求" for e in past_events) and next(
+            e.get("kind") for e in reversed(past_events) if e.get("kind") in ("追加要求", "开跑")) == "追加要求"
+        resume_words = "按新要求继续施工" if for_new_words else "接着上次中断处继续施工"
+        run_summary = (f"{resume_words}：测试员 {tools['test']}，开发员 {tools['dev']}，复查员 {reviewer or '不复查'}"
+                       if resuming else
+                       f"开始施工：测试员 {tools['test']}，开发员 {tools['dev']}，复查员 {reviewer or '不复查'}")
+        main_pid = os.getpid()
+        from collab.phase import process_start
+        started_at = process_start(main_pid)
+        _stopping = {"done": False}
+
+        def _on_signal(signum, frame):
+            # 第一次收到结束信号后忽略后续，确保能走完收尾
+            if _stopping["done"]:
+                return
+            _stopping["done"] = True
+            try:
+                from collab.fullrun import kill_all_groups
+                kill_all_groups()   # 先一次性强停复制副本、跑全量和进度的独立进程组（第四轮复查第 2、3 轮）
+            except Exception:  # noqa: BLE001
+                pass
+            kill_current_tool_process_group()
+            raise SystemExit(128 + signum)
+
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            try:
+                signal.signal(sig, _on_signal)
+            except (OSError, ValueError):
+                pass
+        role_models = run_models(args.project, {"test": tools["test"], "dev": tools["dev"], "review": reviewer})
+        _ensure_start_record(args.project, args.card_id, test_command)   # v0.96 C2（登记已在开头占好）
+        flow_record(_collab(args.project) / "cards" / args.card_id, "开跑", src="调度员", dst="程序",
+                    summary=run_summary,
+                    tools={"测试员": tools["test"], "开发员": tools["dev"], "复查员": reviewer},
+                    models={name: model_label(tool, role_models.get(name, {}))
+                            for name, tool in (("测试员", tools["test"]), ("开发员", tools["dev"]), ("复查员", reviewer))
+                            if tool},
+                    pid=main_pid, started=started_at,
+                    text=(f"判定命令：{test_command}\n走查：{walk_word}\n改好的版本在：{worktree}"
+                          if walk_word else
+                          f"判定命令：{test_command}\n页面检查：{page_check or '无'}\n改好的版本在：{worktree}"))
+        card, verdict = _run_card_call(args, card, worktree, test_command, tools, reviewer, role_models,
+                                       allowed, page_check, walk_command, ask_fn, judge_fn)
+        if session:
+            record_card_usage(_collab(args.project), args.card_id, usage_since(session, offset))
+
+        _finish_run_line(args.project, args.card_id, card, _collab(args.project) / "cards" / args.card_id)
+        return 0 if card.state == "待验收" else 2
+    finally:
+        if own_record:   # 不管怎么结束（提前退出、跑完、出错、被停下）都删掉自己写的那份登记
+            _unregister_terminal_run(args.project, os.getpid())
+
+
+def _run_card_call(args, card, worktree, test_command, tools, reviewer, role_models, allowed, page_check,
+                   walk_command, ask_fn, judge_fn):
+    return run_card(
         card, collab_dir=_collab(args.project), worktree=str(worktree),
         test_command=["/bin/bash", "-o", "pipefail", "-c", test_command],
         dev_adapter=tools["dev"], test_adapter=tools["test"],
@@ -332,12 +394,93 @@ def cmd_run(args, ask_fn=None, judge_fn=None, **_):
         draft=ask_fn is None and os.environ.get("SUPERAGENT_NO_DRAFT") != "1",   # 停下后起草继续改（第四轮 56 甲）
         progress=ask_fn is None and os.environ.get("SUPERAGENT_NO_PROGRESS") != "1",   # 右栏进度条（第四轮 53）
         red_check=ask_fn is None and os.environ.get("SUPERAGENT_NO_RED_CHECK") != "1",   # 写测试先红卡
+        retry=ask_fn is None and os.environ.get("SUPERAGENT_NO_RETRY") != "1",   # v0.96 D1：派活暂时性失败先重试
     )
-    if session:
-        record_card_usage(_collab(args.project), args.card_id, usage_since(session, offset))
 
-    _finish_run_line(args.project, args.card_id, card, _collab(args.project) / "cards" / args.card_id)
-    return 0 if card.state == "待验收" else 2
+
+def _backend_run_path(project) -> Path:
+    return _collab(project) / "后台" / "run.json"
+
+
+def _register_terminal_run(project, card_id: str, pid: int, started) -> tuple:
+    """终端里开的卡也写窗口用的那份“谁在跑哪张卡”（格式同 desktop/clerk/tasks.launch），窗口才停得了、看得到。
+    返回（写了没有, 正在施工的别的卡号）：窗口开的卡它已经写好了（pid 就是本进程）→ (False, "")；
+    别的进程还活着 → (False, 那张卡号)，调用的地方不许开工；其余写上 → (True, "")。"""
+    import fcntl
+    from collab.phase import process_is_alive
+    path = _backend_run_path(project)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path.with_suffix(".lock"), "a+", encoding="utf-8") as lock_fh:
+            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)
+            try:
+                old = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                old = None
+            if isinstance(old, dict):
+                try:
+                    old_pid = int(old.get("pid"))
+                except (TypeError, ValueError):
+                    old_pid = None
+                if old_pid == pid:
+                    return False, ""
+                if old_pid and process_is_alive(old_pid, old.get("started")):
+                    return False, str(old.get("card") or "另一张卡")
+            tmp = path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps({"card": card_id, "pid": pid, "time": datetime.now().timestamp(),
+                                       "started": started, "from": "终端"}, ensure_ascii=False) + "\n",
+                           encoding="utf-8")
+            os.replace(str(tmp), str(path))
+            return True, ""
+    except OSError:
+        return False, ""
+
+
+def _other_run_busy(project, pid: int) -> str:
+    """后台登记里另一个还活着的施工进程在跑哪张卡；没有返回空（本进程自己、过期的都不算）。"""
+    from collab.phase import process_is_alive
+    try:
+        old = json.loads(_backend_run_path(project).read_text(encoding="utf-8"))
+        old_pid = int(old.get("pid"))
+    except (OSError, ValueError, TypeError, AttributeError):
+        return ""
+    if old_pid == pid or not process_is_alive(old_pid, old.get("started")):
+        return ""
+    return str(old.get("card") or "另一张卡")
+
+
+def _unregister_terminal_run(project, pid: int) -> None:
+    """只删自己写的那份。"""
+    path = _backend_run_path(project)
+    try:
+        if int(json.loads(path.read_text(encoding="utf-8")).get("pid")) == pid:
+            path.unlink()
+    except (OSError, ValueError, TypeError, AttributeError):
+        pass
+
+
+def _ensure_start_record(project, card_id: str, test_command: str) -> None:
+    """终端开卡时没有开工记录：补记这次的测试命令，窗口点“接着跑”读得到（train 卡 16 停下后接不上）。"""
+    path = _collab(project) / "cards" / card_id / "开工.json"
+    data = {}
+    if path.exists():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            data = {}
+        if not isinstance(data, dict) or data.get("test_command") == test_command:
+            return
+        # 终端用了另一条判定命令：以实际跑的为准，窗口“接着跑”才不会悄悄换回旧命令（复查 C 严重 3）
+        data = dict(data, test_command=test_command, test_command_was=data.get("test_command"),
+                    **{"from": "终端开卡改了判定命令"})
+    else:
+        data = {"test_command": test_command, "from": "终端开卡补记"}
+    try:   # 先写临时文件再换名：写到一半被停下，原来的开工记录也还在（复查 D 严重 3）
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(str(tmp), str(path))
+    except OSError:
+        pass
 
 
 def cmd_merge(args, **_):

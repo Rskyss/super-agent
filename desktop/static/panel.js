@@ -353,6 +353,7 @@ if (typeof document !== "undefined") (function () {
     startRequest += 1;  // 切卡或取消后，旧的清单和失败回包不能再弹框
     startPending = null;
     $("startBox").hidden = true;
+    $("startGo").hidden = false;
     startButtons(false);
     actionBusy = false;
     renderActions();
@@ -422,9 +423,13 @@ if (typeof document !== "undefined") (function () {
         .then(function (d) {
           if (request !== startRequest) return;
           var files = d && Array.isArray(d.files) ? d.files : [];
+          var orders = d && Array.isArray(d.orders) ? d.orders : [];
           if (files.length) {
             startPending = { card: cardId, count: files.length };
-            $("startText").textContent = PanelCore.startDialogText(files.length);
+            // v0.96 C1：施工单没存时开工的副本里没有它，不给“直接开工”
+            $("startGo").hidden = orders.length > 0;
+            $("startText").textContent = PanelCore.startDialogText(files.length) +
+              (orders.length ? "\n其中施工单还没存进项目，不存就开工，干活的读不到它。" : "");
             var shown = files.slice(0, 10);
             if (files.length > 10) shown.push("还有 " + (files.length - 10) + " 个");
             $("startFiles").textContent = shown.join("\n");

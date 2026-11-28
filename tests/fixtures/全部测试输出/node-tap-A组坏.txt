@@ -1,0 +1,179 @@
+TAP version 13
+# Subtest: A
+    # Subtest: same name
+    not ok 1 - same name
+      ---
+      duration_ms: 2.803208
+      type: 'test'
+      location: '/private/var/folders/xx/T/collab-full-cmd-abc123/copy/tests/a.test.mjs:2:23'
+      failureType: 'testCodeFailure'
+      error: |-
+        The expression evaluated to a falsy value:
+        
+          assert.ok(process.env.FAIL_A)
+        
+      code: 'ERR_ASSERTION'
+      name: 'AssertionError'
+      expected: true
+      actual: ''
+      operator: '=='
+      stack: |-
+        TestContext.<anonymous> (file:///private/var/folders/xx/T/collab-full-cmd-abc123/copy/tests/a.test.mjs:2:54)
+        Test.runInAsyncScope (node:async_hooks:227:14)
+        Test.run (node:internal/test_runner/test:1402:25)
+        Test.start (node:internal/test_runner/test:1262:17)
+        node:internal/test_runner/test:1903:71
+        node:internal/per_context/primordials:504:82
+        new Promise (<anonymous>)
+        new SafePromise (node:internal/per_context/primordials:478:3)
+        node:internal/per_context/primordials:504:9
+        Array.map (<anonymous>)
+      ...
+    # Subtest: always
+    not ok 2 - always
+      ---
+      duration_ms: 0.230209
+      type: 'test'
+      location: '/private/var/folders/xx/T/collab-full-cmd-abc123/copy/tests/a.test.mjs:2:83'
+      failureType: 'testCodeFailure'
+      error: |-
+        The expression evaluated to a falsy value:
+        
+          assert.ok(false)
+        
+      code: 'ERR_ASSERTION'
+      name: 'AssertionError'
+      expected: true
+      actual: false
+      operator: '=='
+      stack: |-
+        TestContext.<anonymous> (file:///private/var/folders/xx/T/collab-full-cmd-abc123/copy/tests/a.test.mjs:2:109)
+        Test.runInAsyncScope (node:async_hooks:227:14)
+        Test.run (node:internal/test_runner/test:1402:25)
+        Suite.processPendingSubtests (node:internal/test_runner/test:974:18)
+        Test.postRun (node:internal/test_runner/test:1542:19)
+        Test.run (node:internal/test_runner/test:1467:12)
+        async Promise.all (index 0)
+        async Suite.run (node:internal/test_runner/test:1905:7)
+        async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3)
+      ...
+    1..2
+not ok 1 - A
+  ---
+  duration_ms: 3.5285
+  type: 'suite'
+  location: '/private/var/folders/xx/T/collab-full-cmd-abc123/copy/tests/a.test.mjs:2:1'
+  failureType: 'subtestsFailed'
+  error: '2 subtests failed'
+  code: 'ERR_TEST_FAILURE'
+  ...
+# Subtest: B
+    # Subtest: same name
+    ok 1 - same name
+      ---
+      duration_ms: 0.069958
+      type: 'test'
+      ...
+    # Subtest: always
+    not ok 2 - always
+      ---
+      duration_ms: 0.123792
+      type: 'test'
+      location: '/private/var/folders/xx/T/collab-full-cmd-abc123/copy/tests/a.test.mjs:3:84'
+      failureType: 'testCodeFailure'
+      error: |-
+        The expression evaluated to a falsy value:
+        
+          assert.ok(false)
+        
+      code: 'ERR_ASSERTION'
+      name: 'AssertionError'
+      expected: true
+      actual: false
+      operator: '=='
+      stack: |-
+        TestContext.<anonymous> (file:///private/var/folders/xx/T/collab-full-cmd-abc123/copy/tests/a.test.mjs:3:110)
+        Test.runInAsyncScope (node:async_hooks:227:14)
+        Test.run (node:internal/test_runner/test:1402:25)
+        Suite.processPendingSubtests (node:internal/test_runner/test:974:18)
+        Test.postRun (node:internal/test_runner/test:1542:19)
+        Test.run (node:internal/test_runner/test:1467:12)
+        async Promise.all (index 0)
+        async Suite.run (node:internal/test_runner/test:1905:7)
+        async Test.processPendingSubtests (node:internal/test_runner/test:974:7)
+      ...
+    1..2
+not ok 2 - B
+  ---
+  duration_ms: 0.294458
+  type: 'suite'
+  location: '/private/var/folders/xx/T/collab-full-cmd-abc123/copy/tests/a.test.mjs:3:1'
+  failureType: 'subtestsFailed'
+  error: '1 subtest failed'
+  code: 'ERR_TEST_FAILURE'
+  ...
+# Subtest: top
+ok 3 - top
+  ---
+  duration_ms: 0.042542
+  type: 'test'
+  ...
+# Subtest: same name
+not ok 4 - same name
+  ---
+  duration_ms: 2.656667
+  type: 'test'
+  location: '/private/var/folders/xx/T/collab-full-cmd-abc123/copy/tests/has space/b.test.mjs:2:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    The expression evaluated to a falsy value:
+    
+      assert.ok(false)
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: true
+  actual: false
+  operator: '=='
+  stack: |-
+    TestContext.<anonymous> (file:///private/var/folders/xx/T/collab-full-cmd-abc123/copy/tests/has%20space/b.test.mjs:2:30)
+    Test.runInAsyncScope (node:async_hooks:227:14)
+    Test.run (node:internal/test_runner/test:1402:25)
+    Test.start (node:internal/test_runner/test:1262:17)
+    startSubtestAfterBootstrap (node:internal/test_runner/harness:387:17)
+  ...
+# Subtest: todo one
+not ok 5 - todo one # TODO
+  ---
+  duration_ms: 0.194542
+  type: 'test'
+  location: '/private/var/folders/xx/T/collab-full-cmd-abc123/copy/tests/has space/b.test.mjs:3:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    The expression evaluated to a falsy value:
+    
+      assert.ok(false)
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: true
+  actual: false
+  operator: '=='
+  stack: |-
+    TestContext.<anonymous> (file:///private/var/folders/xx/T/collab-full-cmd-abc123/copy/tests/has%20space/b.test.mjs:3:45)
+    Test.runInAsyncScope (node:async_hooks:227:14)
+    Test.run (node:internal/test_runner/test:1402:25)
+    Test.processPendingSubtests (node:internal/test_runner/test:974:18)
+    Test.postRun (node:internal/test_runner/test:1542:19)
+    Test.run (node:internal/test_runner/test:1467:12)
+    async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3)
+  ...
+1..5
+# tests 7
+# suites 2
+# pass 2
+# fail 4
+# cancelled 0
+# skipped 0
+# todo 1
+# duration_ms 96.203125

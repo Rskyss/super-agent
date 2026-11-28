@@ -243,7 +243,8 @@ class PendingFiles(ServerCase):
         self.write("docs/施工单-无关.md")
         self.write("src/开发说明.md")
 
-        self.assertEqual(self.read_pending(card="CARD-001"), (200, {"count": 1, "files": [c2.ORDER]}))
+        # v0.96 C1：没存的施工单另列一份 orders，窗口确认框据此不给“直接开工”
+        self.assertEqual(self.read_pending(card="CARD-001"), (200, {"count": 1, "files": [c2.ORDER], "orders": [c2.ORDER]}))
         for query in ({}, {"card": "CARD-002"}):
             self.assertEqual(self.read_pending(**query), (200, {"count": 0, "files": []}))
 
@@ -303,7 +304,8 @@ class PendingFiles(ServerCase):
         self.assertLessEqual(len(answer["reason"].removeprefix("没存成：")), 200)
         self.assertEqual(self.git_output("rev-parse", "HEAD"), before)
         self.assertEqual(self.git_output("diff", "--cached", "--name-only"), "")
-        self.assertEqual(self.read_pending(card="CARD-001"), (200, {"count": 2, "files": [c2.ORDER, "src/app.py"]}))
+        self.assertEqual(self.read_pending(card="CARD-001"),
+                         (200, {"count": 2, "files": [c2.ORDER, "src/app.py"], "orders": [c2.ORDER]}))   # v0.96 C1
         self.assertEqual(self.state(), "待对齐")
 
 

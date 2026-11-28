@@ -366,6 +366,10 @@ class P3BlockInvalidateAndRecoveryTests(CardGapAExtraBase):
         self.assertEqual(self.ai_calls(), 0)
         self.assertTrue((cdir / "开工.json").exists())
         self.assertIn("右栏加一行字。", (cdir / "方案.md").read_text(encoding="utf-8"))
+        # v0.96 C1 起施工单要先存进项目才许批准（train 卡 16 施工单没存就开卡），这里补上“存”这一步
+        import subprocess
+        for args in (["add", ORDER_REL], ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "order"]):
+            subprocess.run(["git", *args], cwd=self.project, check=True, capture_output=True)
         code, out = self.cli("approve", self.project, "CARD-001")
         self.assertEqual(code, 0, f"补好施工单并重写方案后应能批准：{out}")
         self.assertEqual(self.state(), "待派发")

@@ -1,0 +1,126 @@
+退赛学员保留英文轮次回顾，公布后显示只读竞赛榜 (50.039875ms)
+✔ 英文复盘页区分等待成绩与等待开放，并在关回复盘后挡住已有报告 (2.528958ms)
+✔ 复查 1：独立复盘读取已保存的校准分失败时提示失败，且不展示未校准的综合分 (39.930458ms)
+✔ 本轮复查 1：学员打开独立复盘时，校准分读回之前就能看到加载提示 (56.601666ms)
+✔ 本轮复查 2：导师公布终局成绩后，之前点击开放复盘留下的提示自动消失 (17.314083ms)
+✔ 复查 2：中英文竞赛学员等待公布时，页面不会误指下方已有终局榜 (7.952708ms)
+✔ 复查 3：两份卡 7 记录区分校准接口 403 与市场荣誉榜 200 空列表 (10.683458ms)
+ℹ tests 613
+ℹ suites 0
+ℹ pass 607
+ℹ fail 6
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 98004.189416
+
+✖ failing tests:
+
+test at tests/process-worksheets.test.ts:2:35212
+✖ P5 表3B：对手快捷点选可以填入，也允许手动改名 (28.543083ms)
+  AssertionError [ERR_ASSERTION]: 对手输入格，实际找到0处
+  
+  0 !== 1
+  
+      at one (/private/var/folders/1b/99tw_pg965jfzxryp3xcklwm0000gn/T/collab-full-cmd-t058xq_o/copy/tests/process-worksheets.test.ts:346:10)
+      at TestContext.<anonymous> (/private/var/folders/1b/99tw_pg965jfzxryp3xcklwm0000gn/T/collab-full-cmd-t058xq_o/copy/tests/process-worksheets.test.ts:656:8)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 0,
+    expected: 1,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at tests/process-worksheets.test.ts:2:80271
+✖ P5：zh缺漏时按钮仍可点，点击定位首张未完表并保留策略和方案 (240.197834ms)
+  AssertionError [ERR_ASSERTION]: The input did not match the regular expression /(?:border|ring)-sandbox-gold\b/. Input:
+  
+  'px-3 py-1.5 font-mono text-xs tracking-widest uppercase transition-colors border ml-auto border-transparent text-sandbox-muted hover:text-sandbox-ink hover:border-sandbox-ink/30'
+  
+      at TestContext.<anonymous> (/private/var/folders/1b/99tw_pg965jfzxryp3xcklwm0000gn/T/collab-full-cmd-t058xq_o/copy/tests/process-worksheets.test.ts:1455:12)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 'px-3 py-1.5 font-mono text-xs tracking-widest uppercase transition-colors border ml-auto border-transparent text-sandbox-muted hover:text-sandbox-ink hover:border-sandbox-ink/30',
+    expected: /(?:border|ring)-sandbox-gold\b/,
+    operator: 'match',
+    diff: 'simple'
+  }
+
+test at tests/process-worksheets.test.ts:2:80271
+✖ P5：en缺漏时按钮仍可点，点击定位首张未完表并保留策略和方案 (174.556375ms)
+  AssertionError [ERR_ASSERTION]: The input did not match the regular expression /(?:border|ring)-sandbox-gold\b/. Input:
+  
+  'px-3 py-1.5 font-mono text-xs tracking-widest uppercase transition-colors border ml-auto border-transparent text-sandbox-muted hover:text-sandbox-ink hover:border-sandbox-ink/30'
+  
+      at TestContext.<anonymous> (/private/var/folders/1b/99tw_pg965jfzxryp3xcklwm0000gn/T/collab-full-cmd-t058xq_o/copy/tests/process-worksheets.test.ts:1455:12)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 'px-3 py-1.5 font-mono text-xs tracking-widest uppercase transition-colors border ml-auto border-transparent text-sandbox-muted hover:text-sandbox-ink hover:border-sandbox-ink/30',
+    expected: /(?:border|ring)-sandbox-gold\b/,
+    operator: 'match',
+    diff: 'simple'
+  }
+
+test at tests/ux-upgrade-card02-acceptance.test.ts:2:18005
+✖ 老行为守卫：四角分析快捷点选 G3 填入后保留下方 5 字段，再手改对手名仍可用 (52.590542ms)
+  AssertionError [ERR_ASSERTION]: 对手输入框
+  
+  0 !== 1
+  
+      at one (/private/var/folders/1b/99tw_pg965jfzxryp3xcklwm0000gn/T/collab-full-cmd-t058xq_o/copy/tests/ux-upgrade-card02-acceptance.test.ts:55:10)
+      at TestContext.<anonymous> (/private/var/folders/1b/99tw_pg965jfzxryp3xcklwm0000gn/T/collab-full-cmd-t058xq_o/copy/tests/ux-upgrade-card02-acceptance.test.ts:604:17)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 0,
+    expected: 1,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at tests/ux-upgrade-card02-acceptance.test.ts:2:27953
+✖ 需求 5：四角分析标题、占位提示、点选填入说明与选中按钮高亮（中英文） (34.311ms)
+  AssertionError [ERR_ASSERTION]: The input did not match the regular expression /点选填入：/. Input:
+  
+  '1. 利益相关方 2. 市场访谈 3. TOWS 矩阵 4. 四角分析 四角分析 i 已自动保存 最担心的对手（挑 1 个分析） G2 G3 G4 驱动力 i 假设 i 当前策略 i 能力 i 抢先动作 i'
+  
+      at TestContext.<anonymous> (/private/var/folders/1b/99tw_pg965jfzxryp3xcklwm0000gn/T/collab-full-cmd-t058xq_o/copy/tests/ux-upgrade-card02-acceptance.test.ts:824:10)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: '1. 利益相关方 2. 市场访谈 3. TOWS 矩阵 4. 四角分析 四角分析 i 已自动保存 最担心的对手（挑 1 个分析） G2 G3 G4 驱动力 i 假设 i 当前策略 i 能力 i 抢先动作 i',
+    expected: /点选填入：/,
+    operator: 'match',
+    diff: 'simple'
+  }
+
+test at tests/ux-upgrade-card02.test.ts:2:24045
+✖ 四角分析对手前后空格不影响高亮，点选保留五项，手改或清空取消高亮 (4.079875ms)
+  AssertionError [ERR_ASSERTION]: 对手输入框
+  
+  0 !== 1
+  
+      at Object.one (/private/var/folders/1b/99tw_pg965jfzxryp3xcklwm0000gn/T/collab-full-cmd-t058xq_o/copy/tests/ux-upgrade-card02.test.ts:286:12)
+      at TestContext.<anonymous> (/private/var/folders/1b/99tw_pg965jfzxryp3xcklwm0000gn/T/collab-full-cmd-t058xq_o/copy/tests/ux-upgrade-card02.test.ts:609:22)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1402:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:974:18)
+      at Test.postRun (node:internal/test_runner/test:1542:19)
+      at Test.run (node:internal/test_runner/test:1467:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 0,
+    expected: 1,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }

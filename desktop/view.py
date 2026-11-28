@@ -1336,7 +1336,11 @@ def card_view(project_dir, card_id=None, now=None, dispatcher=None, chat_session
         reason = str(phase.get("detail") or "")
         if not reason and escalations:
             reason = str(escalations[-1].get("say") or escalations[-1].get("summary") or "")
-        now_text, tone = f"卡停下了，等你处理：{reason or '原因见交接记录'}", "bad"
+        kind = re.match(r"^【[^】]{1,8}】", reason)   # v0.96 D2：类别放最前，一眼看出是要你定还是程序/模型的事
+        if kind:
+            now_text, tone = f"{kind.group(0)}卡停下了，等你处理：{reason[kind.end():]}", "bad"
+        else:
+            now_text, tone = f"卡停下了，等你处理：{reason or '原因见交接记录'}", "bad"
     else:
         now_text, tone = "程序在安排下一步", "run"
 

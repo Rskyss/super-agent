@@ -236,7 +236,8 @@ class OnlyBrokenTogether(Base):
         (self.worktree / "tests" / "test_x.py").write_text("# Python 项目\n", encoding="utf-8")
 
     def test_passes_alone_stops_for_a_person_instead_of_bouncing(self):
-        runner = AloneRunner([Verdict(FAIL, 1, FAIL_OUT)],
+        # v0.96 B2：单独跑能过时先整套再跑一遍，第二遍还不过才停下（第二遍过了放行，见 test_v096_fullrun_same_batch）
+        runner = AloneRunner([Verdict(FAIL, 1, FAIL_OUT), Verdict(FAIL, 1, FAIL_OUT)],
                              alone={"tests/test_old.py": Verdict(PASS, 0, "Ran 1 test\n\nOK\n")})
         card, calls = self.go(runner)
         self.assertEqual(len(calls["dev"]), 1, "不退回写代码的")
